@@ -116,7 +116,8 @@ func workerRuntimeConfigFor(t *testing.T, ctx context.Context, config localconfi
 // test and returns the reader for it. run-worker reports every executor kind it
 // could not register on os.Stderr, which is the only place the box's notices go,
 // so counting them means capturing that stream; the package runs no parallel
-// tests, and the original stream is restored through t.Cleanup.
+// tests, and the original stream is restored through t.Cleanup. A test that adds
+// t.Parallel() must not use this: the swap is process-wide.
 func captureStderr(t *testing.T) func() string {
 	t.Helper()
 	reader, writer, err := os.Pipe()
@@ -244,7 +245,7 @@ func TestOpenWorkerBoxLeavesADegradedBoxWithoutTriage(t *testing.T) {
 func TestRunWorkerStartsWithoutAUsableModelBinary(t *testing.T) {
 	initializedCollective(t)
 	readStderr := captureStderr(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	err := runWorker(ctx, []string{
 		"--workspace-root=" + t.TempDir(),
@@ -263,7 +264,7 @@ func TestRunWorkerStartsWithoutAUsableModelBinary(t *testing.T) {
 func TestRunWorkerStartsWithAUsableModelBinary(t *testing.T) {
 	initializedCollective(t)
 	readStderr := captureStderr(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	if err := runWorker(ctx, []string{
 		"--workspace-root=" + t.TempDir(),
@@ -284,7 +285,7 @@ func TestRunWorkerStartsWithAUsableModelBinary(t *testing.T) {
 // --model-timeout would otherwise run this to the package timeout.
 func TestRunWorkerStillRejectsAMalformedModelTimeout(t *testing.T) {
 	initializedCollective(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	err := runWorker(ctx, []string{
 		"--workspace-root=" + t.TempDir(),
