@@ -54,6 +54,18 @@ func TestDecisionValidate(t *testing.T) {
 	if err := noStage2.Validate(); err == nil {
 		t.Fatal("an unresolved stage 1 without stage 2 was accepted")
 	}
+	// Stage 3 disposition is model output, so it can name something outside
+	// the closed set; Validate has to reject it rather than persist it.
+	unknownStage3 := stage3Decision()
+	unknownStage3.Stage3 = &Stage3Result{Disposition: Disposition("invented"), Rule: "x"}
+	if err := unknownStage3.Validate(); err == nil {
+		t.Fatal("a stage 3 disposition outside the closed set was accepted")
+	}
+	unknownStage1 := stage1Decision()
+	unknownStage1.Stage1.Disposition = Disposition("invented")
+	if err := unknownStage1.Validate(); err == nil {
+		t.Fatal("a stage 1 disposition outside the closed set was accepted")
+	}
 }
 
 func TestDecisionFinalDisposition(t *testing.T) {
