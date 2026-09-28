@@ -35,8 +35,9 @@ In scope:
 - the three-stage decision pipeline, recorded as a durable evidence document
 - the executor that consumes an already-registered `github.issue.triage` Task
 - the case transition and Task acceptance performed by a driver after the lease completes
-- supersession of an older revision when a newer revision of the same issue is triaged
-- the model interface, its production adapter, and its fake
+- supersession of an older revision, including its pending Task, when a newer revision of
+  the same issue is triaged
+- the classifier and reviewer model interfaces, their production adapter, and their fake
 - capability advertisement and executor routing so the registered triage Tasks are leased
   by the triage executor
 - the stage 4 reviewer, as a second and last slice
@@ -85,7 +86,7 @@ Four processes, extending the existing ADO shape of observer, driver and verifie
 | --- | --- |
 | `run-gh-intake` | unchanged; registers cases and Tasks, still registers no executor |
 | `run-worker` | leases the registered triage Task and executes it |
-| `run-gh-triage-driver` | applies the case transition and Task acceptance after a triage lease completes; marks superseded revisions |
+| `run-gh-triage-driver` | accepts a completed triage Task, applies the case transition, blocks failed triage and supersedes older revisions with their pending Tasks |
 | `run-gh-triage-review` | reads recorded decisions, runs stage 4, writes a verdict |
 
 ### Capability advertisement
@@ -140,20 +141,19 @@ recomputed and later re-scored.
   "repository": "owner/name",
   "issue": 42,
   "revision": "2026-09-28T10:00:00Z",
+  "snapshot_evidence_id": "evidence-...",
   "triage_rules_version": "ghtriage.rules.v1",
   "disposition_rules_version": "ghtriage.dispositions.v1",
   "stage1": {
-    "triage": "bug|feature|unclassified|question|duplicate",
-    "signals": ["cross-reference:41", "label:bug", "title:[bug]", "has-repro"],
-    "disposition": "duplicate",
-    "rule": "cross-reference-duplicate"
+    "triage": "bug",
+    "signals": ["has-repro", "label:bug", "title:[bug]"]
   },
   "stage2": {
     "is_actionable": true,
     "needs_repro": false,
-    "scope": "small|medium|large|unknown",
-    "suggested_type": "bug|feature|question|other",
-    "rationale": "..."
+    "scope": "medium",
+    "suggested_type": "bug",
+    "rationale": "The report includes enough detail to plan a bounded fix."
   },
   "stage3": {
     "disposition": "ready-to-plan",
@@ -162,39 +162,49 @@ recomputed and later re-scored.
 }
 ```
 
-`stage1` is always present. Its `disposition` and `rule` are set only when stage 1 resolved
-the issue on its own, in which case `stage2` and `stage3` are both absent. When stage 1 did
-not resolve, `stage1.disposition` and `stage1.rule` are empty and `stage3` is the
-authoritative outcome. The absence of `stage2` and `stage3` is therefore itself the record
-that the model was not consulted, and `stage3.rule` names the rule that produced the
-disposition, so replaying a decision needs no re-execution.
+`stage1` is always present. Its `disposition` and `rule` are present only when stage 1
+resolved the issue on its own; `stage2` and `stage3` are then absent. For example, an
+explicit `duplicate-of:41` label produces `stage1` with `triage: "duplicate"`,
+`disposition: "duplicate"` and `rule: "explicit-duplicate-label"`, and no later stages.
+When stage 1 did not resolve, its `disposition` and `rule` are absent and `stage3` is the
+authoritative outcome, as in the example above. The absence of `stage2` and `stage3` records
+that the model was not consulted. A recorded decision can be recomputed from its stored
+inputs without re-running the model.
 
 Both rules versions are recorded because the stage 1 and stage 3 rule tables are expected
 to be revised in later slices. A versionless record could not be re-scored after such a
 revision: every historical decision would recompute to a different rule name and appear
-violating. The reviewer scopes its recomputation check to records whose
-`disposition_rules_version` it actually implements, and reports `not-applicable` otherwise.
+violating. The reviewer checks `triage_rules_version` for stage 1 decisions and
+`disposition_rules_version` for stage 3 decisions, and reports `not-applicable` when it does
+not implement the relevant version.
 
 `stage1.triage` widens `ClassifyTriage`, which returns only `bug`, `feature` and
-`unclassified` (`internal/ghissue/source.go:166-177`), with `question` and `duplicate` for
-the cases intake's classifier does not model. Stage 1 is authoritative for triage and
-re-derives the classification from the snapshot; the `triage` value already in the Task
-payload is intake's earlier reading and is carried only for comparison. The reviewer's
-structural check reconciles the two, so a stage 1 that silently disagrees with the
-classifier is caught rather than hidden.
+`unclassified` (`internal/ghissue/source.go:166-177`). Start with that exact classifier.
+Override it with `duplicate` only for an explicit valid duplicate label; widen an
+`unclassified` result to `question` only for a `question` label or `[question]` title prefix.
+Otherwise keep the intake classification. Stage 1 re-derives this from the snapshot; the
+Task payload's `triage` value is retained for comparison. The reviewer recomputes the exact
+widening rule from the snapshot rather than accepting any difference merely because the new
+value is `question` or `duplicate`.
 
 ## Stages
 
 **Stage 1, deterministic.** A pure function from the canonical snapshot to signals and a
 classification. Signals are: the sorted label set, a title prefix, the presence of a
-fenced reproduction block, and a cross-reference to another open issue in the same
-repository, from either a `duplicate-of` label or a `#N` reference to a known open issue.
+fenced reproduction block, an explicit `duplicate-of:<n>` label, and `#N` references in the
+body. A duplicate label is decisive only when exactly one `duplicate-of:<n>` label is
+present and `<n>` is a positive issue number other than the current issue number. Multiple
+or malformed duplicate labels leave stage 1 unresolved. A valid label is an explicit
+maintainer assertion about the same repository; stage 1 does not claim to verify the
+target's current open state. A bare `#N` is context,
+not proof of duplication. The canonical snapshot contains no other issue's state, so
+neither target lookup nor live GitHub state is part of this pure function.
 
 Stage 1 is deliberately conservative and resolves exactly one case decisively:
 
 | Order | Condition | Disposition | Rule |
 | --- | --- | --- | --- |
-| 1 | a `duplicate-of:<n>` label, or a `#n` reference resolving to an open issue | `duplicate` | `cross-reference-duplicate` |
+| 1 | a valid `duplicate-of:<n>` label | `duplicate` | `explicit-duplicate-label` |
 | 2 | otherwise | unresolved; hand to stage 2 | — |
 
 Keeping the decisive set this narrow is deliberate. Intake already excludes issues that
@@ -244,11 +254,13 @@ disposition vocabulary is closed, and this table is exhaustive:
 | --- | --- | --- | --- |
 | 1 | `is_actionable` is false | `not-actionable` | `not-actionable` |
 | 2 | `needs_repro` is true | `needs-human` | `needs-repro-required` |
-| 3 | `scope` is `small`, `medium` or `unknown` | `ready-to-plan` | `actionable-without-repro-small-or-medium` |
+| 3 | `scope` is `small` or `medium` | `ready-to-plan` | `actionable-without-repro-small-or-medium` |
 | 4 | `scope` is `large` | `needs-human` | `scope-large-needs-decomposition` |
+| 5 | `scope` is `unknown` | `needs-human` | `scope-unknown-needs-scoping` |
 
-`duplicate` is deliberately absent from this table. A cross-reference is a stage 1 signal,
-and stage 1 resolves it decisively, so stage 3 can never produce `duplicate` and the
+`duplicate` is deliberately absent from this table. An explicit duplicate label is a
+stage 1 signal and resolves the issue decisively; an ordinary `#N` reference does not.
+Stage 3 can therefore never produce `duplicate` and the
 disposition is reachable from exactly one place. The closed set is
 `ready-to-plan`, `not-actionable`, `duplicate`, `needs-human`, and every one of the four is
 reachable.
@@ -262,15 +274,22 @@ provider abstraction.
 
 ```go
 // internal/ghtriage
-type Model interface {
+type ClassifierModel interface {
     Classify(ctx context.Context, input Stage2Input) (Stage2Output, error)
+}
+
+type ReviewerModel interface {
+    Review(ctx context.Context, input ReviewInput) (bool, error)
 }
 ```
 
-`internal/ghtriage` owns the interface, the input and output types, and schema validation.
-The production adapter is `internal/ghtriage/climodel`, which execs the configured CLI and
-decodes the first JSON object from its stdout. The fake is `internal/ghtriage/fakemodel`,
-which returns a scripted output and records every input it was given.
+`internal/ghtriage` owns both interfaces, their input and output types, and schema
+validation. `ReviewInput` contains the fixed reviewer question, the issue title and body
+from the pinned snapshot, and the recorded decision; the response schema contains only
+`plausible: bool`. The production adapter is `internal/ghtriage/climodel`, which execs the
+configured CLI and requires exactly one conforming JSON object on stdout, with no second
+object or trailing prose. The fake is `internal/ghtriage/fakemodel`, which returns scripted
+outputs and records both kinds of input.
 
 The CLI binary name and its credentials are configuration resolved at startup, validated
 in the constructor, as the GitHub token file already is. A missing or unusable model
@@ -299,16 +318,23 @@ exhaustion (`internal/workflow/decision.go:95-103`) and `Reject`
 | `not-actionable` | `BLOCKED` | `not-actionable` |
 | `duplicate` | `BLOCKED` | `duplicate` |
 | `needs-human` | `BLOCKED` | `needs-human` |
+| triage Task exhausted its retries | `BLOCKED` | `triage-failed` |
 | superseded revision | `BLOCKED` | `superseded-by:<revision>` |
 
 `ACTIVE` after triage is deliberate. A GitHub case cannot be closed today: `Close` requires
 `READY_FOR_VERIFICATION` (`internal/workflowcase/service.go:261-263`), and the final
 verifier skips every case whose source is not `ado`
 (`internal/adoreview/verify.go:120-122`). `BLOCKED` is the terminal state for triage in
-this design, and `ACTIVE` means "triaged and waiting for the planning subproject".
+this design. After a successful `ready-to-plan` decision, `ACTIVE` means "triaged and
+waiting for the planning subproject"; before that, intake also leaves an untriaged case
+`ACTIVE`.
 
-Leaving a `not-actionable` case in `ACTIVE` would be a hazard: `ListActive` is what the
-planning subproject will scan, so a case that must never be planned would look like work.
+Leaving a `not-actionable` case in `ACTIVE` would be a hazard. `ListActive` also includes
+cases that intake registered but triage has not resolved yet. The future planning
+subproject must therefore require all three conditions: an `ACTIVE` case, a `SUCCEEDED`
+triage Task backed by an accepted `ready-to-plan` decision, and no newer registered
+revision of the same `(mission_id, source, object_id)`. `ListActive` alone is insufficient,
+including during the gap between intake and a driver tick.
 
 The driver also closes the Task. After a lease completes, `CompleteAttempt` moves the Task
 to `AWAITING_VERIFICATION` (`internal/verification/service.go:103`) and only `AcceptTask`
@@ -319,6 +345,13 @@ Task with `AcceptTask`, exactly as `FinalVerifier.finalizeTask` does
 driver discovers the Task by the same ADO pattern: look it up by the case's
 `current_work_id` and wait for `TaskAwaitingVerification`
 (`internal/adoreview/driver.go:222`).
+It requires exactly one `github.issue.triage.decision` in the completed attempt's output
+evidence and checks its repository, issue, revision and snapshot against the case before
+accepting it. Evidence not attached to a completed attempt is not a decision. After
+validation, the driver calls `AcceptTask` **before** `Assess` for a blocking disposition.
+If it crashes between those calls, the Task remains `SUCCEEDED`, the case remains `ACTIVE`
+with its original work ID, and the next tick can finish the case transition. The driver
+must handle both `AWAITING_VERIFICATION` and `SUCCEEDED` while processing an `ACTIVE` case.
 
 ## Supersession
 
@@ -329,10 +362,35 @@ Task for the same issue at that revision. This is the free retriage path: the hu
 changes the facts at the source and triage re-runs with the new signals, while the older
 case remains as a record of the earlier reading.
 
-The cost is that two `ACTIVE` cases and two triage Tasks then exist for one issue. The
-driver prevents the older revision from being planned: when it observes a case whose issue
-has a newer revision that triage has already resolved, it blocks the older case through
-`Assess` with reason `superseded-by:<revision>`. The newer revision stays `ACTIVE`.
+The cost is that two `ACTIVE` cases and two triage Tasks can exist for one issue. After the
+driver accepts the newest revision's valid decision, it compares revision timestamps as
+parsed times, not lexicographic strings, and visits older cases with the same mission and
+object ID. The newest case's state follows its disposition; it is `ACTIVE` only for
+`ready-to-plan`. An older case already `BLOCKED` needs no further transition. The
+supersession scan includes accepted decisions on `BLOCKED` newer cases: after an assessment
+clears `current_work_id`, its `workflow_assessments.work_id` still identifies the accepted
+Task. Scanning only `ListActive` would lose this work after a driver restart, so the driver
+needs a read path across GitHub cases and their assessment history.
+
+For each older `ACTIVE` case, the driver handles the linked Task before clearing the
+case's `current_work_id`:
+
+| Older Task state | Driver action |
+| --- | --- |
+| `ELIGIBLE` or `EXECUTING` | Challenge it as superseded with a state-guarded operation that revokes an active lease and changes the Task to `CHALLENGED` atomically. Then block the case. |
+| `AWAITING_VERIFICATION` | Validate and accept its completed decision first; apply its ordinary case disposition, then block the case if it is still `ACTIVE`. |
+| `SUCCEEDED` | Block the still-`ACTIVE` case. |
+| `BLOCKED`, `CHALLENGED`, `CANCELLED` or `EXPIRED` | Block the still-`ACTIVE` case; do not change the Task again. |
+
+The existing `ChallengeTask` changes any Task state without a guard
+(`internal/execution/service.go:396-440`), so this slice needs a conditional variant for
+`ELIGIBLE`/`EXECUTING`; it must never turn an accepted Task back into `CHALLENGED`. The
+challenge runs before `Assess`, so a crash between them leaves an inert Task and an
+`ACTIVE` case that the next driver tick can finish. If the Task changed state before the
+conditional challenge, the driver reloads it and follows the new row instead. The block
+uses `Assess` with `Verdict: Unknown`, reason `superseded-by:<revision>`, and the newer
+accepted decision as evidence. An already assessed, byte-identical request replays safely.
+The planning guard above prevents a transient older `ACTIVE` case from becoming new work.
 
 Automatic retriage from a mid-execution observation — a subagent discovering during bug
 work that the issue is really a feature — is not built and not planned. Such a case may
@@ -364,16 +422,17 @@ body: the intake Task payload carries a snapshot evidence id, not the issue body
 
 - `stage2_only_if_unresolved`: stage 2 is present if and only if stage 1 did not resolve
 - `schema_conformant`: the record conforms to schema `v1`
-- `rule_matches_recomputation`: recompute the disposition from the stored stage 2 document
-  and compare both the disposition and the rule name. Three-valued, because on the
-  stage-1-decisive path there is no stage 2 to recompute from:
-  `match`, `mismatch`, or `not-applicable` when the record's `disposition_rules_version` is
-  not the version the reviewer implements.
+- `rule_matches_recomputation`: on a stage 1 decision, recompute from the snapshot; on a
+  stage 3 decision, recompute from the stored validated stage 2 document. Compare both
+  disposition and rule name. The result is `match`, `mismatch`, or `not-applicable` when
+  the relevant recorded rule version is newer than the reviewer implements.
 - `state_matches_disposition`: the case state matches the disposition and reason, treating a
   `superseded-by:` reason as an allowed terminal state so a correctly superseded case is not
-  reported as a violation
-- `classification_agrees_with_intake`: `stage1.triage` agrees with the `triage` value in the
-  Task payload, or differs only by a widening to `question` or `duplicate`
+  reported as a violation. A case blocked as `triage-failed` has no decision to review and
+  is reported by the driver instead.
+- `classification_agrees_with_intake`: recompute `ClassifyTriage` and the exact stage 1
+  widening rule from the snapshot, then compare both with the recorded stage 1 value and
+  the Task payload's intake value
 
 **Plausibility check**: one model call asking whether the recorded classification follows
 from the issue text. The result is a single boolean, `plausible`, and nothing else: the
@@ -382,9 +441,13 @@ reviewer is asked for a yes or a no and must not return a severity, a score or a
 ```json
 {
   "schema": "github.issue.triage.review.v1",
+  "reviewer_version": "ghtriage.reviewer.v1",
+  "decision_evidence_id": "evidence-...",
   "repository": "owner/name",
   "issue": 42,
   "revision": "2026-09-28T10:00:00Z",
+  "case_state": "ACTIVE",
+  "latest_assessment_id": null,
   "structural": {
     "stage2_only_if_unresolved": true,
     "schema_conformant": true,
@@ -404,78 +467,105 @@ be scored later, retroactively, once human labels exist. There are no human labe
 prior decisions yet, so effectiveness cannot be evaluated now, and the reviewer does not
 pretend to: it checks what can be checked without ground truth.
 
-The reviewer is idempotent, and the mechanism is the one already available:
-`FindByContentHash` (`internal/evidence/store.go:140`). The verdict document is canonical —
-fields in fixed order, the decision's content hash included — so two ticks that reach the
-same verdict produce byte-identical bytes and the second is suppressed. Two ticks that reach
-different verdicts each record one, which is honest rather than a growth bug. The evidence
-store has no case or revision column, so content hashing is the only available key, and it
-is the correct one here because the verdict is a function of the decision.
+The reviewer must not call the model on every tick for an unchanged decision and case
+state. This slice adds `github_issue_triage_reviews`, a narrow SQLite table keyed by
+`(decision_evidence_id, reviewer_version, state_fingerprint)` with
+`verdict_evidence_id` as its value. The fingerprint is the canonical pair of the case
+state and its latest assessment ID, or `none` when there is no assessment. Both evidence
+IDs reference existing evidence objects. Before the model call the reviewer checks that
+key; after writing a canonical verdict document it inserts the link with a unique
+constraint. The verdict records the state and assessment ID it checked.
+Two concurrent ticks may both pay for a model call, but only one verdict is linked and
+reported. A crash after storing the evidence but before inserting the link may leave an
+orphan document; the next tick retries. A later case transition, including supersession,
+gets a new fingerprint and a new structural review; a deliberate re-review of an unchanged
+case uses a new reviewer version. The verdict includes the decision evidence ID, so the
+result remains attributable
+without adding columns to `workflow_cases`. `FindByContentHash`
+(`internal/evidence/store.go:140`) can reuse byte-identical evidence but cannot be the
+review scheduling key because the model's boolean result is unknown before the call.
 
-A failed model call records **no** verdict document. It writes a line to stderr and returns,
-so the retry on a later tick is not suppressed by the idempotency rule. Recording an
-"unavailable" verdict as a document would collide with the real verdict on the next tick and
-make the retry permanently impossible.
+A failed model call records **no** verdict document or index row. It writes a line to stderr
+and returns, so the next tick retries. Recording an "unavailable" verdict would mark the
+decision reviewed without performing the plausibility check.
 
 ## Error handling
 
 | Condition | Result |
 | --- | --- |
-| stage 1 | cannot fail: intake already excluded malformed issues as `unparseable-issue` (`internal/ghissue/source.go:76-122`) |
+| stage 1 | valid snapshots are processed without a network call; missing or corrupt snapshot evidence fails the attempt |
 | stage 2 transport or timeout | the attempt fails and the lease does not complete |
-| stage 2 schema violation | at most one retry with a stricter instruction, then the executor returns `needs-human` as a terminal result |
+| stage 2 schema violation | at most one retry with the same fixed `Stage2Input` in the same attempt; if both responses fail validation, fail the attempt without a decision |
 | stage 3 | cannot fail: it consumes a document stage 2 already validated, and the rule table is total |
 | model configuration missing or unusable | startup error, not a tick error |
-| a Task fails twice with the same signature | `FailAttempt` moves it to `TaskBlocked` (`internal/execution/service.go:378-391`); the driver reports it and leaves the case `ACTIVE` and untriaged |
+| a Task fails twice with the same signature | `FailAttempt` moves it to `TaskBlocked` (`internal/execution/service.go:378-391`); the driver records failure evidence and blocks the untriaged case through `Assess` with reason `triage-failed` |
 | driver sees an inconsistent case | reported, case left untouched |
 | reviewer model call fails | no verdict document, stderr line, retried on a later tick |
 
 Retry counts are bounded. An unbounded retry turns one poisoned issue into an infinite budget
-burn, which is the worst possible property here. The `TaskBlocked` row matters for the same
-reason: a Task the driver never inspects and never reports is a silent loss, so the driver
-surfaces it rather than leaving it to time out unnoticed.
+burn, which is the worst possible property here. The driver handles a `TaskBlocked` even
+though it has no decision evidence: it writes a canonical `github.issue.triage.failure`
+document containing the case ID, Task ID, current attempt ID and failure signature, then
+uses that evidence for `Assess`. This satisfies `workflow.Decide`'s non-empty evidence
+requirement. The failure record is distinct from a valid `needs-human` disposition and is
+reused on replay. It also prevents an untriaged `ACTIVE` case from appearing ready for
+planning.
 
 ## Idempotency
 
-The executor does not dedupe by content hash before calling the model, because that cannot
-work here. A decision contains a model rationale, so its bytes are not a deterministic
-function of the issue and their hash cannot be known before the model runs. The intake
-observer gets away with it only because its snapshot is
-`CanonicalSnapshot`-derived (`internal/ghissue/source.go:274-298`).
+Model invocation is **at least once**. The executor cannot inspect a completed decision in
+its own attempt's provenance before returning: `Worker.completeExecution` persists the
+returned evidence and calls `CompleteAttempt` only after `Executor.Start` returns
+(`internal/scheduler/worker.go:163-181`). Every retry leases a new attempt ID
+(`internal/execution/service.go:176-185`). A crash between the model response and attempt
+completion may therefore cause another model call. No exact-once model-call guarantee is
+claimed, and triage makes no external write whose repetition would duplicate an effect.
 
-The real replay path is the attempt's own provenance: read
-`manifests.Provenance(attempt.CurrentAttemptID)` and check its `OutputEvidence`
-(`internal/runmanifest/service.go:103-105`) for an object of kind
-`github.issue.triage.decision`. If the completed attempt already produced the decision, the
-executor returns that stored result and does not call the model. This is exactly how the ADO
-driver replays a published artifact (`internal/adoreview/driver.go:218-231`, `:343-349`).
+The durable boundary is `CompleteAttempt`. The driver reads
+`manifests.Provenance(task.CurrentAttemptID).OutputEvidence` only after the Task reaches
+`AWAITING_VERIFICATION`, validates the single decision attached to that completed attempt,
+then accepts the Task. Evidence written by an abandoned or failed attempt cannot authorize
+the case transition. A completed Task is not leased again, so there is one accepted decision
+per Task even if earlier attempts produced different model responses. The acceptance record
+and decision evidence ID are the replay path for driver restarts; orphan evidence may remain
+after a crash before completion and is not treated as an accepted decision.
 
-The driver is idempotent by construction: `Assess` returns the stored result for a
-byte-identical request, so a case already in its target state is not re-transitioned, and
-`AcceptTask` is a guarded `AWAITING_VERIFICATION → SUCCEEDED` transition. The reviewer is
-idempotent by content hash, as described above.
+The driver checks for an existing acceptance before retrying `AcceptTask`, which is a
+guarded `AWAITING_VERIFICATION → SUCCEEDED` transition. `Assess` returns the stored result
+for a byte-identical request; the driver reuses the same evidence IDs and request fields on
+replay. The reviewer skips decisions already linked to a verdict for its version and the
+case state it observed.
 
 ## Testing
 
 `internal/ghtriage` is tested with no network: `fakemodel` and a real store.
 
-Stage 1 and stage 3 are pure functions and are tested as tables over snapshots. Stage 2 is
-tested through `fakemodel`, which records the `Stage2Input` it received, so the tests assert
-on the exact prepared document and on the fixed question literal. The model adapter is
-tested against a stubbed CLI emitting malformed, non-JSON and multi-object output.
+Stage 1 and stage 3 are pure functions and are tested as tables over snapshots. Stage 1
+tests distinguish an explicit single duplicate label from a bare `#N`, a self-reference,
+and conflicting duplicate labels; the bare reference must never resolve as `duplicate`.
+Stage 2 is tested through `fakemodel`, which records the `Stage2Input` it received. The
+tests assert on the exact prepared document and on the fixed question literal. The model
+adapter is tested against a stubbed CLI emitting malformed, non-JSON and multi-object output.
 
 The driver is tested for transitions, reasons, idempotency of both the `Assess` replay and
-`AcceptTask`, Task acceptance, and supersession. The executor is tested against a real Task
-and a real store, following the publish executor and ADO driver tests; note that intake
-registers no executor at all (`openGHIntakeBox` sets `cfg.Executors = nil`), so there is no
-intake executor test to imitate.
+`AcceptTask`, Task acceptance, and supersession. The tests cover an old Task in each state
+in the supersession table, a lease racing with the conditional challenge, and a restart
+between Task acceptance and case assessment. They also verify that two invalid model
+responses fail an attempt without fabricating a decision, repeated failures block both
+Task and case with failure evidence, and only an accepted `ready-to-plan` decision leaves a
+triaged case `ACTIVE`. The future planner must test its latest-revision guard when built.
+The executor is tested against a real Task and a real store, following the publish executor
+and ADO driver tests; note that intake registers no executor at all (`openGHIntakeBox` sets
+`cfg.Executors = nil`), so there is no intake executor test to imitate.
 
 The reviewer is tested against deliberately injected inconsistencies — a stage 3 rule that
 does not match a recomputation, a case state that contradicts its disposition, a stage 2
 present although stage 1 was decisive, a classification that disagrees with the payload, a
 missing schema field, a correctly superseded case, a record with a future rules version — and
-for producing exactly one verdict across two ticks, a second verdict when the first differs,
-and no verdict at all when the model call fails.
+for making no second model call or verdict on a later tick while the case state is unchanged.
+A later supersession creates a new fingerprint and review. A failed model call leaves no
+index row and is retried; concurrent ticks link at most one verdict for the same decision,
+reviewer version and state fingerprint.
 
 Capability advertisement and routing are covered by extending
 `TestNextClaimsGitHubIssueTriageWithEnforcedReadCapability`
