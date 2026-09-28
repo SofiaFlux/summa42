@@ -136,7 +136,7 @@ func (s *Service) ChooseExecutor(ctx context.Context, task domain.Task, eligible
 		}
 		preferred = strings.TrimSpace(preferred)
 		if _, ok := set[preferred]; !ok {
-			return "", fmt.Errorf("learned preference returned ineligible executor %q", preferred)
+			return "", fmt.Errorf("executor preference returned ineligible executor %q", preferred)
 		}
 		return preferred, nil
 	}
