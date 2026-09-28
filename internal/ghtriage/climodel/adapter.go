@@ -89,7 +89,7 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 		// before this branch existed that text reached the caller, so dropping
 		// it here would make a timeout quieter than a plain crash.
 		if runCtx.Err() != nil {
-			return nil, fmt.Errorf("%w: %s", runCtx.Err(), stderr.String())
+			return nil, fmt.Errorf("model invocation timed out: %w: %s", runCtx.Err(), stderr.String())
 		}
 		return nil, fmt.Errorf("model invocation failed: %w: %s", err, stderr.String())
 	}

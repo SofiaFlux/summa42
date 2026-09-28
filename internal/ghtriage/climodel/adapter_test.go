@@ -52,6 +52,7 @@ func TestClassifyRequiresExactlyOneJSONObject(t *testing.T) {
 		{"not json", "I cannot answer that", true},
 		{"wrong field type", `{"is_actionable":"yes"}`, true},
 		{"unknown field", `{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"x","severity":"high"}`, true},
+		{"model supplied a disposition", `{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"x","disposition":"ready-to-plan"}`, true},
 		{"missing rationale", `{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug"}`, true},
 		{"blank rationale", `{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"   "}`, true},
 		{"scope outside the vocabulary", `{"is_actionable":true,"needs_repro":false,"scope":"enormous","suggested_type":"bug","rationale":"x"}`, true},
