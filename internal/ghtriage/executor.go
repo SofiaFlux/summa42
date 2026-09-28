@@ -21,6 +21,11 @@ const (
 	// stage2Attempts bounds the classifier to one retry inside a single lease.
 	// An unbounded retry turns one poisoned issue into an infinite budget burn.
 	stage2Attempts = 2
+
+	// snapshotEvidenceKind is the kind ghissue.observe writes the canonical
+	// issue snapshot under, and the only kind this executor reads. A decision
+	// cites the snapshot it was derived from, so the cited object has to be one.
+	snapshotEvidenceKind = "github.issue.snapshot"
 )
 
 type triagePayload struct {
@@ -53,7 +58,7 @@ func (e *Executor) Start(ctx context.Context, envelope executors.AttemptEnvelope
 	if err != nil {
 		return executors.ExecutionResult{}, err
 	}
-	snap, err := e.loadSnapshot(ctx, payload.SnapshotEvidenceID)
+	snap, err := e.loadSnapshot(ctx, payload)
 	if err != nil {
 		return executors.ExecutionResult{}, err
 	}
@@ -114,19 +119,28 @@ func (e *Executor) classify(ctx context.Context, input Stage2Input) (Stage2Outpu
 			lastErr = parseErr
 			continue
 		}
-		lastErr = err
-		if ctx.Err() != nil {
-			return Stage2Output{}, ctx.Err()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Stage2Output{}, fmt.Errorf("stage 2 aborted, lease %s: %w", ctxErr, err)
 		}
+		lastErr = err
 	}
 	return Stage2Output{}, fmt.Errorf(
 		"stage 2 produced no conforming response after %d attempts: %w", stage2Attempts, lastErr)
 }
 
-func (e *Executor) loadSnapshot(ctx context.Context, id domain.ID) (Snapshot, error) {
-	_, raw, err := e.evidence.Get(ctx, id)
+// loadSnapshot reads the one evidence object the payload cites and proves it is
+// that object: the right kind, canonical, and about the issue the task names.
+// The decision's repository and issue are copied from the payload, not from the
+// snapshot, so a snapshot of some other issue would otherwise produce a decision
+// whose own fields contradict the snapshot evidence id it cites.
+func (e *Executor) loadSnapshot(ctx context.Context, payload triagePayload) (Snapshot, error) {
+	id := payload.SnapshotEvidenceID
+	object, raw, err := e.evidence.Get(ctx, id)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load issue snapshot %s: %w", id, err)
+	}
+	if object.Kind != snapshotEvidenceKind {
+		return Snapshot{}, fmt.Errorf("evidence %s is a %q, not an issue snapshot", id, object.Kind)
 	}
 	var snap Snapshot
 	if err := json.Unmarshal(raw, &snap); err != nil {
@@ -134,6 +148,10 @@ func (e *Executor) loadSnapshot(ctx context.Context, id domain.ID) (Snapshot, er
 	}
 	if snap.Repo == "" || snap.Issue <= 0 {
 		return Snapshot{}, fmt.Errorf("evidence %s is not a canonical issue snapshot", id)
+	}
+	if snap.Repo != payload.Repository || snap.Issue != payload.Issue {
+		return Snapshot{}, fmt.Errorf("evidence %s is a snapshot of %s#%d, but the task payload names %s#%d",
+			id, snap.Repo, snap.Issue, payload.Repository, payload.Issue)
 	}
 	return snap, nil
 }
