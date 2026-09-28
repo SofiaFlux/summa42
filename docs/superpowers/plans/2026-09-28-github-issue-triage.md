@@ -2476,23 +2476,318 @@ blocked history and the reviewer needs superseded cases."
 
 - [ ] **Step 6: Write the failing driver test**
 
-Create `internal/ghtriage/driver_test.go`. The fixture registers a real case and a real `github.issue.triage` Task through `workflowcase.EnsureAndMaterialize` with a real snapshot evidence object, then holds the store, every service, the clock, the mission, the case and the task. Build it the way `internal/ghissue/observe_test.go` builds its own fixture.
+Create `internal/ghtriage/driver_test.go` with the fixture below, then the tests. The fixture registers a real case and a real `github.issue.triage` Task through `EnsureAndMaterialize`, so the driver runs against the same services production uses.
 
-The fixture must expose these helpers, each implemented against the real services:
+```go
+package ghtriage_test
 
-- `newDriverFixture(t) *driverFixture`
-- `completeTaskWithDecision(t, revision string, decision Decision)` — stores the snapshot, leases one attempt, writes the decision evidence through `evidence.Store.Put`, then calls `verificationSvc.CompleteAttempt` with that evidence ID so the task reaches `AWAITING_VERIFICATION`
-- `failTaskTwice(t, revision string)` — drives `executionSvc.FailAttempt` twice with the same signature so the task reaches `TaskBlocked`
-- `registerRevision(t, revision string)` — calls `EnsureAndMaterialize` again for the same issue at another revision
-- `caseState(t, revision)`, `taskState(t, revision)`
-- `latestAssessmentReason(t, revision) string`
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
 
-The tests:
+	"github.com/SofiaFlux/summa42/internal/clock"
+	"github.com/SofiaFlux/summa42/internal/domain"
+	"github.com/SofiaFlux/summa42/internal/evidence"
+	"github.com/SofiaFlux/summa42/internal/execution"
+	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/purpose"
+	"github.com/SofiaFlux/summa42/internal/runmanifest"
+	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
+	"github.com/SofiaFlux/summa42/internal/testutil"
+	"github.com/SofiaFlux/summa42/internal/verification"
+	"github.com/SofiaFlux/summa42/internal/workflow"
+	"github.com/SofiaFlux/summa42/internal/workflowcase"
+)
+
+const (
+	fixtureIssue    = "o/r#42"
+	fixtureRevision = "2026-09-28T10:00:00Z"
+)
+
+type driverFixture struct {
+	ctx           context.Context
+	store         *state.Store
+	clock         clock.Clock
+	cases         *workflowcase.Service
+	execSvc       *execution.Service
+	verifSvc      *verification.Service
+	manifests     *runmanifest.Service
+	evidenceStore *evidence.Store
+	driver        *ghtriage.Driver
+	missionID     domain.ID
+	envelope      domain.ID
+	casesByRev    map[string]workflowcase.Case
+	tasksByRev    map[string]domain.Task
+}
+
+func newDriverFixture(t *testing.T) *driverFixture {
+	t.Helper()
+	ctx := context.Background()
+	store := testutil.OpenStore(t)
+	clk := testutil.NewClock(time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC))
+	purposes := purpose.New(store, clk)
+	execSvc := execution.New(store, clk, purposes)
+	verifSvc := verification.New(store, clk, execSvc)
+	manifests := runmanifest.New(store, runmanifest.StaticContext{})
+	evidenceStore, err := evidence.New(store, t.TempDir(), clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := workflowcase.New(store, clk, purposes)
+	mission, err := purposes.CreateMission(ctx, "triage issues")
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := domain.NewID("envelope")
+	if _, err := store.DB().ExecContext(ctx,
+		`INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at) VALUES (?, ?, ?)`,
+		envelope, 100, clk.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	return &driverFixture{
+		ctx: ctx, store: store, clock: clk, cases: cases, execSvc: execSvc, verifSvc: verifSvc,
+		manifests: manifests, evidenceStore: evidenceStore,
+		driver:    ghtriage.NewDriver(cases, execSvc, verifSvc, manifests, evidenceStore, clk),
+		missionID: mission, envelope: envelope,
+		casesByRev: map[string]workflowcase.Case{},
+		tasksByRev: map[string]domain.Task{},
+	}
+}
+
+// registerRevision materializes the case and its triage Task for one revision.
+func (f *driverFixture) registerRevision(t *testing.T, revision string) {
+	t.Helper()
+	snapshot := ghtriage.Snapshot{
+		Repo: "o/r", Issue: 42, Title: "Crash on save", Body: "it crashes",
+		Author: "maintainer", Labels: []string{"bug"}, Triage: "bug", UpdatedAt: revision,
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotObject, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
+		MediaType: "application/json", Kind: "github.issue.snapshot",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdCase, task, err := f.cases.EnsureAndMaterialize(f.ctx, f.execSvc,
+		workflowcase.Observation{
+			MissionID: f.missionID, Source: ghtriage.SourceGitHub, ObjectID: fixtureIssue,
+			RevisionID: revision, EvidenceID: snapshotObject.ID,
+			FirstWork: workflow.WorkProposal{
+				Kind: ghtriage.TaskClass,
+				RequiredCapabilities: []string{ghtriage.RequiredCapability},
+				AuthorityCeiling:     []string{ghtriage.RequiredCapability},
+				ProposedActions:      []string{"github.issue.read"},
+			},
+			Grant:           workflow.Grant{Capabilities: []string{ghtriage.RequiredCapability}},
+			MaxSteps:        3,
+			RemainingBudget: 10,
+		},
+		execution.TaskRequest{
+			Purpose:              domain.PurposeRef{Kind: domain.PurposeMission, ID: f.missionID},
+			TaskClass:            ghtriage.TaskClass,
+			Objective:            "Triage " + fixtureIssue,
+			AcceptanceCriteria:   []string{"triage decision recorded for " + revision},
+			RequiredCapabilities: []string{ghtriage.RequiredCapability},
+			RequiredEnforcement:  domain.EnforcementEnforced,
+			AuthorityCeiling:     []string{ghtriage.RequiredCapability},
+			ResourceEnvelopeID:   f.envelope,
+			IdempotencyKey:       "triage-" + revision,
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.casesByRev[revision] = createdCase
+	f.tasksByRev[revision] = task
+}
+
+// completeTaskWithDecision drives the task to AWAITING_VERIFICATION exactly as
+// the worker does: one attempt, the decision written as output evidence, then
+// CompleteAttempt.
+func (f *driverFixture) completeTaskWithDecision(t *testing.T, revision string, decision ghtriage.Decision) {
+	t.Helper()
+	if _, ok := f.casesByRev[revision]; !ok {
+		f.registerRevision(t, revision)
+	}
+	task := f.tasksByRev[revision]
+	attempt, err := f.execSvc.StartAttempt(f.ctx, task.ID, ghtriage.ExecutorKind, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision.SnapshotEvidenceID = f.snapshotEvidenceID(t, revision)
+	raw, err := decision.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
+		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindDecision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.verifSvc.CompleteAttempt(f.ctx, attempt.ID, verification.CompletionManifest{
+		EvidenceIDs: []domain.ID{object.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *driverFixture) snapshotEvidenceID(t *testing.T, revision string) string {
+	t.Helper()
+	object, found, err := f.evidenceStore.FindLatestByKind(f.ctx, "github.issue.snapshot", &struct {
+		Repo      string `json:"repo"`
+		UpdatedAt string `json:"updatedAt"`
+	}{UpdatedAt: revision}, 10)
+	if err != nil || !found {
+		t.Fatalf("snapshot for revision %s: found=%v err=%v", revision, found, err)
+	}
+	return string(object.ID)
+}
+
+// failTaskTwice drives the task to TaskBlocked, which FailAttempt does on the
+// second failure carrying the same signature.
+func (f *driverFixture) failTaskTwice(t *testing.T, revision string) {
+	t.Helper()
+	if _, ok := f.casesByRev[revision]; !ok {
+		f.registerRevision(t, revision)
+	}
+	task := f.tasksByRev[revision]
+	for i := 0; i < 2; i++ {
+		attempt, err := f.execSvc.StartAttempt(f.ctx, task.ID, ghtriage.ExecutorKind, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.execSvc.FailAttempt(f.ctx, attempt.ID, domain.FailureExecution, "ghtriage:stage2", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// simulateRestartAfterAcceptance accepts the task itself and stops, leaving the
+// case ACTIVE. That is the crash window the driver must recover from, and it is
+// why the driver keeps its own accepted index.
+func (f *driverFixture) simulateRestartAfterAcceptance(t *testing.T, revision string) {
+	t.Helper()
+	task := f.tasksByRev[revision]
+	createdCase := f.casesByRev[revision]
+	attempt, err := f.execSvc.StartAttempt(f.ctx, task.ID, ghtriage.ExecutorKind, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := notActionableDecision(revision)
+	decision.SnapshotEvidenceID = f.snapshotEvidenceID(t, revision)
+	raw, err := decision.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
+		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindDecision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acceptedRaw, err := json.Marshal(map[string]any{
+		"schema": "github.issue.triage.accepted.v1", "case_id": createdCase.ID,
+		"task_id": task.ID, "revision": revision, "decision_evidence_id": object.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(acceptedRaw)), evidence.Metadata{
+		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.verifSvc.CompleteAttempt(f.ctx, attempt.ID, verification.CompletionManifest{
+		EvidenceIDs: []domain.ID{object.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.verifSvc.AcceptTask(f.ctx, task.ID, verification.AcceptanceRequest{
+		VerifierID: ghtriage.DriverVerifierID, VerifierType: ghtriage.DriverVerifierType,
+		CriteriaMet: true, EvidenceIDs: []domain.ID{object.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *driverFixture) caseState(t *testing.T, revision string) string {
+	t.Helper()
+	createdCase, err := f.cases.Get(f.ctx, f.casesByRev[revision].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(createdCase.State)
+}
+
+func (f *driverFixture) taskState(t *testing.T, revision string) string {
+	t.Helper()
+	task, err := f.execSvc.Task(f.ctx, f.tasksByRev[revision].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(task.State)
+}
+
+func (f *driverFixture) latestAssessmentReason(t *testing.T, revision string) string {
+	t.Helper()
+	records, err := f.cases.ListAssessments(f.ctx, f.casesByRev[revision].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) == 0 {
+		return ""
+	}
+	var result workflowcase.AssessmentResult
+	if err := json.Unmarshal([]byte(records[len(records)-1].ResultJSON), &result); err != nil {
+		t.Fatal(err)
+	}
+	return result.Decision.Reason
+}
+
+func (f *driverFixture) hasEvidenceKind(t *testing.T, kind string) bool {
+	t.Helper()
+	var n int
+	if err := f.store.DB().QueryRowContext(f.ctx,
+		`SELECT count(*) FROM evidence_objects WHERE kind = ?`, kind).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n > 0
+}
+
+func notActionableDecision(revision string) ghtriage.Decision {
+	return ghtriage.Decision{
+		Schema: ghtriage.DecisionSchema, Repository: "o/r", Issue: 42, Revision: revision,
+		TriageRulesVersion: ghtriage.TriageRulesVersion, DispositionRulesVersion: ghtriage.DispositionRulesVersion,
+		Stage1: ghtriage.Stage1Result{Triage: ghtriage.TriageBug, Signals: []string{"has-repro"}},
+		Stage2: &ghtriage.Stage2Output{IsActionable: false, Scope: ghtriage.ScopeSmall, Rationale: "no defect described"},
+		Stage3: &ghtriage.Stage3Result{Disposition: ghtriage.DispositionNotActionable, Rule: "not-actionable"},
+	}
+}
+
+func readyToPlanDecision(revision string) ghtriage.Decision {
+	return ghtriage.Decision{
+		Schema: ghtriage.DecisionSchema, Repository: "o/r", Issue: 42, Revision: revision,
+		TriageRulesVersion: ghtriage.TriageRulesVersion, DispositionRulesVersion: ghtriage.DispositionRulesVersion,
+		Stage1: ghtriage.Stage1Result{Triage: ghtriage.TriageBug, Signals: []string{"has-repro"}},
+		Stage2: &ghtriage.Stage2Output{IsActionable: true, Scope: ghtriage.ScopeSmall, Rationale: "enough detail"},
+		Stage3: &ghtriage.Stage3Result{Disposition: ghtriage.DispositionReadyToPlan, Rule: "actionable-without-repro-small-or-medium"},
+	}
+}
+```
+
+Append these tests to the same file:
 
 ```go
 func TestDriverAcceptsThenBlocksNotActionable(t *testing.T) {
 	f := newDriverFixture(t)
-	f.completeTaskWithDecision(t, "2026-09-28T10:00:00Z", notActionableDecision("2026-09-28T10:00:00Z"))
+	f.completeTaskWithDecision(t, fixtureRevision, notActionableDecision(fixtureRevision))
 
 	result, err := f.driver.Tick(context.Background(), f.missionID)
 	if err != nil {
@@ -2501,35 +2796,35 @@ func TestDriverAcceptsThenBlocksNotActionable(t *testing.T) {
 	if result.Accepted != 1 || result.Assessed != 1 {
 		t.Fatalf("result = %+v, want one acceptance and one assessment", result)
 	}
-	if got := f.caseState(t, "2026-09-28T10:00:00Z"); got != "BLOCKED" {
+	if got := f.caseState(t, fixtureRevision); got != "BLOCKED" {
 		t.Fatalf("case state = %q, want BLOCKED", got)
 	}
-	if got := f.taskState(t, "2026-09-28T10:00:00Z"); got != "SUCCEEDED" {
+	if got := f.taskState(t, fixtureRevision); got != "SUCCEEDED" {
 		t.Fatalf("task state = %q, want SUCCEEDED", got)
 	}
-	if got := f.latestAssessmentReason(t, "2026-09-28T10:00:00Z"); got != "not-actionable" {
+	if got := f.latestAssessmentReason(t, fixtureRevision); got != "not-actionable" {
 		t.Fatalf("assessment reason = %q, want not-actionable", got)
 	}
 }
 
 func TestDriverAcceptsAndLeavesReadyToPlanActive(t *testing.T) {
 	f := newDriverFixture(t)
-	f.completeTaskWithDecision(t, "2026-09-28T10:00:00Z", readyToPlanDecision("2026-09-28T10:00:00Z"))
+	f.completeTaskWithDecision(t, fixtureRevision, readyToPlanDecision(fixtureRevision))
 
 	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.caseState(t, "2026-09-28T10:00:00Z"); got != "ACTIVE" {
+	if got := f.caseState(t, fixtureRevision); got != "ACTIVE" {
 		t.Fatalf("case state = %q, want ACTIVE", got)
 	}
-	if got := f.taskState(t, "2026-09-28T10:00:00Z"); got != "SUCCEEDED" {
+	if got := f.taskState(t, fixtureRevision); got != "SUCCEEDED" {
 		t.Fatalf("task state = %q, want SUCCEEDED", got)
 	}
 }
 
 func TestDriverIsIdempotentAcrossTicks(t *testing.T) {
 	f := newDriverFixture(t)
-	f.completeTaskWithDecision(t, "2026-09-28T10:00:00Z", notActionableDecision("2026-09-28T10:00:00Z"))
+	f.completeTaskWithDecision(t, fixtureRevision, notActionableDecision(fixtureRevision))
 
 	first, err := f.driver.Tick(context.Background(), f.missionID)
 	if err != nil {
@@ -2549,7 +2844,7 @@ func TestDriverIsIdempotentAcrossTicks(t *testing.T) {
 
 func TestDriverBlocksAnExhaustedTaskWithFailureEvidence(t *testing.T) {
 	f := newDriverFixture(t)
-	f.failTaskTwice(t, "2026-09-28T10:00:00Z")
+	f.failTaskTwice(t, fixtureRevision)
 
 	result, err := f.driver.Tick(context.Background(), f.missionID)
 	if err != nil {
@@ -2558,11 +2853,11 @@ func TestDriverBlocksAnExhaustedTaskWithFailureEvidence(t *testing.T) {
 	if result.Blocked != 1 {
 		t.Fatalf("result = %+v, want one blocked case", result)
 	}
-	if got := f.caseState(t, "2026-09-28T10:00:00Z"); got != "BLOCKED" {
+	if got := f.caseState(t, fixtureRevision); got != "BLOCKED" {
 		t.Fatalf("case state = %q, want BLOCKED", got)
 	}
-	if got := f.latestAssessmentReason(t, "2026-09-28T10:00:00Z"); got != "triage-failed" {
-		t.Fatalf("assessment reason = %q, want triage-failed", got)
+	if got := f.latestAssessmentReason(t, fixtureRevision); got != ghtriage.ReasonTriageFailed {
+		t.Fatalf("assessment reason = %q, want %q", got, ghtriage.ReasonTriageFailed)
 	}
 	if !f.hasEvidenceKind(t, ghtriage.KindFailure) {
 		t.Fatal("no failure evidence was written")
@@ -2570,9 +2865,10 @@ func TestDriverBlocksAnExhaustedTaskWithFailureEvidence(t *testing.T) {
 }
 
 func TestDriverSupersedesAnOlderRevisionAndChallengesItsPendingTask(t *testing.T) {
+	older := "2026-09-28T09:00:00Z"
 	f := newDriverFixture(t)
-	f.registerRevision(t, "2026-09-28T09:00:00Z")
-	f.completeTaskWithDecision(t, "2026-09-28T10:00:00Z", readyToPlanDecision("2026-09-28T10:00:00Z"))
+	f.registerRevision(t, older)
+	f.completeTaskWithDecision(t, fixtureRevision, readyToPlanDecision(fixtureRevision))
 
 	result, err := f.driver.Tick(context.Background(), f.missionID)
 	if err != nil {
@@ -2581,44 +2877,41 @@ func TestDriverSupersedesAnOlderRevisionAndChallengesItsPendingTask(t *testing.T
 	if result.Superseded != 1 {
 		t.Fatalf("result = %+v, want one superseded revision", result)
 	}
-	if got := f.taskState(t, "2026-09-28T09:00:00Z"); got != "CHALLENGED" {
+	if got := f.taskState(t, older); got != "CHALLENGED" {
 		t.Fatalf("older task state = %q, want CHALLENGED", got)
 	}
-	if got := f.caseState(t, "2026-09-28T09:00:00Z"); got != "BLOCKED" {
+	if got := f.caseState(t, older); got != "BLOCKED" {
 		t.Fatalf("older case state = %q, want BLOCKED", got)
 	}
-	if got := f.caseState(t, "2026-09-28T10:00:00Z"); got != "ACTIVE" {
+	if got := f.caseState(t, fixtureRevision); got != "ACTIVE" {
 		t.Fatalf("newer case state = %q, want ACTIVE", got)
 	}
-	if got := f.latestAssessmentReason(t, "2026-09-28T09:00:00Z"); got != "superseded-by:2026-09-28T10:00:00Z" {
+	if got := f.latestAssessmentReason(t, older); got != "superseded-by:"+fixtureRevision {
 		t.Fatalf("assessment reason = %q", got)
 	}
 }
 
 func TestDriverComparesRevisionsAsTimesNotStrings(t *testing.T) {
+	older, newer := "2026-09-29T09:00:00Z", "2026-10-01T09:00:00Z"
 	f := newDriverFixture(t)
-	// 2026-09-28T09:00:00Z sorts after 2026-09-28T10:00:00Z as a string only
-	// if the month digit differed; a lexicographic comparison would pick the
-	// wrong newest revision here.
-	f.registerRevision(t, "2026-09-29T09:00:00Z")
-	f.registerRevision(t, "2026-10-01T09:00:00Z")
-	f.completeTaskWithDecision(t, "2026-10-01T09:00:00Z", readyToPlanDecision("2026-10-01T09:00:00Z"))
+	f.registerRevision(t, older)
+	f.registerRevision(t, newer)
+	f.completeTaskWithDecision(t, newer, readyToPlanDecision(newer))
 
 	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.caseState(t, "2026-10-01T09:00:00Z"); got != "ACTIVE" {
+	if got := f.caseState(t, newer); got != "ACTIVE" {
 		t.Fatalf("newest case state = %q, want ACTIVE", got)
 	}
-	if got := f.caseState(t, "2026-09-29T09:00:00Z"); got != "BLOCKED" {
+	if got := f.caseState(t, older); got != "BLOCKED" {
 		t.Fatalf("older case state = %q, want BLOCKED", got)
 	}
 }
 
 func TestDriverRecoversWhenTheTaskIsAcceptedButTheCaseIsNot(t *testing.T) {
 	f := newDriverFixture(t)
-	f.completeTaskWithDecision(t, "2026-09-28T10:00:00Z", notActionableDecision("2026-09-28T10:00:00Z"))
-	f.simulateRestartAfterAcceptance(t, "2026-09-28T10:00:00Z")
+	f.simulateRestartAfterAcceptance(t, fixtureRevision)
 
 	result, err := f.driver.Tick(context.Background(), f.missionID)
 	if err != nil {
@@ -2627,35 +2920,11 @@ func TestDriverRecoversWhenTheTaskIsAcceptedButTheCaseIsNot(t *testing.T) {
 	if result.Assessed != 1 {
 		t.Fatalf("result = %+v, want the assessment completed on the later tick", result)
 	}
-	if got := f.caseState(t, "2026-09-28T10:00:00Z"); got != "BLOCKED" {
+	if got := f.caseState(t, fixtureRevision); got != "BLOCKED" {
 		t.Fatalf("case state = %q, want BLOCKED", got)
 	}
 }
-
-func notActionableDecision(revision string) ghtriage.Decision {
-	return ghtriage.Decision{
-		Schema: ghtriage.DecisionSchema, Repository: "o/r", Issue: 42, Revision: revision,
-		SnapshotEvidenceID: "evidence-snapshot", TriageRulesVersion: ghtriage.TriageRulesVersion,
-		DispositionRulesVersion: ghtriage.DispositionRulesVersion,
-		Stage1: ghtriage.Stage1Result{Triage: ghtriage.TriageBug, Signals: []string{"has-repro"}},
-		Stage2: &ghtriage.Stage2Output{IsActionable: false, Scope: ghtriage.ScopeSmall, Rationale: "no defect described"},
-		Stage3: &ghtriage.Stage3Result{Disposition: ghtriage.DispositionNotActionable, Rule: "not-actionable"},
-	}
-}
-
-func readyToPlanDecision(revision string) ghtriage.Decision {
-	return ghtriage.Decision{
-		Schema: ghtriage.DecisionSchema, Repository: "o/r", Issue: 42, Revision: revision,
-		SnapshotEvidenceID: "evidence-snapshot", TriageRulesVersion: ghtriage.TriageRulesVersion,
-		DispositionRulesVersion: ghtriage.DispositionRulesVersion,
-		Stage1: ghtriage.Stage1Result{Triage: ghtriage.TriageBug, Signals: []string{"has-repro"}},
-		Stage2: &ghtriage.Stage2Output{IsActionable: true, Scope: ghtriage.ScopeSmall, Rationale: "enough detail"},
-		Stage3: &ghtriage.Stage3Result{Disposition: ghtriage.DispositionReadyToPlan, Rule: "actionable-without-repro-small-or-medium"},
-	}
-}
 ```
-
-`simulateRestartAfterAcceptance` accepts the task through `verificationSvc.AcceptTask` itself and stops, leaving the case `ACTIVE`. That is exactly the crash window the driver must recover from, and it is the reason the driver keeps its own `github.issue.triage.accepted` evidence: the fixture can then delete nothing and rely on that record.
 
 - [ ] **Step 7: Run the driver test to verify it fails**
 
@@ -3301,134 +3570,312 @@ Expected: PASS, including the migration roundtrip test.
 
 - [ ] **Step 2: Write the failing reviewer test**
 
-Create `internal/ghtriage/reviewer_test.go`. The fixture registers a case and a task with a real accepted decision the way the driver fixture does, and exposes `model`, `reviewer`, `missionID`, `verdictCount(t)`, `lastVerdict(t)` and `corruptStage3Rule(t, rule)`. Implement `verdictCount` by counting evidence of kind `github.issue.triage.review` through the store, and `corruptStage3Rule` by loading the stored decision evidence, changing `Stage3.Rule`, storing a new object, and repointing the driver's accepted index at it.
+Create `internal/ghtriage/reviewer_test.go`. The fixture registers a case and a task with a real accepted decision, so the reviewer reads genuine stored evidence rather than a hand-built struct.
+
+```go
+package ghtriage_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/SofiaFlux/summa42/internal/domain"
+	"github.com/SofiaFlux/summa42/internal/evidence"
+	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/ghtriage/fakemodel"
+	"github.com/SofiaFlux/summa42/internal/workflow"
+	"github.com/SofiaFlux/summa42/internal/workflowcase"
+)
+
+type reviewerFixture struct {
+	driver *driverFixture
+	model  *fakemodel.Fake
+	review *ghtriage.Reviewer
+}
+
+func newReviewerFixture(t *testing.T) *reviewerFixture {
+	t.Helper()
+	f := newDriverFixture(t)
+	f.registerRevision(t, fixtureRevision)
+	// The driver must run once so the task is accepted and the case assessed;
+	// the reviewer reads state the driver produced.
+	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	model := fakemodel.New()
+	return &reviewerFixture{
+		driver: f,
+		model:  model,
+		review: ghtriage.NewReviewer(f.cases, f.evidenceStore, ghtriage.NewReviewIndex(f.store, f.clock), model, f.clock),
+	}
+}
+
+func (rf *reviewerFixture) verdictCount(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := rf.driver.store.DB().QueryRowContext(rf.driver.ctx,
+		`SELECT count(*) FROM evidence_objects WHERE kind = ?`, ghtriage.KindReview).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func (rf *reviewerFixture) reviewLinkCount(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := rf.driver.store.DB().QueryRowContext(rf.driver.ctx,
+		`SELECT count(*) FROM github_issue_triage_reviews`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func (rf *reviewerFixture) lastVerdict(t *testing.T) ghtriage.ReviewVerdict {
+	t.Helper()
+	var id string
+	if err := rf.driver.store.DB().QueryRowContext(rf.driver.ctx,
+		`SELECT verdict_evidence_id FROM github_issue_triage_reviews
+		 ORDER BY created_at DESC, decision_evidence_id DESC LIMIT 1`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := rf.driver.evidenceStore.Get(rf.driver.ctx, domain.ID(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var verdict ghtriage.ReviewVerdict
+	if err := json.Unmarshal(raw, &verdict); err != nil {
+		t.Fatal(err)
+	}
+	return verdict
+}
+
+// rewriteDecision stores a new decision document and repoints the driver's
+// accepted index at it, so the reviewer reads a tampered record.
+func (rf *reviewerFixture) rewriteDecision(t *testing.T, mutate func(*ghtriage.Decision)) {
+	t.Helper()
+	original := rf.driver.decisionFor(t, fixtureRevision)
+	mutate(&original)
+	raw, err := original.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, err := rf.driver.evidenceStore.Put(rf.driver.ctx, strings.NewReader(string(raw)), evidence.Metadata{
+		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindDecision,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf.driver.repointAccepted(t, fixtureRevision, object.ID)
+}
+
+func (rf *reviewerFixture) corruptStage3Rule(t *testing.T, rule string) {
+	t.Helper()
+	rf.rewriteDecision(t, func(d *ghtriage.Decision) { d.Stage3.Rule = rule })
+}
+
+// supersedeCase blocks the case with a superseded reason, which the reviewer
+// must treat as an allowed terminal state rather than a violation.
+func (rf *reviewerFixture) supersedeCase(t *testing.T) {
+	t.Helper()
+	createdCase := rf.driver.casesByRev[fixtureRevision]
+	task := rf.driver.tasksByRev[fixtureRevision]
+	if _, err := rf.driver.cases.Assess(rf.driver.ctx, workflowcase.AssessmentRequest{
+		CaseID: createdCase.ID, WorkID: task.ID,
+		Assessment: workflow.Assessment{
+			Verdict:     workflow.Unknown,
+			Reason:      "superseded-by:2026-09-29T09:00:00Z",
+			EvidenceIDs: []string{string(rf.driver.decisionEvidenceID(t))},
+		},
+		RemainingBudget: createdCase.RemainingBudget,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+```
+
+Add these two helpers to `driver_test.go`, next to the other fixture helpers, so the reviewer fixture can read and repoint the stored decision:
+
+```go
+// decisionFor loads the decision document the driver accepted for a revision.
+func (f *driverFixture) decisionFor(t *testing.T, revision string) ghtriage.Decision {
+	t.Helper()
+	_, raw, err := f.evidenceStore.Get(f.ctx, f.decisionEvidenceID(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decision ghtriage.Decision
+	if err := json.Unmarshal(raw, &decision); err != nil {
+		t.Fatal(err)
+	}
+	return decision
+}
+
+// decisionEvidenceID finds the decision evidence the driver recorded.
+func (f *driverFixture) decisionEvidenceID(t *testing.T) domain.ID {
+	t.Helper()
+	var id string
+	if err := f.store.DB().QueryRowContext(f.ctx,
+		`SELECT evidence_id FROM evidence_objects WHERE kind = ? ORDER BY created_at DESC, evidence_id DESC LIMIT 1`,
+		ghtriage.KindDecision).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return domain.ID(id)
+}
+
+// repointAccepted rewrites the driver's accepted index so it names a different
+// decision document, which is how a test injects a corrupted decision.
+func (f *driverFixture) repointAccepted(t *testing.T, revision string, decisionID domain.ID) {
+	t.Helper()
+	if _, err := f.store.DB().ExecContext(f.ctx,
+		`DELETE FROM evidence_objects WHERE kind = ?`, ghtriage.KindAccepted); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]any{
+		"schema": "github.issue.triage.accepted.v1", "case_id": f.casesByRev[revision].ID,
+		"task_id": f.tasksByRev[revision].ID, "revision": revision, "decision_evidence_id": decisionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
+		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+```
+
+Append the tests to `reviewer_test.go`:
 
 ```go
 func TestReviewerMakesNoSecondModelCallWhileTheCaseStateIsUnchanged(t *testing.T) {
-	f := newReviewerFixture(t)
-	f.model.ScriptedReview = []bool{true, true}
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true, true}
 
-	if _, err := f.reviewer.Tick(context.Background(), f.missionID); err != nil {
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	first := f.model.ReviewCallCount()
+	first := rf.model.ReviewCallCount()
 	if first != 1 {
 		t.Fatalf("model calls on the first tick = %d, want 1", first)
 	}
-	if _, err := f.reviewer.Tick(context.Background(), f.missionID); err != nil {
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.model.ReviewCallCount(); got != first {
+	if got := rf.model.ReviewCallCount(); got != first {
 		t.Fatalf("an unchanged case triggered %d extra model calls", got-first)
 	}
-	if got := f.verdictCount(t); got != 1 {
+	if got := rf.verdictCount(t); got != 1 {
 		t.Fatalf("verdict documents = %d, want exactly 1", got)
 	}
 }
 
 func TestReviewerReviewsAgainAfterSupersessionChangesTheFingerprint(t *testing.T) {
-	f := newReviewerFixture(t)
-	f.model.ScriptedReview = []bool{true, true}
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true, true}
 
-	if _, err := f.reviewer.Tick(context.Background(), f.missionID); err != nil {
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	f.supersedeCase(t)
-	if _, err := f.reviewer.Tick(context.Background(), f.missionID); err != nil {
+	rf.supersedeCase(t)
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.model.ReviewCallCount(); got != 2 {
+	if got := rf.model.ReviewCallCount(); got != 2 {
 		t.Fatalf("model calls = %d, want a second call after the fingerprint changed", got)
 	}
-	if got := f.verdictCount(t); got != 2 {
+	if got := rf.verdictCount(t); got != 2 {
 		t.Fatalf("verdict documents = %d, want 2", got)
 	}
 }
 
 func TestReviewerWritesNoVerdictAndNoIndexRowWhenTheModelFails(t *testing.T) {
-	f := newReviewerFixture(t)
-	f.model.Err = errors.New("model unavailable")
+	rf := newReviewerFixture(t)
+	rf.model.Err = errors.New("model unavailable")
 
-	result, err := f.reviewer.Tick(context.Background(), f.missionID)
+	result, err := rf.review.Tick(context.Background(), rf.driver.missionID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Failed != 1 {
 		t.Fatalf("result = %+v, want one failure", result)
 	}
-	if got := f.verdictCount(t); got != 0 {
+	if got := rf.verdictCount(t); got != 0 {
 		t.Fatalf("verdict documents = %d, want 0", got)
 	}
-	if got := f.reviewLinkCount(t); got != 0 {
+	if got := rf.reviewLinkCount(t); got != 0 {
 		t.Fatalf("review index rows = %d, want 0 so the next tick retries", got)
 	}
 }
 
 func TestReviewerReportsAnInjectedStage3Mismatch(t *testing.T) {
-	f := newReviewerFixture(t)
-	f.model.ScriptedReview = []bool{true}
-	f.corruptStage3Rule(t, "a-rule-that-does-not-match")
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+	rf.corruptStage3Rule(t, "a-rule-that-does-not-match")
 
-	if _, err := f.reviewer.Tick(context.Background(), f.missionID); err != nil {
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	verdict := f.lastVerdict(t)
-	if verdict.Structural.RuleMatchesRecomputation != "mismatch" {
-		t.Fatalf("recomputation = %q, want mismatch", verdict.Structural.RuleMatchesRecomputation)
+	if got := rf.lastVerdict(t).Structural.RuleMatchesRecomputation; got != "mismatch" {
+		t.Fatalf("recomputation = %q, want mismatch", got)
 	}
 }
 
 func TestReviewerReportsNotApplicableForAFutureRulesVersion(t *testing.T) {
-	f := newReviewerFixture(t)
-	f.model.ScriptedReview = []bool{true}
-	f.rewriteDecision(t, func(d *ghtriage.Decision) {
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+	rf.rewriteDecision(t, func(d *ghtriage.Decision) {
 		d.DispositionRulesVersion = "ghtriage.dispositions.v99"
 		d.Stage3 = &ghtriage.Stage3Result{Disposition: ghtriage.DispositionReadyToPlan, Rule: "a-future-rule"}
 	})
 
-	if _, err := f.reviewer.Tick(context.Background(), f.missionID); err != nil {
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.lastVerdict(t).Structural.RuleMatchesRecomputation; got != "not-applicable" {
+	if got := rf.lastVerdict(t).Structural.RuleMatchesRecomputation; got != "not-applicable" {
 		t.Fatalf("recomputation = %q, want not-applicable", got)
 	}
 }
 
 func TestReviewerAcceptsASupersededCaseAsAnAllowedTerminalState(t *testing.T) {
-	f := newReviewerFixture(t)
-	f.model.ScriptedReview = []bool{true}
-	f.supersedeCase(t)
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+	rf.supersedeCase(t)
 
-	if _, err := f.reviewer.Tick(context.Background(), f.missionID); err != nil {
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	verdict := f.lastVerdict(t)
+	verdict := rf.lastVerdict(t)
 	if !verdict.Structural.StateMatchesDisposition {
 		t.Fatalf("a correctly superseded case was reported as a violation: %+v", verdict.Structural)
 	}
 }
 
 func TestReviewerReportsAClassificationThatDisagreesWithIntake(t *testing.T) {
-	f := newReviewerFixture(t)
-	f.model.ScriptedReview = []bool{true}
-	f.rewriteDecision(t, func(d *ghtriage.Decision) { d.Stage1.Triage = ghtriage.TriageFeature })
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+	rf.rewriteDecision(t, func(d *ghtriage.Decision) { d.Stage1.Triage = ghtriage.TriageFeature })
 
-	if _, err := f.reviewer.Tick(context.Background(), f.missionID); err != nil {
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	if f.lastVerdict(t).Structural.ClassificationAgreesWithIntake {
+	if rf.lastVerdict(t).Structural.ClassificationAgreesWithIntake {
 		t.Fatal("a stage 1 triage that disagrees with the snapshot was accepted")
 	}
 }
 
 func TestReviewerRecordsTheDecisionAndTheStateItObserved(t *testing.T) {
-	f := newReviewerFixture(t)
-	f.model.ScriptedReview = []bool{true}
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
 
-	if _, err := f.reviewer.Tick(context.Background(), f.missionID); err != nil {
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	verdict := f.lastVerdict(t)
+	verdict := rf.lastVerdict(t)
 	if verdict.DecisionEvidenceID == "" {
 		t.Fatal("the verdict does not name the decision it reviewed")
 	}
