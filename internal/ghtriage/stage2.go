@@ -30,9 +30,10 @@ type Stage2Input struct {
 // BuildStage2Input prepares the only context the model ever sees. A
 // reproduction block that opens the body is removed, because stage 1 already
 // turned it into a signal, and both free-text fields are bounded. A leading
-// fenced block with no closing fence is the one exception and is kept as it
-// stands: with no safe cut point, stripping it to the end of the body would
-// discard the reporter's entire description.
+// block is one of the cases kept as it stands when it is fenced with backticks
+// and left unclosed, or fenced with anything other than backticks: with no safe
+// cut point, stripping it to the end of the body would discard the reporter's
+// entire description.
 func BuildStage2Input(snap Snapshot, signals []string) Stage2Input {
 	labels := append([]string(nil), snap.Labels...)
 	sort.Strings(labels)

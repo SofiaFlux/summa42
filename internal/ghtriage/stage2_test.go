@@ -7,13 +7,16 @@ import (
 	"unicode/utf8"
 )
 
+// The question is the whole prompt, so it is pinned here as text rather than
+// by comparing the input against the constant it is built from, which can
+// never differ. A shorter question, or one that loses its closing full stop,
+// fails this test.
 func TestStage2QuestionIsTheFixedLiteral(t *testing.T) {
+	const want = `Classify this issue. State whether it is actionable without further information from the reporter, whether it needs a reproduction before it can be planned, how large the change would be, and what type of work it is. Answer with JSON only.`
+
 	input := BuildStage2Input(snapshot(nil, "Crash", "boom", TriageBug), nil)
-	if input.Question != Stage2Question {
-		t.Fatalf("question = %q, want the fixed literal", input.Question)
-	}
-	if !strings.Contains(input.Question, "Answer with JSON only") {
-		t.Fatalf("the question does not constrain the response format: %q", input.Question)
+	if input.Question != want {
+		t.Fatalf("question = %q, want %q", input.Question, want)
 	}
 }
 
@@ -88,26 +91,22 @@ func TestBuildStage2InputBodyAtExactlyTheLimitIsNotTruncated(t *testing.T) {
 		t.Fatalf("a body of exactly 4000 runes was marked truncated: %q", input.BodyExcerpt)
 	}
 	if input.BodyExcerpt != body {
-		t.Fatalf("a body of exactly 4000 runes was altered: %d bytes, want %d",
-			len(input.BodyExcerpt), len(body))
+		t.Fatalf("a body of exactly 4000 runes was altered: %d runes, want %d, got %q",
+			len([]rune(input.BodyExcerpt)), len([]rune(body)), input.BodyExcerpt)
 	}
 }
 
 // Stage 1 and the decision document read the same snapshot, so sorting must not
-// reach back into the caller's slices.
+// reach back into the caller's slices. The sortedness of the returned slices
+// is covered by TestBuildStage2InputSortsLabelsAndSignals; what is unique here
+// is that the caller's own slices come back untouched.
 func TestBuildStage2InputDoesNotReorderTheCallersSlices(t *testing.T) {
 	labels := []string{"p1", "bug", "enhancement"}
 	signals := []string{"title:[bug]", "has-repro"}
 	snap := snapshot(labels, "t", "b", TriageBug)
 
-	input := BuildStage2Input(snap, signals)
+	BuildStage2Input(snap, signals)
 
-	if want := []string{"bug", "enhancement", "p1"}; !reflect.DeepEqual(input.Labels, want) {
-		t.Fatalf("labels = %v, want %v", input.Labels, want)
-	}
-	if want := []string{"has-repro", "title:[bug]"}; !reflect.DeepEqual(input.Signals, want) {
-		t.Fatalf("signals = %v, want %v", input.Signals, want)
-	}
 	if want := []string{"p1", "bug", "enhancement"}; !reflect.DeepEqual(labels, want) {
 		t.Fatalf("the caller's labels were reordered in place: %v, want %v", labels, want)
 	}
