@@ -42,9 +42,6 @@ const (
 	publishExecutorKind      = "ado-publish"
 	publishCommentCapability = "ado.pr.comment"
 	publishApproveCapability = "ado.pr.approve"
-
-	triageExecutorKind   = "github-issue-triage"
-	triageReadCapability = "github.issue.read"
 )
 
 type controlLifecycle interface {
@@ -506,9 +503,10 @@ func parseWorkerFlags(args []string) (pollInterval time.Duration, leaseDuration 
 }
 
 // triageModelConfig reads the model flags off any flag set, so run-worker,
-// run-gh-triage-driver and run-gh-triage-review agree on the model. The
-// configuration is only read here: climodel.New validates it, so an unusable
-// model is a startup error rather than a per-tick one.
+// run-gh-triage-driver and run-gh-triage-review agree on the model. A flag value
+// that cannot be honoured is a configuration mistake and stays a startup error:
+// the degradation in triageModelAdapter covers a model binary that is not on
+// PATH, never a flag that cannot be parsed.
 func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
 	binary := flags.Lookup("model-binary").Value.String()
 	timeout := flags.Lookup("model-timeout").Value.String()
@@ -516,7 +514,26 @@ func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
 	if err != nil {
 		return climodel.Config{}, fmt.Errorf("parse --model-timeout: %w", err)
 	}
+	if duration <= 0 {
+		return climodel.Config{}, fmt.Errorf("run-worker requires a positive --model-timeout, got %q", timeout)
+	}
 	return climodel.Config{Binary: binary, Timeout: duration}, nil
+}
+
+// triageModelAdapter builds the classifier the triage executor needs and reports
+// whether that executor can run here at all. A model binary that is not on PATH
+// is a missing optional dependency, not a misconfiguration: the box keeps
+// starting and keeps serving every other task, exactly as it does when
+// SUMMA42_COPILOT_PATH is unset. The caller registers no executor and no routing
+// entry in that case, so github.issue.read is never advertised and triage Tasks
+// stay unclaimed rather than being claimed by an executor that cannot run.
+func triageModelAdapter(modelConfig climodel.Config, stderr io.Writer) (*climodel.Adapter, bool) {
+	adapter, err := climodel.New(modelConfig)
+	if err != nil {
+		fmt.Fprintf(stderr, "executor kind %s is not registered: %v\n", ghtriage.ExecutorKind, err)
+		return nil, false
+	}
+	return adapter, true
 }
 
 func splitWorkspaceRootArg(args []string) (workspaceRoot string, rest []string, err error) {
@@ -554,8 +571,8 @@ func workerCapacity(box *summa42runtime.Box) (scheduler.CapacitySnapshot, error)
 			caps[capability] = scheduler.CapabilityCapacity{Accessible: true, Enforcement: domain.EnforcementEnforced}
 		}
 	}
-	if _, registered := caps[triageExecutorKind]; registered {
-		caps[triageReadCapability] = scheduler.CapabilityCapacity{Accessible: true, Enforcement: domain.EnforcementEnforced}
+	if _, registered := caps[ghtriage.ExecutorKind]; registered {
+		caps[ghtriage.RequiredCapability] = scheduler.CapabilityCapacity{Accessible: true, Enforcement: domain.EnforcementEnforced}
 	}
 	if len(caps) == 0 {
 		return scheduler.CapacitySnapshot{}, errors.New("run-worker has no schedulable capabilities: the Box executor registry is empty, so there is no capability source to advertise")
@@ -638,17 +655,18 @@ func runWorker(ctx context.Context, args []string) error {
 	if leaseDuration > 0 {
 		runtimeCfg.LeaseDuration = leaseDuration
 	}
-	classifier, err := climodel.New(modelConfig)
-	if err != nil {
-		return err
+	classifier, triageRegistered := triageModelAdapter(modelConfig, os.Stderr)
+	if triageRegistered {
+		runtimeCfg.TaskClassRouting = map[string]string{ghtriage.TaskClass: ghtriage.ExecutorKind}
 	}
-	runtimeCfg.TaskClassRouting = map[string]string{ghtriage.TaskClass: triageExecutorKind}
 	box, err := summa42runtime.Open(ctx, runtimeCfg)
 	if err != nil {
 		return fmt.Errorf("open Box runtime: %w", err)
 	}
 	defer box.Close()
-	box.Executors[triageExecutorKind] = ghtriage.NewExecutor(box.Evidence, classifier)
+	if triageRegistered {
+		box.Executors[ghtriage.ExecutorKind] = ghtriage.NewExecutor(box.Evidence, classifier)
+	}
 	if adoProvider != nil {
 		publisher, err := adoreview.NewPublisher(adoreview.PublishConfig{
 			Mode:           publishCfg.mode,
