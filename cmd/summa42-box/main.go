@@ -24,6 +24,8 @@ import (
 	"github.com/SofiaFlux/summa42/internal/feedbackgithub"
 	"github.com/SofiaFlux/summa42/internal/fieldfeedback"
 	"github.com/SofiaFlux/summa42/internal/ghissue"
+	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
 	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/SofiaFlux/summa42/internal/policy"
@@ -40,6 +42,9 @@ const (
 	publishExecutorKind      = "ado-publish"
 	publishCommentCapability = "ado.pr.comment"
 	publishApproveCapability = "ado.pr.approve"
+
+	triageExecutorKind   = "github-issue-triage"
+	triageReadCapability = "github.issue.read"
 )
 
 type controlLifecycle interface {
@@ -478,20 +483,40 @@ func main() {
 	}
 }
 
-func parseWorkerFlags(args []string) (pollInterval time.Duration, leaseDuration time.Duration, err error) {
+func parseWorkerFlags(args []string) (pollInterval time.Duration, leaseDuration time.Duration, modelConfig climodel.Config, err error) {
 	flags := flag.NewFlagSet("run-worker", flag.ContinueOnError)
 	flags.DurationVar(&pollInterval, "poll-interval", 30*time.Second, "interval between scheduler polls")
 	flags.DurationVar(&leaseDuration, "lease-duration", 0, "attempt lease duration (0 uses Box default)")
+	flags.String("model-binary", "codex", "model binary classifying a triage issue")
+	flags.String("model-timeout", "60s", "per-invocation model timeout")
 	if err := flags.Parse(args); err != nil {
-		return 0, 0, err
+		return 0, 0, climodel.Config{}, err
 	}
 	if pollInterval <= 0 {
-		return 0, 0, errors.New("run-worker requires a positive --poll-interval")
+		return 0, 0, climodel.Config{}, errors.New("run-worker requires a positive --poll-interval")
 	}
 	if leaseDuration < 0 {
-		return 0, 0, errors.New("run-worker requires a non-negative --lease-duration")
+		return 0, 0, climodel.Config{}, errors.New("run-worker requires a non-negative --lease-duration")
 	}
-	return pollInterval, leaseDuration, nil
+	modelConfig, err = triageModelConfig(flags)
+	if err != nil {
+		return 0, 0, climodel.Config{}, err
+	}
+	return pollInterval, leaseDuration, modelConfig, nil
+}
+
+// triageModelConfig reads the model flags off any flag set, so run-worker,
+// run-gh-triage-driver and run-gh-triage-review agree on the model. The
+// configuration is only read here: climodel.New validates it, so an unusable
+// model is a startup error rather than a per-tick one.
+func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
+	binary := flags.Lookup("model-binary").Value.String()
+	timeout := flags.Lookup("model-timeout").Value.String()
+	duration, err := time.ParseDuration(timeout)
+	if err != nil {
+		return climodel.Config{}, fmt.Errorf("parse --model-timeout: %w", err)
+	}
+	return climodel.Config{Binary: binary, Timeout: duration}, nil
 }
 
 func splitWorkspaceRootArg(args []string) (workspaceRoot string, rest []string, err error) {
@@ -529,6 +554,9 @@ func workerCapacity(box *summa42runtime.Box) (scheduler.CapacitySnapshot, error)
 			caps[capability] = scheduler.CapabilityCapacity{Accessible: true, Enforcement: domain.EnforcementEnforced}
 		}
 	}
+	if _, registered := caps[triageExecutorKind]; registered {
+		caps[triageReadCapability] = scheduler.CapabilityCapacity{Accessible: true, Enforcement: domain.EnforcementEnforced}
+	}
 	if len(caps) == 0 {
 		return scheduler.CapacitySnapshot{}, errors.New("run-worker has no schedulable capabilities: the Box executor registry is empty, so there is no capability source to advertise")
 	}
@@ -543,7 +571,7 @@ func runWorker(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	pollInterval, leaseDuration, err := parseWorkerFlags(rest)
+	pollInterval, leaseDuration, modelConfig, err := parseWorkerFlags(rest)
 	if err != nil {
 		return err
 	}
@@ -610,11 +638,17 @@ func runWorker(ctx context.Context, args []string) error {
 	if leaseDuration > 0 {
 		runtimeCfg.LeaseDuration = leaseDuration
 	}
+	classifier, err := climodel.New(modelConfig)
+	if err != nil {
+		return err
+	}
+	runtimeCfg.TaskClassRouting = map[string]string{ghtriage.TaskClass: triageExecutorKind}
 	box, err := summa42runtime.Open(ctx, runtimeCfg)
 	if err != nil {
 		return fmt.Errorf("open Box runtime: %w", err)
 	}
 	defer box.Close()
+	box.Executors[triageExecutorKind] = ghtriage.NewExecutor(box.Evidence, classifier)
 	if adoProvider != nil {
 		publisher, err := adoreview.NewPublisher(adoreview.PublishConfig{
 			Mode:           publishCfg.mode,

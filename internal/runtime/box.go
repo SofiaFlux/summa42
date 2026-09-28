@@ -16,9 +16,9 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/execution"
+	"github.com/SofiaFlux/summa42/internal/executors"
 	"github.com/SofiaFlux/summa42/internal/experience"
 	"github.com/SofiaFlux/summa42/internal/fieldfeedback"
-	"github.com/SofiaFlux/summa42/internal/executors"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
 	"github.com/SofiaFlux/summa42/internal/memory"
 	"github.com/SofiaFlux/summa42/internal/observability"
@@ -49,6 +49,7 @@ type Config struct {
 	CapabilityProviders []capabilities.Provider
 	Executors           map[string]executors.Executor
 	ExecutorPreference  scheduler.ExecutorPreference
+	TaskClassRouting    map[string]string
 	TEBProfile          teb.Profile
 	RuntimeVersion      string
 	RuntimeCommit       string
@@ -138,8 +139,8 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 
 	purposes := purpose.New(store, cfg.Clock)
 	runManifestSvc := runmanifest.New(store, runmanifest.StaticContext{
-		Build: buildMetadata,
-		Policy: policySnapshot,
+		Build:      buildMetadata,
+		Policy:     policySnapshot,
 		TEBProfile: cfg.TEBProfile,
 	})
 	executionSvc := execution.New(store, cfg.Clock, purposes, runManifestSvc)
@@ -196,11 +197,16 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		return nil, fmt.Errorf("construct field feedback sanitizer: %w", err)
 	}
 	experienceSvc := experience.New(store, cfg.Clock, approvalSvc, auditSvc, cfg.OwnerPrincipalID)
-	preference := cfg.ExecutorPreference
-	if preference == nil {
-		preference = experienceSvc
+	preferences := make([]scheduler.ExecutorPreference, 0, 2)
+	if len(cfg.TaskClassRouting) > 0 {
+		preferences = append(preferences, scheduler.TaskClassRouting(cfg.TaskClassRouting))
 	}
-	schedulerSvc = scheduler.New(store, cfg.Clock, purposes, executionSvc, resourceSvc, cfg.LeaseDuration, preference)
+	if cfg.ExecutorPreference != nil {
+		preferences = append(preferences, cfg.ExecutorPreference)
+	} else {
+		preferences = append(preferences, experienceSvc)
+	}
+	schedulerSvc = scheduler.New(store, cfg.Clock, purposes, executionSvc, resourceSvc, cfg.LeaseDuration, preferences...)
 	wakeSvc = wake.New(store, cfg.Clock, schedulerSvc)
 
 	executorSet := make(map[string]executors.Executor, len(cfg.Executors)+1)
@@ -222,31 +228,31 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	}
 
 	box := &Box{
-		Store: store,
-		Clock: cfg.Clock,
-		Purpose: purposes,
-		Execution: executionSvc,
-		Evidence: evidenceStore,
-		Verification: verificationSvc,
-		Resources: resourceSvc,
-		RunManifests: runManifestSvc,
-		Approvals: approvalSvc,
+		Store:         store,
+		Clock:         cfg.Clock,
+		Purpose:       purposes,
+		Execution:     executionSvc,
+		Evidence:      evidenceStore,
+		Verification:  verificationSvc,
+		Resources:     resourceSvc,
+		RunManifests:  runManifestSvc,
+		Approvals:     approvalSvc,
 		FieldObserver: fieldObserver,
-		Feedback: feedbackSvc,
-		Sanitizer: sanitizer,
-		Experience: experienceSvc,
-		Operations: operationsSvc,
-		Capabilities: capabilityRegistry,
-		Scheduler: schedulerSvc,
-		Wake: wakeSvc,
-		Memory: memorySvc,
-		Audit: auditSvc,
+		Feedback:      feedbackSvc,
+		Sanitizer:     sanitizer,
+		Experience:    experienceSvc,
+		Operations:    operationsSvc,
+		Capabilities:  capabilityRegistry,
+		Scheduler:     schedulerSvc,
+		Wake:          wakeSvc,
+		Memory:        memorySvc,
+		Audit:         auditSvc,
 		Observability: observability.New(nil),
-		Policy: cfg.PolicyEngine,
-		Executors: executorSet,
-		TEBProfile: cfg.TEBProfile,
-		CollectiveID: cfg.CollectiveID,
-		shutdown: make(chan struct{}),
+		Policy:        cfg.PolicyEngine,
+		Executors:     executorSet,
+		TEBProfile:    cfg.TEBProfile,
+		CollectiveID:  cfg.CollectiveID,
+		shutdown:      make(chan struct{}),
 	}
 	closeStore = false
 	return box, nil
@@ -281,7 +287,6 @@ func (b *Box) ShutdownRequested() <-chan struct{} {
 	}
 	return b.shutdown
 }
-
 
 func hasOperationProvider(providers []operations.Provider, name string) bool {
 	name = strings.TrimSpace(name)

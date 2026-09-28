@@ -10,7 +10,7 @@ import (
 )
 
 func TestParseWorkerFlagsDefaults(t *testing.T) {
-	poll, lease, err := parseWorkerFlags([]string{})
+	poll, lease, _, err := parseWorkerFlags([]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,13 +20,13 @@ func TestParseWorkerFlagsDefaults(t *testing.T) {
 }
 
 func TestParseWorkerFlagsRejectsNonPositivePoll(t *testing.T) {
-	if _, _, err := parseWorkerFlags([]string{"--poll-interval=0"}); err == nil {
+	if _, _, _, err := parseWorkerFlags([]string{"--poll-interval=0"}); err == nil {
 		t.Fatal("expected error for zero poll interval")
 	}
 }
 
 func TestParseWorkerFlagsAcceptsOverrides(t *testing.T) {
-	poll, lease, err := parseWorkerFlags([]string{"--poll-interval=5s", "--lease-duration=2m"})
+	poll, lease, _, err := parseWorkerFlags([]string{"--poll-interval=5s", "--lease-duration=2m"})
 	if err != nil {
 		t.Fatal(err)
 	}

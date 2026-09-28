@@ -44,17 +44,13 @@ type Service struct {
 	execution     *execution.Service
 	resources     *resources.Service
 	leaseDuration time.Duration
-	preference    ExecutorPreference
+	preferences   []ExecutorPreference
 }
 
 func New(store *state.Store, clk clock.Clock, purposes *purpose.Service, executionSvc *execution.Service, resourceSvc *resources.Service, leaseDuration time.Duration, preferences ...ExecutorPreference) *Service {
-	var preference ExecutorPreference
-	if len(preferences) > 0 {
-		preference = preferences[0]
-	}
 	return &Service{
 		store: store, clock: clk, purpose: purposes, execution: executionSvc,
-		resources: resourceSvc, leaseDuration: leaseDuration, preference: preference,
+		resources: resourceSvc, leaseDuration: leaseDuration, preferences: preferences,
 	}
 }
 
@@ -127,21 +123,24 @@ func (s *Service) ChooseExecutor(ctx context.Context, task domain.Task, eligible
 	}
 	sort.Strings(eligible)
 	baseline := eligible[0]
-	if s.preference == nil {
-		return baseline, nil
+	for _, preference := range s.preferences {
+		if preference == nil {
+			continue
+		}
+		preferred, found, err := preference.PreferredExecutor(ctx, task, append([]string(nil), eligible...))
+		if err != nil {
+			return "", err
+		}
+		if !found {
+			continue
+		}
+		preferred = strings.TrimSpace(preferred)
+		if _, ok := set[preferred]; !ok {
+			return "", fmt.Errorf("learned preference returned ineligible executor %q", preferred)
+		}
+		return preferred, nil
 	}
-	preferred, found, err := s.preference.PreferredExecutor(ctx, task, append([]string(nil), eligible...))
-	if err != nil {
-		return "", err
-	}
-	if !found {
-		return baseline, nil
-	}
-	preferred = strings.TrimSpace(preferred)
-	if _, ok := set[preferred]; !ok {
-		return "", fmt.Errorf("learned preference returned ineligible executor %q", preferred)
-	}
-	return preferred, nil
+	return baseline, nil
 }
 
 func (s *Service) Lease(ctx context.Context, taskID domain.ID, executorKind string) (domain.Attempt, error) {
