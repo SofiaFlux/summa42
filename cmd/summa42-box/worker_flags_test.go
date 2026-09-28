@@ -10,12 +10,15 @@ import (
 )
 
 func TestParseWorkerFlagsDefaults(t *testing.T) {
-	poll, lease, _, err := parseWorkerFlags([]string{})
+	poll, lease, model, err := parseWorkerFlags([]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if poll != 30*time.Second || lease != 0 {
 		t.Fatalf("flags = %v %v, want 30s 0", poll, lease)
+	}
+	if model.Binary != "codex" || model.Timeout != 60*time.Second {
+		t.Fatalf("model = %+v, want codex 60s", model)
 	}
 }
 
@@ -32,6 +35,27 @@ func TestParseWorkerFlagsAcceptsOverrides(t *testing.T) {
 	}
 	if poll != 5*time.Second || lease != 2*time.Minute {
 		t.Fatalf("flags = %v %v, want 5s 2m", poll, lease)
+	}
+	_, _, overridden, err := parseWorkerFlags([]string{"--model-binary=/usr/bin/custom", "--model-timeout=5s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if overridden.Binary != "/usr/bin/custom" || overridden.Timeout != 5*time.Second {
+		t.Fatalf("model = %+v, want /usr/bin/custom 5s", overridden)
+	}
+}
+
+// A model flag that cannot be honoured is a misconfiguration and stays a startup
+// error. Degrading a missing model binary must not start swallowing these, or a
+// typo would silently turn a box's triage executor off.
+func TestParseWorkerFlagsRejectsUnusableModelValues(t *testing.T) {
+	if _, _, _, err := parseWorkerFlags([]string{"--model-timeout=nope"}); err == nil {
+		t.Fatal("expected error for an unparseable --model-timeout")
+	} else if !strings.Contains(err.Error(), "--model-timeout") {
+		t.Fatalf("error = %q, want it to name --model-timeout", err)
+	}
+	if _, _, _, err := parseWorkerFlags([]string{"--model-timeout=0s"}); err == nil {
+		t.Fatal("expected error for a non-positive --model-timeout")
 	}
 }
 
