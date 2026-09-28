@@ -507,8 +507,10 @@ func parseWorkerFlags(args []string) (pollInterval time.Duration, leaseDuration 
 // run-gh-triage-driver and run-gh-triage-review agree on the model; the flag
 // set must have registered both of them. A flag value that cannot be honoured
 // is a configuration mistake and stays a startup error: the degradation in
-// triageModelAdapter covers a model binary that is not on PATH, never a flag
-// that cannot be parsed and never a value that was never given.
+// triageModelAdapter covers a model binary that is not on PATH, never an
+// unparseable or blank value. The errors name the flag rather than the
+// command, because the flag sets that call this are not all run-worker's and
+// a rejected value must not be reported against the wrong subcommand.
 func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
 	binaryFlag := flags.Lookup("model-binary")
 	if binaryFlag == nil {
@@ -521,14 +523,14 @@ func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
 	binary := binaryFlag.Value.String()
 	timeout := timeoutFlag.Value.String()
 	if strings.TrimSpace(binary) == "" {
-		return climodel.Config{}, fmt.Errorf("run-worker requires a non-empty --model-binary, got %q", binary)
+		return climodel.Config{}, fmt.Errorf("--model-binary must not be blank, got %q", binary)
 	}
 	duration, err := time.ParseDuration(timeout)
 	if err != nil {
 		return climodel.Config{}, fmt.Errorf("parse --model-timeout: %w", err)
 	}
 	if duration <= 0 {
-		return climodel.Config{}, fmt.Errorf("run-worker requires a positive --model-timeout, got %q", timeout)
+		return climodel.Config{}, fmt.Errorf("--model-timeout must be positive, got %q", timeout)
 	}
 	return climodel.Config{Binary: binary, Timeout: duration}, nil
 }
@@ -549,22 +551,55 @@ func triageModelAdapter(modelConfig climodel.Config, stderr io.Writer) (*climode
 	return adapter, true
 }
 
-// installTriageExecutor puts the triage executor in registry when the model
-// binary can actually be invoked, and reports whether it did. A model that
-// cannot be invoked leaves the registry untouched: no executor means no
-// github.issue.read in the capacity derived from that registry, so triage Tasks
-// stay unclaimed rather than being claimed by an executor whose classifier is
-// nil and fails every attempt. The evidence store is the Box's, so this runs
-// after the runtime is open; the model verdict that gates the routing runs
-// before it and hands this call io.Discard, so a degraded box still prints
-// exactly one notice.
-func installTriageExecutor(registry map[string]executors.Executor, evidenceStore *evidence.Store, modelConfig climodel.Config, stderr io.Writer) bool {
-	adapter, usable := triageModelAdapter(modelConfig, stderr)
-	if !usable {
+// installTriageExecutor puts the triage executor in registry when adapter is a
+// model that can actually be invoked, and reports whether it did. A nil adapter
+// leaves the registry untouched: no executor means no github.issue.read in the
+// capacity derived from that registry, so triage Tasks stay unclaimed rather
+// than being claimed by an executor whose classifier is nil and fails every
+// attempt. The adapter is the one triageModelAdapter already built, so
+// installing never resolves the binary a second time, and a degraded box has
+// already printed its single notice.
+func installTriageExecutor(registry map[string]executors.Executor, evidenceStore *evidence.Store, adapter *climodel.Adapter) bool {
+	if adapter == nil {
 		return false
 	}
 	registry[ghtriage.ExecutorKind] = ghtriage.NewExecutor(evidenceStore, adapter)
 	return true
+}
+
+// workerTriageVerdict is what startup decided about the triage model: whether
+// the executor can run here at all, and the TaskClassRouting that answer put in
+// front of the Box.
+type workerTriageVerdict struct {
+	usable  bool
+	routing map[string]string
+}
+
+// openWorkerBox is the worker composition: it takes the triage model verdict,
+// gates the TaskClassRouting on it, opens the Box and installs the triage
+// executor into the opened registry. The verdict has to be taken before Open,
+// because the scheduler is constructed inside it and holds the routing chain,
+// while only the evidence store exists after it; the adapter that verdict built
+// is therefore carried across the two steps, so a startup resolves the model
+// binary exactly once and a degraded box prints exactly one notice. The
+// verdict is returned so a caller can see the routing the Box consumed without
+// reaching into the scheduler.
+func openWorkerBox(ctx context.Context, runtimeCfg summa42runtime.Config, modelConfig climodel.Config, stderr io.Writer) (*summa42runtime.Box, workerTriageVerdict, error) {
+	var verdict workerTriageVerdict
+	adapter, usable := triageModelAdapter(modelConfig, stderr)
+	if usable {
+		verdict = workerTriageVerdict{
+			usable:  true,
+			routing: map[string]string{ghtriage.TaskClass: ghtriage.ExecutorKind},
+		}
+		runtimeCfg.TaskClassRouting = verdict.routing
+	}
+	box, err := summa42runtime.Open(ctx, runtimeCfg)
+	if err != nil {
+		return nil, verdict, fmt.Errorf("open Box runtime: %w", err)
+	}
+	installTriageExecutor(box.Executors, box.Evidence, adapter)
+	return box, verdict, nil
 }
 
 func splitWorkspaceRootArg(args []string) (workspaceRoot string, rest []string, err error) {
@@ -686,18 +721,11 @@ func runWorker(ctx context.Context, args []string) error {
 	if leaseDuration > 0 {
 		runtimeCfg.LeaseDuration = leaseDuration
 	}
-	_, triageUsable := triageModelAdapter(modelConfig, os.Stderr)
-	if triageUsable {
-		runtimeCfg.TaskClassRouting = map[string]string{ghtriage.TaskClass: ghtriage.ExecutorKind}
-	}
-	box, err := summa42runtime.Open(ctx, runtimeCfg)
+	box, _, err := openWorkerBox(ctx, runtimeCfg, modelConfig, os.Stderr)
 	if err != nil {
-		return fmt.Errorf("open Box runtime: %w", err)
+		return err
 	}
 	defer box.Close()
-	// The verdict above already printed the degradation notice and decided the
-	// routing, so the registration pass must not print it a second time.
-	installTriageExecutor(box.Executors, box.Evidence, modelConfig, io.Discard)
 	if adoProvider != nil {
 		publisher, err := adoreview.NewPublisher(adoreview.PublishConfig{
 			Mode:           publishCfg.mode,

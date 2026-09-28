@@ -237,10 +237,11 @@ func TestInstallTriageExecutorLeavesADegradedBoxUnregistered(t *testing.T) {
 	work := newTriageWorkload(t)
 	registry := map[string]executors.Executor{"copilot": triageCapacityExecutor{}}
 	var stderr bytes.Buffer
-	installed := installTriageExecutor(registry, work.evidence, triageModelConfigFor(t,
+	adapter, usable := triageModelAdapter(triageModelConfigFor(t,
 		"--model-binary="+filepath.Join(t.TempDir(), "absent")), &stderr)
-	if installed {
-		t.Fatal("installed the triage executor with a model binary that is not on PATH")
+	installed := installTriageExecutor(registry, work.evidence, adapter)
+	if installed || usable {
+		t.Fatalf("installed = %t, usable = %t, want no triage executor: the model binary is not on PATH", installed, usable)
 	}
 	if executor, registered := registry[ghtriage.ExecutorKind]; registered {
 		t.Fatalf("registry[%q] = %#v, want no triage executor: one built with a nil classifier fails every attempt",
@@ -280,10 +281,11 @@ func TestInstallTriageExecutorRegistersAUsableModelAndAdvertisesTheReadCapabilit
 	work := newTriageWorkload(t)
 	registry := map[string]executors.Executor{"copilot": triageCapacityExecutor{}}
 	var stderr bytes.Buffer
-	installed := installTriageExecutor(registry, work.evidence, triageModelConfigFor(t,
+	adapter, usable := triageModelAdapter(triageModelConfigFor(t,
 		"--model-binary="+usableModelBinary(t), "--model-timeout=5s"), &stderr)
-	if !installed {
-		t.Fatalf("installed = false with a usable model binary, want the %s executor registered", ghtriage.ExecutorKind)
+	installed := installTriageExecutor(registry, work.evidence, adapter)
+	if !installed || !usable {
+		t.Fatalf("installed = %t, usable = %t, want the %s executor registered", installed, usable, ghtriage.ExecutorKind)
 	}
 	if _, registered := registry[ghtriage.ExecutorKind]; !registered {
 		t.Fatalf("registry = %v, want the %s key", registry, ghtriage.ExecutorKind)
