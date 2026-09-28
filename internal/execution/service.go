@@ -441,6 +441,92 @@ func (s *Service) ChallengeTask(ctx context.Context, taskID domain.ID, scope dom
 	})
 }
 
+// ChallengeTaskIfInStates challenges a task only when it is currently in one of
+// the supplied states. The caller must re-read the task when changed is false,
+// because the state may have moved since it was read. An accepted task can
+// never be returned to CHALLENGED, which is the property the unguarded
+// ChallengeTask lacks.
+func (s *Service) ChallengeTaskIfInStates(ctx context.Context, taskID domain.ID, states []domain.TaskState, scope domain.ChallengeScope, reason string, evidenceIDs []domain.ID) (changed bool, err error) {
+	if err := s.configured(); err != nil {
+		return false, err
+	}
+	taskID = domain.ID(strings.TrimSpace(string(taskID)))
+	reason = strings.TrimSpace(reason)
+	if taskID == "" || reason == "" || !validChallengeScope(scope) {
+		return false, errors.New("task, valid challenge scope, and reason are required")
+	}
+	allowed := make([]string, 0, len(states))
+	for _, state := range states {
+		if trimmed := strings.TrimSpace(string(state)); trimmed != "" {
+			allowed = append(allowed, trimmed)
+		}
+	}
+	if len(allowed) == 0 {
+		return false, errors.New("at least one task state is required")
+	}
+	evidenceJSON, err := json.Marshal(evidenceIDs)
+	if err != nil {
+		return false, err
+	}
+	now := s.clock.Now().UTC()
+
+	err = s.store.WithTx(ctx, func(tx *sql.Tx) error {
+		var currentAttempt sql.NullString
+		if err := tx.QueryRowContext(ctx,
+			`SELECT current_attempt_id FROM tasks WHERE task_id = ?`, taskID,
+		).Scan(&currentAttempt); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("task %q not found", taskID)
+			}
+			return err
+		}
+
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(allowed)), ",")
+		args := []any{domain.TaskChallenged, formatTime(now), taskID}
+		for _, state := range allowed {
+			args = append(args, state)
+		}
+		result, err := tx.ExecContext(ctx,
+			`UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ? AND state IN (`+placeholders+`)`,
+			args...)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected != 1 {
+			return nil
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO task_challenges(challenge_id, task_id, scope, reason, evidence_ids_json, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			domain.NewID("challenge"), taskID, scope, reason, string(evidenceJSON), formatTime(now),
+		); err != nil {
+			return err
+		}
+		if currentAttempt.Valid {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE attempts SET lease_state = ?, state = ?, completed_at = COALESCE(completed_at, ?) WHERE attempt_id = ? AND lease_state = ?`,
+				domain.LeaseRevoked, domain.AttemptCancelled, formatTime(now), currentAttempt.String, domain.LeaseActive,
+			); err != nil {
+				return err
+			}
+		}
+		if err := appendEvent(ctx, tx, taskID, domain.ID(currentAttempt.String), "TASK_CHALLENGED", now); err != nil {
+			return err
+		}
+		changed = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return changed, nil
+}
+
 func (s *Service) insertTask(ctx context.Context, parentID domain.ID, request TaskRequest, guard TaskGuard) (domain.Task, error) {
 	var task domain.Task
 	err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
