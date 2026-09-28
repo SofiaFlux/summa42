@@ -1,8 +1,10 @@
 package ghtriage
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestStage2QuestionIsTheFixedLiteral(t *testing.T) {
@@ -52,16 +54,78 @@ func TestBuildStage2InputUntruncatedBodyHasNoMarker(t *testing.T) {
 	}
 }
 
+// The limits are counted in runes, not bytes. "→" is three bytes per rune, so
+// a byte-based truncation both reports the wrong rune count and cuts a rune in
+// half, leaving invalid UTF-8 in the only context the model ever sees.
+func TestBuildStage2InputTruncatesMultiByteTextOnRuneBoundaries(t *testing.T) {
+	input := BuildStage2Input(
+		snapshot(nil, strings.Repeat("→", 500), strings.Repeat("→", 9000), TriageBug), nil)
+
+	if !utf8.ValidString(input.Title) {
+		t.Fatalf("truncating the title produced invalid UTF-8: %q", input.Title)
+	}
+	if got := len([]rune(input.Title)); got != 200 {
+		t.Fatalf("title runes = %d, want 200", got)
+	}
+	if !strings.HasSuffix(input.BodyExcerpt, truncationMarker) {
+		t.Fatalf("a truncated body lacks the marker: %q", input.BodyExcerpt)
+	}
+	if !utf8.ValidString(input.BodyExcerpt) {
+		t.Fatalf("truncating the body produced invalid UTF-8: %q", input.BodyExcerpt)
+	}
+	if got := len([]rune(strings.TrimSuffix(input.BodyExcerpt, truncationMarker))); got != 4000 {
+		t.Fatalf("body excerpt runes = %d, want 4000", got)
+	}
+}
+
+// A body of exactly the limit is not truncated, so the bound is ">" and not
+// ">=". Multi-byte so that 4000 runes is not also 4000 bytes.
+func TestBuildStage2InputBodyAtExactlyTheLimitIsNotTruncated(t *testing.T) {
+	body := strings.Repeat("→", 4000)
+	input := BuildStage2Input(snapshot(nil, "Crash", body, TriageBug), nil)
+
+	if strings.Contains(input.BodyExcerpt, truncationMarker) {
+		t.Fatalf("a body of exactly 4000 runes was marked truncated: %q", input.BodyExcerpt)
+	}
+	if input.BodyExcerpt != body {
+		t.Fatalf("a body of exactly 4000 runes was altered: %d bytes, want %d",
+			len(input.BodyExcerpt), len(body))
+	}
+}
+
+// Stage 1 and the decision document read the same snapshot, so sorting must not
+// reach back into the caller's slices.
+func TestBuildStage2InputDoesNotReorderTheCallersSlices(t *testing.T) {
+	labels := []string{"p1", "bug", "enhancement"}
+	signals := []string{"title:[bug]", "has-repro"}
+	snap := snapshot(labels, "t", "b", TriageBug)
+
+	input := BuildStage2Input(snap, signals)
+
+	if want := []string{"bug", "enhancement", "p1"}; !reflect.DeepEqual(input.Labels, want) {
+		t.Fatalf("labels = %v, want %v", input.Labels, want)
+	}
+	if want := []string{"has-repro", "title:[bug]"}; !reflect.DeepEqual(input.Signals, want) {
+		t.Fatalf("signals = %v, want %v", input.Signals, want)
+	}
+	if want := []string{"p1", "bug", "enhancement"}; !reflect.DeepEqual(labels, want) {
+		t.Fatalf("the caller's labels were reordered in place: %v, want %v", labels, want)
+	}
+	if want := []string{"title:[bug]", "has-repro"}; !reflect.DeepEqual(signals, want) {
+		t.Fatalf("the caller's signals were reordered in place: %v, want %v", signals, want)
+	}
+}
+
 func TestBuildStage2InputSortsLabelsAndSignals(t *testing.T) {
 	input := BuildStage2Input(
 		snapshot([]string{"p1", "bug", "enhancement"}, "t", "b", TriageBug),
 		[]string{"title:[bug]", "has-repro"})
 
-	if input.Labels[0] != "bug" {
-		t.Fatalf("labels are not sorted: %v", input.Labels)
+	if want := []string{"bug", "enhancement", "p1"}; !reflect.DeepEqual(input.Labels, want) {
+		t.Fatalf("labels = %v, want %v", input.Labels, want)
 	}
-	if input.Signals[0] != "has-repro" {
-		t.Fatalf("signals are not sorted: %v", input.Signals)
+	if want := []string{"has-repro", "title:[bug]"}; !reflect.DeepEqual(input.Signals, want) {
+		t.Fatalf("signals = %v, want %v", input.Signals, want)
 	}
 }
 
