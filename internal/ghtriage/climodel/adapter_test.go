@@ -2,8 +2,10 @@ package climodel
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,7 +25,10 @@ func writeScript(t *testing.T, body string) string {
 }
 
 func TestNewRejectsAnUnusableConfiguration(t *testing.T) {
-	if _, err := New(Config{}); err == nil {
+	// A positive timeout is set on every empty-binary case: Config{} also has a
+	// zero timeout, so leaving it out would let this pass on the timeout guard
+	// with the missing-binary check deleted.
+	if _, err := New(Config{Binary: "", Timeout: time.Second}); err == nil {
 		t.Fatal("an empty binary was accepted")
 	}
 	if _, err := New(Config{Binary: filepath.Join(t.TempDir(), "absent"), Timeout: time.Second}); err == nil {
@@ -48,7 +53,16 @@ func TestClassifyRequiresExactlyOneJSONObject(t *testing.T) {
 		{"wrong field type", `{"is_actionable":"yes"}`, true},
 		{"unknown field", `{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"x","severity":"high"}`, true},
 		{"missing rationale", `{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug"}`, true},
+		{"blank rationale", `{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"   "}`, true},
 		{"scope outside the vocabulary", `{"is_actionable":true,"needs_repro":false,"scope":"enormous","suggested_type":"bug","rationale":"x"}`, true},
+		// Both booleans must be present: an absent one reads as false and is
+		// disposed of as not-actionable, where the same document with
+		// is_actionable true is ready-to-plan. And suggested_type is checked
+		// nowhere else — Decision.Validate never inspects it — so an unchecked
+		// value lands verbatim in the canonical decision record.
+		{"missing is_actionable", `{"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"x"}`, true},
+		{"missing needs_repro", `{"is_actionable":true,"scope":"small","suggested_type":"bug","rationale":"x"}`, true},
+		{"suggested_type outside the vocabulary", `{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"epic","rationale":"x"}`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,16 +109,19 @@ func TestReviewReturnsOnlyABoolean(t *testing.T) {
 	}
 }
 
-// The model prints a fully conforming response and *then* exits non-zero, so
-// the exit status is the only thing that can produce an error. A script that
-// failed silently instead would not pin this: an empty response is rejected by
-// the parser on its own account, so the test would still pass against an
-// adapter that ignored the exit status entirely.
+// The model prints a fully conforming response, writes to stderr and *then*
+// exits non-zero, so the exit status is the only thing that can produce an
+// error. A script that failed silently instead would not pin this: an empty
+// response is rejected by the parser on its own account, so the test would
+// still pass against an adapter that ignored the exit status entirely. The
+// stderr assertion is what pins the capture, which is otherwise unpinned: drop
+// the ": %s" and the suite stays green.
 func TestClassifyFailsWhenTheProcessFails(t *testing.T) {
+	const stderrText = "model provider unavailable"
 	failing := filepath.Join(t.TempDir(), "failing.sh")
 	script := "#!/bin/sh\ncat > /dev/null\ncat <<'JSON'\n" +
 		`{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"x"}` +
-		"\nJSON\nexit 3\n"
+		"\nJSON\necho '" + stderrText + "' >&2\nexit 3\n"
 	if err := os.WriteFile(failing, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +129,48 @@ func TestClassifyFailsWhenTheProcessFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := adapter.Classify(context.Background(), ghtriage.Stage2Input{Schema: ghtriage.Stage2InputSchema}); err == nil {
+	_, err = adapter.Classify(context.Background(), ghtriage.Stage2Input{Schema: ghtriage.Stage2InputSchema})
+	if err == nil {
 		t.Fatal("a failing model process was treated as success")
+	}
+	if !strings.Contains(err.Error(), stderrText) {
+		t.Fatalf("error %q does not carry the model's stderr %q", err, stderrText)
+	}
+}
+
+// The model is normally a wrapper script or a CLI around a provider SDK, so the
+// work runs in a grandchild that inherits the stdout pipe. Killing only the
+// direct child leaves that grandchild holding the pipe, so Run blocks on the
+// copy goroutine until the grandchild exits by itself: a 300ms timeout against
+// a 3s child takes 3s. Bounding the whole subtree is what makes the configured
+// timeout mean anything, and the deadline error is what makes a hung model
+// distinguishable from one that crashed.
+func TestTimeoutBoundsTheWholeSubtree(t *testing.T) {
+	const (
+		timeout    = 300 * time.Millisecond
+		childLives = 3 * time.Second
+		allowed    = 2 * time.Second
+	)
+	slow := filepath.Join(t.TempDir(), "slow.sh")
+	script := "#!/bin/sh\ncat > /dev/null\nsleep 3 &\nwait\n"
+	if err := os.WriteFile(slow, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := New(Config{Binary: slow, Timeout: timeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err = adapter.Classify(context.Background(), ghtriage.Stage2Input{Schema: ghtriage.Stage2InputSchema})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("a model that overran its timeout was treated as success")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error %v is not distinguishable from a crashed model", err)
+	}
+	if elapsed > allowed {
+		t.Fatalf("the timeout did not bound the subtree: %s elapsed, want roughly %s and not the child's %s",
+			elapsed, timeout, childLives)
 	}
 }

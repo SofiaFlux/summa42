@@ -36,13 +36,42 @@ type reviewResponse struct {
 	Plausible *bool `json:"plausible"`
 }
 
+// stage2Response mirrors Stage2Output with pointer booleans, so an absent
+// field stays distinguishable from an explicit false. Stage2Output cannot
+// carry that distinction, and the difference is disposition-bearing: a
+// truncated response carrying no is_actionable would otherwise read as false
+// and be disposed of as not-actionable, where the same document with
+// is_actionable true is ready-to-plan. The model proposes, deterministic code
+// disposes — so an incomplete proposal is rejected, not completed.
+type stage2Response struct {
+	IsActionable  *bool         `json:"is_actionable"`
+	NeedsRepro    *bool         `json:"needs_repro"`
+	Scope         Scope         `json:"scope"`
+	SuggestedType SuggestedType `json:"suggested_type"`
+	Rationale     string        `json:"rationale"`
+}
+
 // ParseStage2Output accepts exactly one conforming object. Unknown fields are
 // rejected rather than ignored, so a model that invents a field is treated as
-// non-conforming rather than partially understood.
+// non-conforming rather than partially understood. Both booleans must be
+// present: an absent one is not read as false.
 func ParseStage2Output(raw []byte) (Stage2Output, error) {
-	var out Stage2Output
-	if err := decodeExactlyOne(raw, &out); err != nil {
+	var response stage2Response
+	if err := decodeExactlyOne(raw, &response); err != nil {
 		return Stage2Output{}, err
+	}
+	if response.IsActionable == nil {
+		return Stage2Output{}, errors.New("stage 2 response carries no is_actionable field")
+	}
+	if response.NeedsRepro == nil {
+		return Stage2Output{}, errors.New("stage 2 response carries no needs_repro field")
+	}
+	out := Stage2Output{
+		IsActionable:  *response.IsActionable,
+		NeedsRepro:    *response.NeedsRepro,
+		Scope:         response.Scope,
+		SuggestedType: response.SuggestedType,
+		Rationale:     response.Rationale,
 	}
 	if strings.TrimSpace(out.Rationale) == "" {
 		return Stage2Output{}, errors.New("stage 2 rationale is required")

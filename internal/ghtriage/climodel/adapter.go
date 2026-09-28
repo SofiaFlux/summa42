@@ -72,10 +72,18 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(runCtx, a.binary, a.args...)
+	isolateProcessTree(cmd)
 	cmd.Stdin = bytes.NewReader(prompt)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// Checked before the process error is wrapped, so a caller can tell a
+		// model that hung from one that crashed: cancelling the subtree kills
+		// it, and the wrapped signal-kill is indistinguishable from a crash by
+		// eye. errors.Is against DeadlineExceeded is the only handle on it.
+		if runCtx.Err() != nil {
+			return nil, runCtx.Err()
+		}
 		return nil, fmt.Errorf("model invocation failed: %w: %s", err, stderr.String())
 	}
 	return stdout.Bytes(), nil
