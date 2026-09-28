@@ -15,6 +15,7 @@ func TestStage3RuleTableIsTotal(t *testing.T) {
 		{"medium is ready", Stage2Output{IsActionable: true, Scope: ScopeMedium}, DispositionReadyToPlan, "actionable-without-repro-small-or-medium"},
 		{"large needs decomposition", Stage2Output{IsActionable: true, Scope: ScopeLarge}, DispositionNeedsHuman, "scope-large-needs-decomposition"},
 		{"unknown needs scoping", Stage2Output{IsActionable: true, Scope: ScopeUnknown}, DispositionNeedsHuman, "scope-unknown-needs-scoping"},
+		{"out of vocabulary scope falls back", Stage2Output{IsActionable: true, Scope: Scope("huge")}, DispositionNeedsHuman, "scope-unknown-needs-scoping"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

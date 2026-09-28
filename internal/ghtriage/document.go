@@ -22,8 +22,9 @@ const (
 	KindAccepted = "github.issue.triage.accepted"
 )
 
-// Disposition is a closed vocabulary. Stage 3 is total over it, so no
-// decision can name a disposition outside this set.
+// Disposition is a closed vocabulary that the type does not enforce: a
+// Decision can still carry any string. Validate rejects a decision whose stage 1
+// or stage 3 disposition falls outside the set.
 type Disposition string
 
 const (

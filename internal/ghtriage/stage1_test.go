@@ -59,6 +59,10 @@ func TestStage1WidensOnlyUnclassifiedToQuestion(t *testing.T) {
 	if prefix.Triage != TriageQuestion {
 		t.Fatalf("unclassified with a [question] prefix = %q, want question", prefix.Triage)
 	}
+	label := Stage1(snapshot([]string{"Question"}, "Why is this slow", "boom", TriageUnclassified))
+	if label.Triage != TriageQuestion {
+		t.Fatalf("unclassified with a Question label = %q, want question", label.Triage)
+	}
 }
 
 func TestStage1ExtractsReproSignal(t *testing.T) {
@@ -74,6 +78,9 @@ func TestStage1ExtractsReproSignal(t *testing.T) {
 
 func TestStage1SignalsAreSorted(t *testing.T) {
 	got := Stage1(snapshot([]string{"bug", "enhancement", "p1"}, "[bug] Crash", "x", TriageBug))
+	if len(got.Signals) != 4 {
+		t.Fatalf("signals = %v, want 4", got.Signals)
+	}
 	for i := 1; i < len(got.Signals); i++ {
 		if got.Signals[i-1] > got.Signals[i] {
 			t.Fatalf("signals are not sorted: %v", got.Signals)

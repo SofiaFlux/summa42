@@ -12,7 +12,9 @@ const (
 )
 
 // Stage1 is a pure function from the canonical snapshot to signals, a
-// classification, and — for exactly one decisive case — a disposition. It is
+// classification, and — for exactly one decisive case — a disposition. The
+// has-repro signal is a proxy for the presence of a fenced code block, so a
+// non-reproduction block such as a config sample sets it too. Stage 1 is
 // deliberately conservative: the only decisive rule requires an explicit,
 // well-formed duplicate label, because a bare #N in the body is context and
 // the snapshot carries no other issue's state to verify one against.
