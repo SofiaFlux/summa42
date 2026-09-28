@@ -28,8 +28,11 @@ const (
 	snapshotEvidenceKind = "github.issue.snapshot"
 )
 
+// triagePayload is the subset of the intake payload the executor needs. Its
+// tags are the keys ghissue.taskTemplate writes, not a private spelling of them:
+// intake owns the payload contract, so the repository is read from "repo".
 type triagePayload struct {
-	Repository         string    `json:"repository"`
+	Repository         string    `json:"repo"`
 	Issue              int64     `json:"issue"`
 	Revision           string    `json:"revision"`
 	SnapshotEvidenceID domain.ID `json:"issueSnapshot"`

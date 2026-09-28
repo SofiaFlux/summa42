@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -37,14 +38,39 @@ func putSnapshot(t *testing.T, store *evidence.Store, snap ghtriage.Snapshot) do
 	return putObject(t, store, "github.issue.snapshot", snap)
 }
 
-func envelopeFor(snapshotID domain.ID) executors.AttemptEnvelope {
-	payload, _ := json.Marshal(map[string]any{
-		"repository": "o/r", "issue": 42,
-		"revision": "2026-09-28T10:00:00Z", "issueSnapshot": snapshotID,
-	})
+// intakePayloadKeys is the key set internal/ghissue.taskTemplate marshals into
+// a github.issue.triage payload. The worker hands that JSON to the executor
+// verbatim, so the executor reads those keys and no others.
+var intakePayloadKeys = []string{
+	"repo", "issue", "revision", "title", "url", "author", "labels", "triage", "issueSnapshot",
+}
+
+// intakePayload builds a payload with exactly intake's key set, so the executor
+// is never tested against a payload no real task can carry. Every payload in
+// this file is built here rather than from a hand-written map.
+func intakePayload(snapshotID domain.ID) map[string]any {
+	return map[string]any{
+		"repo": "o/r", "issue": 42,
+		"revision": "2026-09-28T10:00:00Z", "issueSnapshot": string(snapshotID),
+		"title": "Crash", "url": "https://github.com/o/r/issues/42", "author": "octocat",
+		"labels": []string{"bug"}, "triage": "unclassified",
+	}
+}
+
+func mustPayload(t *testing.T, payload map[string]any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func envelopeFor(t *testing.T, snapshotID domain.ID) executors.AttemptEnvelope {
+	t.Helper()
 	return executors.AttemptEnvelope{
 		TaskID: domain.NewID("task"), AttemptID: domain.NewID("attempt"),
-		PayloadJSON:        payload,
+		PayloadJSON:        mustPayload(t, intakePayload(snapshotID)),
 		AcceptanceCriteria: []string{"triage decision recorded for 2026-09-28T10:00:00Z"},
 	}
 }
@@ -61,13 +87,55 @@ func newExecutorFixture(t *testing.T) (*ghtriage.Executor, *fakemodel.Fake, *evi
 	return ghtriage.NewExecutor(evidenceStore, model), model, evidenceStore
 }
 
+// The executor and the intake that writes its payload are two separate writers
+// of one contract, and only a test that carries a real intake payload makes
+// them meet. The executor once read a repository key that intake never wrote,
+// which no test in either package could see: every payload here was built by
+// this file, and intake's own test only ever checks the keys it reads itself.
+func TestExecutorAcceptsThePayloadKeySetIntakeWrites(t *testing.T) {
+	keys := make([]string, 0, len(intakePayloadKeys))
+	for key := range intakePayload(domain.NewID("snap")) {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	want := append([]string(nil), intakePayloadKeys...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("payload keys = %q, want exactly the keys intake writes %q", keys, intakePayloadKeys)
+	}
+
+	exec, _, evidenceStore := newExecutorFixture(t)
+	snap := ghtriage.Snapshot{
+		Repo: "o/r", Issue: 42, Title: "Crash", Body: "boom",
+		Triage: "bug", Labels: []string{"duplicate-of:41"}, UpdatedAt: "2026-09-28T10:00:00Z",
+	}
+	snapshotID := putSnapshot(t, evidenceStore, snap)
+	envelope := envelopeFor(t, snapshotID)
+
+	result, err := exec.Start(context.Background(), envelope)
+	if err != nil {
+		t.Fatalf("a payload with intake's key set was rejected: %v", err)
+	}
+	if len(result.Evidence) != 1 {
+		t.Fatalf("evidence = %d, want exactly one decision", len(result.Evidence))
+	}
+	var decision ghtriage.Decision
+	if err := json.Unmarshal([]byte(result.Evidence[0].Content), &decision); err != nil {
+		t.Fatal(err)
+	}
+	if decision.Repository != "o/r" || decision.Issue != 42 {
+		t.Fatalf("decision = %s#%d, want o/r#42", decision.Repository, decision.Issue)
+	}
+}
+
 func TestExecutorResolvesADuplicateWithoutCallingTheModel(t *testing.T) {
 	exec, model, evidenceStore := newExecutorFixture(t)
 	snap := ghtriage.Snapshot{
 		Repo: "o/r", Issue: 42, Title: "Crash", Body: "boom",
 		Triage: "bug", Labels: []string{"duplicate-of:41"}, UpdatedAt: "2026-09-28T10:00:00Z",
 	}
-	envelope := envelopeFor(putSnapshot(t, evidenceStore, snap))
+	snapshotID := putSnapshot(t, evidenceStore, snap)
+	envelope := envelopeFor(t, snapshotID)
 
 	result, err := exec.Start(context.Background(), envelope)
 	if err != nil {
@@ -79,9 +147,19 @@ func TestExecutorResolvesADuplicateWithoutCallingTheModel(t *testing.T) {
 	if len(result.Evidence) != 1 {
 		t.Fatalf("evidence = %d, want exactly one decision", len(result.Evidence))
 	}
+	// The consumer downstream selects the decision by kind, so a decision
+	// emitted under another kind is not found at all.
+	if result.Evidence[0].Kind != executors.EvidenceKind(ghtriage.KindDecision) {
+		t.Fatalf("evidence kind = %q, want %q", result.Evidence[0].Kind, ghtriage.KindDecision)
+	}
 	var decision ghtriage.Decision
 	if err := json.Unmarshal([]byte(result.Evidence[0].Content), &decision); err != nil {
 		t.Fatal(err)
+	}
+	// The decision cites the snapshot it was derived from, so a placeholder
+	// here would break the citation for every issue triaged.
+	if decision.SnapshotEvidenceID != string(snapshotID) {
+		t.Fatalf("snapshot evidence id = %q, want the cited object %q", decision.SnapshotEvidenceID, snapshotID)
 	}
 	if decision.FinalDisposition() != ghtriage.DispositionDuplicate {
 		t.Fatalf("disposition = %q", decision.FinalDisposition())
@@ -109,7 +187,7 @@ func TestExecutorRecordsAStage3DecisionWithTheExactPreparedInput(t *testing.T) {
 		Triage: "bug", Labels: []string{"needs-triage", "crash", "bug"},
 		UpdatedAt: "2026-09-28T10:00:00Z",
 	}
-	envelope := envelopeFor(putSnapshot(t, evidenceStore, snap))
+	envelope := envelopeFor(t, putSnapshot(t, evidenceStore, snap))
 
 	result, err := exec.Start(context.Background(), envelope)
 	if err != nil {
@@ -158,7 +236,7 @@ func TestExecutorFailsTheAttemptWhenBothResponsesAreInvalid(t *testing.T) {
 		Repo: "o/r", Issue: 42, Title: "Crash", Body: "boom",
 		Triage: "bug", Labels: []string{"bug"}, UpdatedAt: "2026-09-28T10:00:00Z",
 	}
-	envelope := envelopeFor(putSnapshot(t, evidenceStore, snap))
+	envelope := envelopeFor(t, putSnapshot(t, evidenceStore, snap))
 
 	result, err := exec.Start(context.Background(), envelope)
 	if err == nil {
@@ -183,7 +261,7 @@ func TestExecutorSucceedsOnTheRetryWhenTheSecondResponseConforms(t *testing.T) {
 		Repo: "o/r", Issue: 42, Title: "Crash", Body: "boom",
 		Triage: "bug", Labels: []string{"bug"}, UpdatedAt: "2026-09-28T10:00:00Z",
 	}
-	envelope := envelopeFor(putSnapshot(t, evidenceStore, snap))
+	envelope := envelopeFor(t, putSnapshot(t, evidenceStore, snap))
 
 	result, err := exec.Start(context.Background(), envelope)
 	if err != nil {
@@ -205,7 +283,7 @@ func TestExecutorSucceedsOnTheRetryWhenTheSecondResponseConforms(t *testing.T) {
 func TestExecutorFailsWhenTheSnapshotEvidenceIsMissing(t *testing.T) {
 	exec, _, _ := newExecutorFixture(t)
 	absent := domain.NewID("absent")
-	result, err := exec.Start(context.Background(), envelopeFor(absent))
+	result, err := exec.Start(context.Background(), envelopeFor(t, absent))
 	if err == nil {
 		t.Fatal("a missing snapshot evidence was accepted")
 	}
@@ -220,29 +298,6 @@ func TestExecutorFailsWhenTheSnapshotEvidenceIsMissing(t *testing.T) {
 	}
 }
 
-func TestExecutorFailsOnAnIncompletePayload(t *testing.T) {
-	exec, _, _ := newExecutorFixture(t)
-	envelope := executors.AttemptEnvelope{
-		TaskID: domain.NewID("task"), AttemptID: domain.NewID("attempt"),
-		PayloadJSON: []byte(`{"repository":"o/r","issue":42,"revision":"r"}`),
-	}
-	result, err := exec.Start(context.Background(), envelope)
-	if err == nil {
-		t.Fatal("a payload without a snapshot evidence id was accepted")
-	}
-	// The decoder's own diagnostic, not the snapshot load's: an absent object
-	// reports "snapshot" too, so the field name alone proves nothing.
-	if !strings.Contains(err.Error(), "lacks the issue snapshot evidence id") {
-		t.Fatalf("error %q does not name the missing payload field", err)
-	}
-	if errors.Is(err, evidence.ErrEvidenceNotFound) {
-		t.Fatalf("error %q came from the snapshot load, not the payload decoder", err)
-	}
-	if len(result.Evidence) != 0 {
-		t.Fatalf("a failed attempt fabricated %d evidence documents", len(result.Evidence))
-	}
-}
-
 // Every payload field the decision echoes is guarded in the decoder, so the
 // decoder's own diagnostics are pinned here, field by field, and not only
 // through the decision validator that would catch the damage later.
@@ -251,6 +306,11 @@ func TestExecutorFailsOnEachIncompletePayloadField(t *testing.T) {
 		name    string
 		payload string
 		wantErr string
+		// notAbsent requires the rejection to be the decoder's own rather than
+		// the snapshot load's. Only the missing-snapshot row needs it, because
+		// an absent object reports the snapshot too and the field name alone
+		// cannot tell the two failures apart.
+		notAbsent bool
 	}{
 		{
 			name:    "repository missing",
@@ -259,37 +319,38 @@ func TestExecutorFailsOnEachIncompletePayloadField(t *testing.T) {
 		},
 		{
 			name:    "repository empty",
-			payload: `{"repository":"","issue":42,"revision":"r","issueSnapshot":"ev_1"}`,
+			payload: `{"repo":"","issue":42,"revision":"r","issueSnapshot":"ev_1"}`,
 			wantErr: "lacks a repository or issue number",
 		},
 		{
 			name:    "issue missing",
-			payload: `{"repository":"o/r","revision":"r","issueSnapshot":"ev_1"}`,
+			payload: `{"repo":"o/r","revision":"r","issueSnapshot":"ev_1"}`,
 			wantErr: "lacks a repository or issue number",
 		},
 		{
 			name:    "issue empty",
-			payload: `{"repository":"o/r","issue":0,"revision":"r","issueSnapshot":"ev_1"}`,
+			payload: `{"repo":"o/r","issue":0,"revision":"r","issueSnapshot":"ev_1"}`,
 			wantErr: "lacks a repository or issue number",
 		},
 		{
 			name:    "revision missing",
-			payload: `{"repository":"o/r","issue":42,"issueSnapshot":"ev_1"}`,
+			payload: `{"repo":"o/r","issue":42,"issueSnapshot":"ev_1"}`,
 			wantErr: "lacks a revision",
 		},
 		{
 			name:    "revision empty",
-			payload: `{"repository":"o/r","issue":42,"revision":"","issueSnapshot":"ev_1"}`,
+			payload: `{"repo":"o/r","issue":42,"revision":"","issueSnapshot":"ev_1"}`,
 			wantErr: "lacks a revision",
 		},
 		{
-			name:    "issue snapshot missing",
-			payload: `{"repository":"o/r","issue":42,"revision":"r"}`,
-			wantErr: "lacks the issue snapshot evidence id",
+			name:      "issue snapshot missing",
+			payload:   `{"repo":"o/r","issue":42,"revision":"r"}`,
+			wantErr:   "lacks the issue snapshot evidence id",
+			notAbsent: true,
 		},
 		{
 			name:    "issue snapshot empty",
-			payload: `{"repository":"o/r","issue":42,"revision":"r","issueSnapshot":""}`,
+			payload: `{"repo":"o/r","issue":42,"revision":"r","issueSnapshot":""}`,
 			wantErr: "lacks the issue snapshot evidence id",
 		},
 	}
@@ -307,6 +368,9 @@ func TestExecutorFailsOnEachIncompletePayloadField(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("error %q does not report the missing field (%q)", err, tc.wantErr)
 			}
+			if tc.notAbsent && errors.Is(err, evidence.ErrEvidenceNotFound) {
+				t.Fatalf("error %q came from the snapshot load, not the payload decoder", err)
+			}
 			if len(result.Evidence) != 0 {
 				t.Fatalf("a failed attempt fabricated %d evidence documents", len(result.Evidence))
 			}
@@ -320,7 +384,7 @@ func TestExecutorFailsOnANonCanonicalSnapshot(t *testing.T) {
 	// names no issue. The decision's repository and issue come from the payload,
 	// so without the guard this records a disposition for an issue that was
 	// never triaged, and nothing downstream re-checks it.
-	envelope := envelopeFor(putSnapshot(t, evidenceStore, ghtriage.Snapshot{}))
+	envelope := envelopeFor(t, putSnapshot(t, evidenceStore, ghtriage.Snapshot{}))
 
 	result, err := exec.Start(context.Background(), envelope)
 	if err == nil {
@@ -340,7 +404,7 @@ func TestExecutorRejectsAnEvidenceObjectThatIsNotAnIssueSnapshot(t *testing.T) {
 		Repo: "o/r", Issue: 42, Title: "Crash", Body: "boom",
 		Triage: "bug", Labels: []string{"bug"}, UpdatedAt: "2026-09-28T10:00:00Z",
 	}
-	envelope := envelopeFor(putObject(t, evidenceStore, ghtriage.KindReview, snap))
+	envelope := envelopeFor(t, putObject(t, evidenceStore, ghtriage.KindReview, snap))
 
 	result, err := exec.Start(context.Background(), envelope)
 	if err == nil {
@@ -372,16 +436,12 @@ func TestExecutorFailsWhenTheSnapshotDoesNotMatchThePayload(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			payload, err := json.Marshal(map[string]any{
-				"repository": tc.repository, "issue": tc.issue,
-				"revision": "2026-09-28T10:00:00Z", "issueSnapshot": id,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
+			payload := intakePayload(id)
+			payload["repo"] = tc.repository
+			payload["issue"] = tc.issue
 			result, err := exec.Start(context.Background(), executors.AttemptEnvelope{
 				TaskID: domain.NewID("task"), AttemptID: domain.NewID("attempt"),
-				PayloadJSON: payload,
+				PayloadJSON: mustPayload(t, payload),
 			})
 			if err == nil {
 				t.Fatal("a payload that contradicts its own snapshot was accepted")
