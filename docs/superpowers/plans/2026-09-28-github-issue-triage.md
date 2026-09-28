@@ -1342,7 +1342,6 @@ package ghtriage_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -1532,14 +1531,6 @@ func TestExecutorFailsOnAnIncompletePayload(t *testing.T) {
 		t.Fatalf("error %q does not name the missing snapshot", err)
 	}
 }
-
-type erroringModel struct{ err error }
-
-func (m erroringModel) Classify(context.Context, ghtriage.Stage2Input) (ghtriage.Stage2Output, error) {
-	return ghtriage.Stage2Output{}, m.err
-}
-
-var _ = errors.New
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
