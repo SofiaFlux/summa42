@@ -62,6 +62,13 @@ func TestClassifyRequiresExactlyOneJSONObject(t *testing.T) {
 		// value lands verbatim in the canonical decision record.
 		{"missing is_actionable", `{"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"x"}`, true},
 		{"missing needs_repro", `{"is_actionable":true,"scope":"small","suggested_type":"bug","rationale":"x"}`, true},
+		// What is rejected is an absent field, not false. A model that answers
+		// false has answered, and a not-actionable disposition is one stage 3
+		// makes from this very field; a guard written the other way round turns
+		// every honest negative into a parse error and reports a model outage
+		// for correct output. Nothing else in the table carries a false, so
+		// without this row the guard can be inverted and the suite stays green.
+		{"explicit false is_actionable", `{"is_actionable":false,"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"an ask, not a defect"}`, false},
 		{"suggested_type outside the vocabulary", `{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"epic","rationale":"x"}`, true},
 	}
 	for _, tc := range cases {
@@ -145,14 +152,21 @@ func TestClassifyFailsWhenTheProcessFails(t *testing.T) {
 // a 3s child takes 3s. Bounding the whole subtree is what makes the configured
 // timeout mean anything, and the deadline error is what makes a hung model
 // distinguishable from one that crashed.
+//
+// The script also writes to stderr before it hangs, which is the other half of
+// the report. A provider that says why it is about to stall and then stalls is
+// the case worth diagnosing, and the stderr capture is otherwise unpinned on
+// this path: return the bare runCtx.Err() instead and the errors.Is assertion
+// still passes while the diagnostic is gone.
 func TestTimeoutBoundsTheWholeSubtree(t *testing.T) {
 	const (
 		timeout    = 300 * time.Millisecond
 		childLives = 3 * time.Second
 		allowed    = 2 * time.Second
+		stderrText = "model provider unavailable"
 	)
 	slow := filepath.Join(t.TempDir(), "slow.sh")
-	script := "#!/bin/sh\ncat > /dev/null\nsleep 3 &\nwait\n"
+	script := "#!/bin/sh\ncat > /dev/null\necho '" + stderrText + "' >&2\nsleep 3 &\nwait\n"
 	if err := os.WriteFile(slow, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -168,6 +182,9 @@ func TestTimeoutBoundsTheWholeSubtree(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error %v is not distinguishable from a crashed model", err)
+	}
+	if !strings.Contains(err.Error(), stderrText) {
+		t.Fatalf("error %q does not carry the model's stderr %q", err, stderrText)
 	}
 	if elapsed > allowed {
 		t.Fatalf("the timeout did not bound the subtree: %s elapsed, want roughly %s and not the child's %s",

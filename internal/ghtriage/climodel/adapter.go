@@ -80,9 +80,16 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 		// Checked before the process error is wrapped, so a caller can tell a
 		// model that hung from one that crashed: cancelling the subtree kills
 		// it, and the wrapped signal-kill is indistinguishable from a crash by
-		// eye. errors.Is against DeadlineExceeded is the only handle on it.
+		// eye. errors.Is against DeadlineExceeded is the only handle on it, so
+		// the deadline is wrapped rather than returned bare.
+		//
+		// Either way the captured stderr rides along. A provider reporting a
+		// rate limit or an auth failure and then stalling is exactly the case
+		// worth diagnosing, and a bare deadline exceeded leaves no trace of it:
+		// before this branch existed that text reached the caller, so dropping
+		// it here would make a timeout quieter than a plain crash.
 		if runCtx.Err() != nil {
-			return nil, runCtx.Err()
+			return nil, fmt.Errorf("%w: %s", runCtx.Err(), stderr.String())
 		}
 		return nil, fmt.Errorf("model invocation failed: %w: %s", err, stderr.String())
 	}
