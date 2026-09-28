@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/execution"
 	"github.com/SofiaFlux/summa42/internal/executors"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 	"github.com/SofiaFlux/summa42/internal/purpose"
 	"github.com/SofiaFlux/summa42/internal/resources"
 	summa42runtime "github.com/SofiaFlux/summa42/internal/runtime"
@@ -212,5 +214,109 @@ func TestTriageModelAdapterRegistersAUsableModelBinary(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want no notice when the model is usable", stderr.String())
+	}
+}
+
+// triageModelConfigFor reads the model flags the way runWorker does, so the
+// installation tests cover the flag path and not only the config literal.
+func triageModelConfigFor(t *testing.T, args ...string) climodel.Config {
+	t.Helper()
+	_, _, modelConfig, err := parseWorkerFlags(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return modelConfig
+}
+
+// A model binary that is not on PATH must leave the registry holding no triage
+// executor, because that registry is the only capability source workerCapacity
+// reads: no key, no github.issue.read, no lease. An executor registered with a
+// nil classifier would advertise the capability and fail every attempt.
+func TestInstallTriageExecutorLeavesADegradedBoxUnregistered(t *testing.T) {
+	ctx := context.Background()
+	work := newTriageWorkload(t)
+	registry := map[string]executors.Executor{"copilot": triageCapacityExecutor{}}
+	var stderr bytes.Buffer
+	installed := installTriageExecutor(registry, work.evidence, triageModelConfigFor(t,
+		"--model-binary="+filepath.Join(t.TempDir(), "absent")), &stderr)
+	if installed {
+		t.Fatal("installed the triage executor with a model binary that is not on PATH")
+	}
+	if executor, registered := registry[ghtriage.ExecutorKind]; registered {
+		t.Fatalf("registry[%q] = %#v, want no triage executor: one built with a nil classifier fails every attempt",
+			ghtriage.ExecutorKind, executor)
+	}
+	capacity, err := workerCapacity(&summa42runtime.Box{Executors: registry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if available, advertised := capacity.Capabilities[ghtriage.RequiredCapability]; advertised {
+		t.Fatalf("capacity advertises %q = %+v with no %s executor registered",
+			ghtriage.RequiredCapability, available, ghtriage.ExecutorKind)
+	}
+	worker, err := scheduler.NewWorker(work.scheduler, work.execution, work.evidence, work.verify, registry, work.clock, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	step, err := worker.StepOnce(ctx, capacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step.Outcome != scheduler.StepIdle {
+		t.Fatalf("step = %+v, want IDLE: a degraded box must not lease triage work", step)
+	}
+	notice := stderr.String()
+	for _, fragment := range []string{ghtriage.ExecutorKind, "is not registered", "absent"} {
+		if !strings.Contains(notice, fragment) {
+			t.Fatalf("stderr = %q, want a notice naming %q and why it is unusable", notice, fragment)
+		}
+	}
+}
+
+// The usable half of the same seam: the key lands in the registry and the
+// capacity derived from that registry advertises the read capability the triage
+// Task requires.
+func TestInstallTriageExecutorRegistersAUsableModelAndAdvertisesTheReadCapability(t *testing.T) {
+	work := newTriageWorkload(t)
+	registry := map[string]executors.Executor{"copilot": triageCapacityExecutor{}}
+	var stderr bytes.Buffer
+	installed := installTriageExecutor(registry, work.evidence, triageModelConfigFor(t,
+		"--model-binary="+usableModelBinary(t), "--model-timeout=5s"), &stderr)
+	if !installed {
+		t.Fatalf("installed = false with a usable model binary, want the %s executor registered", ghtriage.ExecutorKind)
+	}
+	if _, registered := registry[ghtriage.ExecutorKind]; !registered {
+		t.Fatalf("registry = %v, want the %s key", registry, ghtriage.ExecutorKind)
+	}
+	capacity, err := workerCapacity(&summa42runtime.Box{Executors: registry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	available, advertised := capacity.Capabilities[ghtriage.RequiredCapability]
+	if !advertised || !available.Accessible || available.Enforcement != domain.EnforcementEnforced {
+		t.Fatalf("capacity[%q] = %+v (advertised %t), want enforced accessible capability",
+			ghtriage.RequiredCapability, available, advertised)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want no notice when the model is usable", stderr.String())
+	}
+}
+
+// triageModelConfig is documented as reusable by run-gh-triage-driver and
+// run-gh-triage-review, which bring their own flag sets. Reading a flag that
+// was never registered has to say so instead of dereferencing nil.
+func TestTriageModelConfigReportsAFlagSetThatNeverRegisteredTheModelFlags(t *testing.T) {
+	bare := flag.NewFlagSet("run-gh-triage-driver", flag.ContinueOnError)
+	if _, err := triageModelConfig(bare); err == nil {
+		t.Fatal("triageModelConfig accepted a flag set with no model flags")
+	} else if !strings.Contains(err.Error(), "--model-binary") {
+		t.Fatalf("error = %q, want it to name the missing --model-binary", err)
+	}
+	partial := flag.NewFlagSet("run-gh-triage-review", flag.ContinueOnError)
+	partial.String("model-binary", "codex", "model binary classifying a triage issue")
+	if _, err := triageModelConfig(partial); err == nil {
+		t.Fatal("triageModelConfig accepted a flag set with no --model-timeout")
+	} else if !strings.Contains(err.Error(), "--model-timeout") {
+		t.Fatalf("error = %q, want it to name the missing --model-timeout", err)
 	}
 }

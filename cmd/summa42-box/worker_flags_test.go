@@ -57,6 +57,11 @@ func TestParseWorkerFlagsRejectsUnusableModelValues(t *testing.T) {
 	if _, _, _, err := parseWorkerFlags([]string{"--model-timeout=0s"}); err == nil {
 		t.Fatal("expected error for a non-positive --model-timeout")
 	}
+	if _, _, _, err := parseWorkerFlags([]string{"--model-binary="}); err == nil {
+		t.Fatal("expected error for a blank --model-binary")
+	} else if !strings.Contains(err.Error(), "--model-binary") {
+		t.Fatalf("error = %q, want it to name --model-binary", err)
+	}
 }
 
 func TestSplitWorkspaceRootArgEqualsForm(t *testing.T) {

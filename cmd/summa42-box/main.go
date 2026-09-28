@@ -20,6 +20,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/capabilities"
 	"github.com/SofiaFlux/summa42/internal/control"
 	"github.com/SofiaFlux/summa42/internal/domain"
+	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/executors"
 	"github.com/SofiaFlux/summa42/internal/feedbackgithub"
 	"github.com/SofiaFlux/summa42/internal/fieldfeedback"
@@ -503,13 +504,25 @@ func parseWorkerFlags(args []string) (pollInterval time.Duration, leaseDuration 
 }
 
 // triageModelConfig reads the model flags off any flag set, so run-worker,
-// run-gh-triage-driver and run-gh-triage-review agree on the model. A flag value
-// that cannot be honoured is a configuration mistake and stays a startup error:
-// the degradation in triageModelAdapter covers a model binary that is not on
-// PATH, never a flag that cannot be parsed.
+// run-gh-triage-driver and run-gh-triage-review agree on the model; the flag
+// set must have registered both of them. A flag value that cannot be honoured
+// is a configuration mistake and stays a startup error: the degradation in
+// triageModelAdapter covers a model binary that is not on PATH, never a flag
+// that cannot be parsed and never a value that was never given.
 func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
-	binary := flags.Lookup("model-binary").Value.String()
-	timeout := flags.Lookup("model-timeout").Value.String()
+	binaryFlag := flags.Lookup("model-binary")
+	if binaryFlag == nil {
+		return climodel.Config{}, errors.New("model flags are not registered: --model-binary is missing from the flag set")
+	}
+	timeoutFlag := flags.Lookup("model-timeout")
+	if timeoutFlag == nil {
+		return climodel.Config{}, errors.New("model flags are not registered: --model-timeout is missing from the flag set")
+	}
+	binary := binaryFlag.Value.String()
+	timeout := timeoutFlag.Value.String()
+	if strings.TrimSpace(binary) == "" {
+		return climodel.Config{}, fmt.Errorf("run-worker requires a non-empty --model-binary, got %q", binary)
+	}
 	duration, err := time.ParseDuration(timeout)
 	if err != nil {
 		return climodel.Config{}, fmt.Errorf("parse --model-timeout: %w", err)
@@ -534,6 +547,24 @@ func triageModelAdapter(modelConfig climodel.Config, stderr io.Writer) (*climode
 		return nil, false
 	}
 	return adapter, true
+}
+
+// installTriageExecutor puts the triage executor in registry when the model
+// binary can actually be invoked, and reports whether it did. A model that
+// cannot be invoked leaves the registry untouched: no executor means no
+// github.issue.read in the capacity derived from that registry, so triage Tasks
+// stay unclaimed rather than being claimed by an executor whose classifier is
+// nil and fails every attempt. The evidence store is the Box's, so this runs
+// after the runtime is open; the model verdict that gates the routing runs
+// before it and hands this call io.Discard, so a degraded box still prints
+// exactly one notice.
+func installTriageExecutor(registry map[string]executors.Executor, evidenceStore *evidence.Store, modelConfig climodel.Config, stderr io.Writer) bool {
+	adapter, usable := triageModelAdapter(modelConfig, stderr)
+	if !usable {
+		return false
+	}
+	registry[ghtriage.ExecutorKind] = ghtriage.NewExecutor(evidenceStore, adapter)
+	return true
 }
 
 func splitWorkspaceRootArg(args []string) (workspaceRoot string, rest []string, err error) {
@@ -655,8 +686,8 @@ func runWorker(ctx context.Context, args []string) error {
 	if leaseDuration > 0 {
 		runtimeCfg.LeaseDuration = leaseDuration
 	}
-	classifier, triageRegistered := triageModelAdapter(modelConfig, os.Stderr)
-	if triageRegistered {
+	_, triageUsable := triageModelAdapter(modelConfig, os.Stderr)
+	if triageUsable {
 		runtimeCfg.TaskClassRouting = map[string]string{ghtriage.TaskClass: ghtriage.ExecutorKind}
 	}
 	box, err := summa42runtime.Open(ctx, runtimeCfg)
@@ -664,9 +695,9 @@ func runWorker(ctx context.Context, args []string) error {
 		return fmt.Errorf("open Box runtime: %w", err)
 	}
 	defer box.Close()
-	if triageRegistered {
-		box.Executors[ghtriage.ExecutorKind] = ghtriage.NewExecutor(box.Evidence, classifier)
-	}
+	// The verdict above already printed the degradation notice and decided the
+	// routing, so the registration pass must not print it a second time.
+	installTriageExecutor(box.Executors, box.Evidence, modelConfig, io.Discard)
 	if adoProvider != nil {
 		publisher, err := adoreview.NewPublisher(adoreview.PublishConfig{
 			Mode:           publishCfg.mode,

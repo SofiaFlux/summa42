@@ -107,10 +107,14 @@ func TestRunWorkerStartsWithAUsableModelBinary(t *testing.T) {
 
 // A model flag that cannot be honoured is a misconfiguration, not a missing
 // dependency, so it still stops the box from starting. The degradation covers a
-// model that cannot be invoked and must not swallow this.
+// model that cannot be invoked and must not swallow this. The deadline bounds
+// the test the way it bounds the two above: a regression that stops parsing
+// --model-timeout would otherwise run this to the package timeout.
 func TestRunWorkerStillRejectsAMalformedModelTimeout(t *testing.T) {
 	initializedCollective(t)
-	err := runWorker(context.Background(), []string{
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := runWorker(ctx, []string{
 		"--workspace-root=" + t.TempDir(),
 		"--model-timeout=nope",
 	})
