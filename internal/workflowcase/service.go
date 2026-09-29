@@ -224,6 +224,60 @@ func (s *Service) ListAssessments(ctx context.Context, caseID domain.ID) ([]Asse
 	return records, nil
 }
 
+// ListByObject returns every case of one object across all states. Supersession
+// cannot be built on ListActive: once an assessment clears current_work_id the
+// case is BLOCKED, so the accepted decision that identifies the newest revision
+// disappears from an active-only scan and the driver forgets newer work after a
+// restart.
+func (s *Service) ListByObject(ctx context.Context, missionID domain.ID, source, objectID string) ([]Case, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("workflow case service is not configured")
+	}
+	missionID = domain.ID(strings.TrimSpace(string(missionID)))
+	source = strings.TrimSpace(source)
+	objectID = strings.TrimSpace(objectID)
+	if missionID == "" || source == "" || objectID == "" {
+		return nil, errors.New("mission, source, and object ID are required")
+	}
+	return s.listWhere(ctx,
+		`mission_id = ? AND source = ? AND object_id = ?`, missionID, source, objectID)
+}
+
+// ListBySource returns every case of one source across all states, which the
+// reviewer needs because a superseded case it must re-read is BLOCKED.
+func (s *Service) ListBySource(ctx context.Context, missionID domain.ID, source string) ([]Case, error) {
+	if s == nil || s.store == nil {
+		return nil, errors.New("workflow case service is not configured")
+	}
+	missionID = domain.ID(strings.TrimSpace(string(missionID)))
+	source = strings.TrimSpace(source)
+	if missionID == "" || source == "" {
+		return nil, errors.New("mission and source are required")
+	}
+	return s.listWhere(ctx, `mission_id = ? AND source = ?`, missionID, source)
+}
+
+func (s *Service) listWhere(ctx context.Context, predicate string, args ...any) ([]Case, error) {
+	rows, err := s.store.DB().QueryContext(ctx,
+		`SELECT `+caseColumns+` FROM workflow_cases WHERE `+predicate+` ORDER BY revision_id, case_id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list workflow cases: %w", err)
+	}
+	defer rows.Close()
+	cases := make([]Case, 0)
+	for rows.Next() {
+		c, _, err := scanCase(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan workflow case: %w", err)
+		}
+		cases = append(cases, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list workflow cases: %w", err)
+	}
+	return cases, nil
+}
+
 func (s *Service) Close(ctx context.Context, request VerificationRequest) (VerificationRecord, error) {
 	if s == nil || s.store == nil || s.clock == nil || s.purposes == nil {
 		return VerificationRecord{}, errors.New("workflow case service is not configured")
