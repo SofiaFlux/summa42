@@ -48,21 +48,23 @@ type Driver struct {
 	verification *verification.Service
 	manifests    *runmanifest.Service
 	evidence     *evidence.Store
-	clock        clock.Clock
 }
 
-func NewDriver(cases *workflowcase.Service, exec *execution.Service, ver *verification.Service, manifests *runmanifest.Service, store *evidence.Store, clk clock.Clock) *Driver {
+// NewDriver wires the services the driver reads and writes. It takes no clock:
+// every timestamp the driver causes is stamped by the service that owns the row
+// - the decision was written by the worker, the assessment is stamped by the
+// case service - so the driver has no time of its own to keep.
+func NewDriver(cases *workflowcase.Service, exec *execution.Service, ver *verification.Service, manifests *runmanifest.Service, store *evidence.Store, _ clock.Clock) *Driver {
 	return &Driver{
 		cases: cases, execution: exec, verification: ver,
-		manifests: manifests, evidence: store, clock: clk,
+		manifests: manifests, evidence: store,
 	}
 }
 
 type acceptedRevision struct {
-	c           workflowcase.Case
-	revision    time.Time
-	disposition Disposition
-	evidenceID  domain.ID
+	c          workflowcase.Case
+	revision   time.Time
+	evidenceID domain.ID
 }
 
 // Tick advances every GitHub case of the mission. It runs after the lease has
@@ -156,12 +158,8 @@ func (d *Driver) advanceAccepted(ctx context.Context, cases []workflowcase.Case,
 			if err := d.applyDisposition(ctx, current, current.CurrentWorkID, *decision, evidenceID, result); err != nil {
 				return accepted, err
 			}
-			if err := d.recordAccepted(ctx, current, *decision, evidenceID, result); err != nil {
-				return accepted, err
-			}
 			accepted = append(accepted, acceptedRevision{
-				c: current, revision: parseRevision(current.RevisionID),
-				disposition: decision.FinalDisposition(), evidenceID: evidenceID,
+				c: current, revision: parseRevision(current.RevisionID), evidenceID: evidenceID,
 			})
 		case domain.TaskSucceeded:
 			decision, evidenceID, err := d.recoverAccepted(ctx, c, task)
@@ -175,8 +173,7 @@ func (d *Driver) advanceAccepted(ctx context.Context, cases []workflowcase.Case,
 				return accepted, err
 			}
 			accepted = append(accepted, acceptedRevision{
-				c: c, revision: parseRevision(c.RevisionID),
-				disposition: decision.FinalDisposition(), evidenceID: evidenceID,
+				c: c, revision: parseRevision(c.RevisionID), evidenceID: evidenceID,
 			})
 		case domain.TaskBlocked:
 			if err := d.blockFailedTask(ctx, c, task, result); err != nil {
@@ -219,7 +216,7 @@ func (d *Driver) acceptDecision(ctx context.Context, c workflowcase.Case, task d
 	if err != nil || decision == nil {
 		return nil, domain.ID(""), err
 	}
-	if err := d.recordAccepted(ctx, c, *decision, evidenceID, result); err != nil {
+	if err := d.recordAccepted(ctx, c, evidenceID); err != nil {
 		return nil, domain.ID(""), err
 	}
 	if _, err := d.verification.AcceptTask(ctx, task.ID, verification.AcceptanceRequest{
@@ -273,9 +270,10 @@ type acceptedIndex struct {
 }
 
 // recordAccepted writes the driver's restart index before AcceptTask, so a
-// crash between the two leaves a recoverable record. Content hashing dedupes
-// it across ticks.
-func (d *Driver) recordAccepted(ctx context.Context, c workflowcase.Case, decision Decision, evidenceID domain.ID, result *DriverResult) error {
+// crash between the two leaves a recoverable record. It carries no decision:
+// the decision is already stored under its own ID, which is the field a replay
+// reads. Content hashing dedupes the record across ticks.
+func (d *Driver) recordAccepted(ctx context.Context, c workflowcase.Case, evidenceID domain.ID) error {
 	record := acceptedIndex{
 		Schema:             "github.issue.triage.accepted.v1",
 		CaseID:             c.ID,
@@ -434,11 +432,10 @@ func (d *Driver) blockFailedTask(ctx context.Context, c workflowcase.Case, task 
 
 // supersede stops an older revision's pending work and blocks its case. The
 // challenge runs before the assessment, so a crash between them leaves an
-// inert task and an ACTIVE case the next tick can finish.
+// inert task and an ACTIVE case the next tick can finish. Every revision it
+// closes records the same superseded-by reason, whether its triage had already
+// produced a decision or had not run at all.
 func (d *Driver) supersede(ctx context.Context, older, newest acceptedRevision, result *DriverResult) error {
-	if older.c.State != workflowcase.Active {
-		return nil
-	}
 	// A supersession is recorded against evidence: the challenge persists it and
 	// the assessment cites it. A newer revision that has neither a decision nor
 	// an observation has nothing to record, and both writes would either persist
@@ -463,22 +460,15 @@ func (d *Driver) supersede(ctx context.Context, older, newest acceptedRevision, 
 				domain.ChallengeTask, reason, []domain.ID{newest.evidenceID}); err != nil {
 				return err
 			}
-			// The task may have moved under a racing lease, so follow the row
-			// that is now current instead of assuming the challenge applied.
-			if reloaded, stillFound, err := d.execution.FindByIdempotencyKey(ctx, string(taskID)); err != nil {
-				return err
-			} else if stillFound {
-				task = reloaded
-			}
 		case domain.TaskAwaitingVerification:
-			decision, evidenceID, err := d.acceptDecision(ctx, older.c, task, result)
-			if err != nil {
+			// The older revision's triage did run, so its task is accepted on
+			// the decision it produced; only the case is left to the caller
+			// below. Applying that decision's disposition here instead would
+			// record the disposition as the reason for closing the case, so the
+			// audit row would say not-actionable on one path and
+			// superseded-by on the other for the same fact.
+			if _, _, err := d.acceptDecision(ctx, older.c, task, result); err != nil {
 				return err
-			}
-			if decision != nil {
-				if err := d.applyDisposition(ctx, older.c, older.c.CurrentWorkID, *decision, evidenceID, result); err != nil {
-					return err
-				}
 			}
 		}
 	}

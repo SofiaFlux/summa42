@@ -1235,7 +1235,10 @@ func openGHTriageDriverBox(ctx context.Context, cfg summa42runtime.Config) (*sum
 // runGHTriageDriver advances every GitHub case of the mission exactly once and
 // prints the result as JSON on stdout. A per-object failure is reported inside
 // that JSON rather than on stderr, so a caller sees the partial work the tick
-// did complete; only a tick that could not start is an error.
+// did complete; the failure still decides the exit code, because an object that
+// cannot be advanced - a case whose decision cannot be read, a supersession with
+// no evidence to record - would otherwise be indistinguishable from a healthy
+// tick to anything watching the exit status.
 func runGHTriageDriver(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
@@ -1273,10 +1276,25 @@ func runGHTriageDriver(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Encoded before the failure is reported, so the work the tick did complete
+	// is on stdout either way.
 	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 		return fmt.Errorf("encode triage driver result: %w", err)
 	}
-	return nil
+	return ghtriageDriverTickFailure(result)
+}
+
+// ghtriageDriverTickFailure turns a per-object failure into the subcommand's
+// error. Failures means an object could not be advanced, not that an object was
+// blocked: a blocked case is an outcome the tick reports through Blocked and
+// through the case's own assessment, so a mission with an exhausted triage task
+// still exits 0.
+func ghtriageDriverTickFailure(result ghtriage.DriverResult) error {
+	if len(result.Failures) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%d GitHub object(s) could not be advanced: %s",
+		len(result.Failures), strings.Join(result.Failures, "; "))
 }
 
 const (
