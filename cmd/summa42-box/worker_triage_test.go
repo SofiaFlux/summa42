@@ -293,6 +293,14 @@ func TestTriageModelConfigDefaultsCodexToExec(t *testing.T) {
 	if !slices.Equal(got.Args, []string{"exec"}) {
 		t.Fatalf("args = %q, want [exec] when no --model-arg was passed", got.Args)
 	}
+	for _, binary := range []string{"./codex", "/usr/local/bin/codex"} {
+		if got := triageModelConfigFor(t, "--model-binary="+binary); !slices.Equal(got.Args, []string{"exec"}) {
+			t.Errorf("binary %q args = %q, want [exec] when no --model-arg was passed", binary, got.Args)
+		}
+	}
+	if got := triageModelConfigFor(t, "--model-binary=codex"); !slices.Equal(got.Args, []string{"exec"}) {
+		t.Fatalf("explicit codex args = %q, want [exec] when no --model-arg was passed", got.Args)
+	}
 	if _, config, err := parseGHTriageReviewFlags([]string{"--mission", "mission-1"}); err != nil {
 		t.Fatal(err)
 	} else if !slices.Equal(config.Args, []string{"exec"}) {
