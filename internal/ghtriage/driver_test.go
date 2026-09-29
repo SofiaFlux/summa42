@@ -221,6 +221,14 @@ func (f *driverFixture) failTaskTwice(t *testing.T, revision string) {
 // why the driver keeps its own accepted index.
 func (f *driverFixture) simulateRestartAfterAcceptance(t *testing.T, object, revision string) {
 	t.Helper()
+	f.crashAfterAcceptance(t, object, revision, true)
+}
+
+// crashAfterAcceptance accepts the task and stops, leaving the case ACTIVE.
+// writeIndex=false models the state the index exists to prevent: a task already
+// accepted with nothing written that a later tick could replay.
+func (f *driverFixture) crashAfterAcceptance(t *testing.T, object, revision string, writeIndex bool) {
+	t.Helper()
 	if _, ok := f.casesByRev[revision]; !ok {
 		f.registerIssueRevision(t, object, revision)
 	}
@@ -246,17 +254,19 @@ func (f *driverFixture) simulateRestartAfterAcceptance(t *testing.T, object, rev
 	if err != nil {
 		t.Fatal(err)
 	}
-	acceptedRaw, err := json.Marshal(map[string]any{
-		"schema": "github.issue.triage.accepted.v1", "case_id": createdCase.ID,
-		"task_id": createdCase.CurrentWorkID, "revision": revision, "decision_evidence_id": decisionObject.ID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(acceptedRaw)), evidence.Metadata{
-		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindAccepted,
-	}); err != nil {
-		t.Fatal(err)
+	if writeIndex {
+		acceptedRaw, err := json.Marshal(map[string]any{
+			"schema": "github.issue.triage.accepted.v1", "case_id": createdCase.ID,
+			"task_id": createdCase.CurrentWorkID, "revision": revision, "decision_evidence_id": decisionObject.ID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(acceptedRaw)), evidence.Metadata{
+			MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindAccepted,
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := f.verifSvc.CompleteAttempt(f.ctx, attempt.ID, verification.CompletionManifest{
 		EvidenceIDs: []domain.ID{decisionObject.ID},
@@ -335,6 +345,29 @@ func (f *driverFixture) hasEvidenceKind(t *testing.T, kind string) bool {
 		t.Fatal(err)
 	}
 	return n > 0
+}
+
+// putAcceptedIndex stores a record of the accepted index kind naming a case that
+// is not registered here, which is what every other accepted triage in a store
+// leaves behind. The clock is advanced first so the record sorts ahead of
+// anything written before it, whatever the evidence ID tiebreak does.
+func (f *driverFixture) putAcceptedIndexForAnotherCase(t *testing.T, seq int) {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"schema": "github.issue.triage.accepted.v1", "case_id": domain.ID("case_another_" + strconv.Itoa(seq)),
+		"task_id":              domain.ID("work_another_" + strconv.Itoa(seq)),
+		"revision":             "2026-09-28T10:00:00Z",
+		"decision_evidence_id": domain.ID("evidence_another_" + strconv.Itoa(seq)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.clock.Advance(time.Second)
+	if _, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
+		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func notActionableDecision(issue int64, revision string) ghtriage.Decision {
@@ -596,6 +629,84 @@ func TestDriverRecoversEveryCaseWhoseAcceptedIndexIsNotTheNewest(t *testing.T) {
 	}
 	if got := f.caseState(t, otherRevision); got != "BLOCKED" {
 		t.Fatalf("%s case state = %q, want BLOCKED", otherIssue, got)
+	}
+}
+
+// The accepted index is per case and the store has no case column, so finding
+// one is a walk over the records of its kind. The ceiling that walk used to
+// carry bounded nothing real: the kind is never pruned, and every acceptance
+// writes a record carrying a fresh decision_evidence_id, so no two of them hash
+// alike and the store grows by one row per accepted triage for the life of the
+// mission. Once it passed the ceiling, a case whose record was no longer among
+// the newest N was not found, its SUCCEEDED task was skipped, and the tick
+// reported an empty result with no failure at all - a case that can never move
+// again, announced as a healthy tick. The record here is the oldest of 121, so
+// any ceiling under the count of records of the kind loses it.
+func TestDriverRecoversAnAcceptedIndexOlderThanTheScanCeiling(t *testing.T) {
+	const newerRecords = 120
+	f := newDriverFixture(t)
+	f.simulateRestartAfterAcceptance(t, fixtureIssue, fixtureRevision)
+	for i := 0; i < newerRecords; i++ {
+		f.putAcceptedIndexForAnotherCase(t, i)
+	}
+
+	result, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 0 {
+		t.Fatalf("failures = %v, want none", result.Failures)
+	}
+	if result.Assessed != 1 {
+		t.Fatalf("result = %+v, want the assessment the crash window left undone", result)
+	}
+	if got := f.caseState(t, fixtureRevision); got != "BLOCKED" {
+		t.Fatalf("case state = %q, want BLOCKED", got)
+	}
+}
+
+// A task the driver accepted with nothing written that a later tick could replay
+// is the one state it cannot recover from: internal/verification has no read
+// accessor for an acceptance record, so the index the driver writes is the only
+// replay path there is. Skipping the case leaves a SUCCEEDED task on an ACTIVE
+// case that no later tick can move, and reports a tick with nothing in it. The
+// case has to be named in the tick's failures instead, because that is what
+// reaches the operator and the command's exit code.
+func TestDriverReportsACaseItCannotReplayBecauseItsIndexIsMissing(t *testing.T) {
+	f := newDriverFixture(t)
+	f.crashAfterAcceptance(t, fixtureIssue, fixtureRevision, false)
+
+	result, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 1 {
+		t.Fatalf("failures = %v, want exactly one naming the case that could not be replayed", result.Failures)
+	}
+	createdCase := f.casesByRev[fixtureRevision]
+	for _, want := range []string{fixtureIssue, string(createdCase.ID), fixtureRevision} {
+		if !strings.Contains(result.Failures[0], want) {
+			t.Fatalf("failure %q does not name %q", result.Failures[0], want)
+		}
+	}
+	if result.Accepted != 0 || result.Assessed != 0 || result.Blocked != 0 || result.Superseded != 0 {
+		t.Fatalf("result = %+v, want every counter zero: the tick moved nothing", result)
+	}
+	// The case is left exactly as it was: the driver has nothing to replay, so
+	// it must not invent a transition. What changed is that the stall is said
+	// out loud, and it is said again on every later tick.
+	if got := f.caseState(t, fixtureRevision); got != "ACTIVE" {
+		t.Fatalf("case state = %q, want ACTIVE", got)
+	}
+	if got := f.taskState(t, fixtureRevision); got != "SUCCEEDED" {
+		t.Fatalf("task state = %q, want SUCCEEDED", got)
+	}
+	second, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Failures) != 1 {
+		t.Fatalf("second tick failures = %v, want the same stall reported again", second.Failures)
 	}
 }
 
