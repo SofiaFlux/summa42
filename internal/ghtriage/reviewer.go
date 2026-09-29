@@ -148,8 +148,18 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (bool, e
 	if err != nil {
 		return false, err
 	}
-	if _, err := r.index.LinkReview(ctx, decisionID, ReviewerVersion, fingerprint, object.ID); err != nil {
+	stored, err := r.index.LinkReview(ctx, decisionID, ReviewerVersion, fingerprint, object.ID)
+	if err != nil {
 		return false, err
+	}
+	if !stored {
+		// A concurrent tick got there first, so this document is not the one the
+		// index points at. Reporting it anyway would put a verdict on stderr that
+		// no reader can find through the index, and counting it would claim a
+		// review this tick did not record. The document itself stays: it is
+		// content-addressed and unreferenced, which costs one blob and keeps the
+		// loser's work out of the loop's own account of itself.
+		return false, nil
 	}
 	fmt.Fprintf(os.Stderr,
 		"triage review %s#%d at %s: plausible=%v structural=%+v verdict=%s\n",
@@ -240,11 +250,17 @@ func (r *Reviewer) snapshot(ctx context.Context, decision Decision) (Snapshot, e
 
 // findDecision locates the decision of a case: the assessment of its own task
 // first, and the driver's accepted index otherwise, which covers the window
-// between AcceptTask and Assess.
+// between AcceptTask and Assess. A cited id that decodes to a decision of
+// another revision is passed over rather than accepted, on both paths - see
+// loadDecision. Supersession is what makes that necessary rather than tidy: the
+// assessment that closes an older revision deliberately cites the newer
+// revision's decision as the evidence for closing it, so a case that took the
+// first decision it could decode would resolve to the newer revision's, review
+// it a second time and record the result under this case's state.
 func (r *Reviewer) findDecision(ctx context.Context, c workflowcase.Case, records []workflowcase.AssessmentRecord) (*Decision, domain.ID, error) {
 	for i := len(records) - 1; i >= 0; i-- {
 		for _, evidenceID := range assessmentEvidence(records[i]) {
-			decision, id, ok, err := r.loadDecision(ctx, evidenceID)
+			decision, id, ok, err := r.loadDecision(ctx, c.RevisionID, evidenceID)
 			if err != nil {
 				return nil, domain.ID(""), err
 			}
@@ -265,14 +281,20 @@ func (r *Reviewer) findIndexedDecision(ctx context.Context, c workflowcase.Case)
 	if err := json.Unmarshal(raw, &record); err != nil {
 		return nil, domain.ID(""), fmt.Errorf("decode accepted index: %w", err)
 	}
-	decision, id, ok, err := r.loadDecision(ctx, string(record.DecisionEvidenceID))
+	decision, id, ok, err := r.loadDecision(ctx, c.RevisionID, string(record.DecisionEvidenceID))
 	if err != nil || !ok {
 		return nil, domain.ID(""), err
 	}
 	return decision, id, nil
 }
 
-func (r *Reviewer) loadDecision(ctx context.Context, evidenceID string) (*Decision, domain.ID, bool, error) {
+// loadDecision reads a decision document and reports whether it is this case's
+// own. Decoding to KindDecision is not enough: the driver makes the same check
+// on both of the paths it reads a decision on - readDecision and
+// recoverAccepted - because a decision belonging to another revision is not
+// this case's record, and a verdict written against one is a statement about a
+// decision the case never made.
+func (r *Reviewer) loadDecision(ctx context.Context, revision, evidenceID string) (*Decision, domain.ID, bool, error) {
 	object, raw, err := r.evidence.Get(ctx, domain.ID(evidenceID))
 	if err != nil {
 		return nil, domain.ID(""), false, err
@@ -283,6 +305,9 @@ func (r *Reviewer) loadDecision(ctx context.Context, evidenceID string) (*Decisi
 	var decision Decision
 	if err := json.Unmarshal(raw, &decision); err != nil {
 		return nil, domain.ID(""), false, fmt.Errorf("decode decision %s: %w", evidenceID, err)
+	}
+	if decision.Revision != revision {
+		return nil, domain.ID(""), false, nil
 	}
 	return &decision, domain.ID(evidenceID), true, nil
 }

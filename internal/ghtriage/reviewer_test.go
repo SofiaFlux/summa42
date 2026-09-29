@@ -21,27 +21,57 @@ import (
 type reviewerFixture struct {
 	driver *driverFixture
 	model  *fakemodel.Fake
+	index  ghtriage.ReviewIndexStore
 	review *ghtriage.Reviewer
 }
 
-func newReviewerFixture(t *testing.T) *reviewerFixture {
+// newReviewerFixture builds the standard one-revision fixture. An older revision
+// passed here is registered first and left pending, so the driver's tick
+// supersedes it against the fixture revision: that is the shape in which the
+// assessment that closes the older case cites a decision belonging to the newer
+// one.
+func newReviewerFixture(t *testing.T, olderRevisions ...string) *reviewerFixture {
+	t.Helper()
+	return newFixtureDeciding(t, readyToPlanDecision, olderRevisions...)
+}
+
+// newNotActionableReviewerFixture is the same fixture on the other disposition.
+// The driver blocks the case and records an assessment, so the reviewer reads a
+// case that was closed with a reason rather than one left open with none.
+func newNotActionableReviewerFixture(t *testing.T) *reviewerFixture {
+	t.Helper()
+	return newFixtureDeciding(t, notActionableDecision)
+}
+
+func newFixtureDeciding(t *testing.T, decide func(int64, string) ghtriage.Decision, olderRevisions ...string) *reviewerFixture {
 	t.Helper()
 	f := newDriverFixture(t)
+	for _, revision := range olderRevisions {
+		f.registerRevision(t, revision)
+	}
 	f.registerRevision(t, fixtureRevision)
 	// A ready-to-plan decision leaves the case ACTIVE, which is the state the
 	// reviewer has to be able to read a decision from and the one it can then
 	// see superseded. The driver must run once so the task is accepted and the
 	// accepted index is written; the reviewer reads state the driver produced.
-	f.completeTaskWithDecision(t, fixtureRevision, readyToPlanDecision(42, fixtureRevision))
+	f.completeTaskWithDecision(t, fixtureRevision, decide(42, fixtureRevision))
 	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
 		t.Fatal(err)
 	}
 	model := fakemodel.New()
+	index := ghtriage.NewReviewIndex(f.store, f.clock)
 	return &reviewerFixture{
 		driver: f,
 		model:  model,
-		review: ghtriage.NewReviewer(f.cases, f.evidenceStore, ghtriage.NewReviewIndex(f.store, f.clock), model, f.clock),
+		index:  index,
+		review: ghtriage.NewReviewer(f.cases, f.evidenceStore, index, model, f.clock),
 	}
+}
+
+// reviewWithIndex rebuilds the reviewer over another index, so a test can
+// observe what the loop does with what the index answers.
+func (rf *reviewerFixture) reviewWithIndex(index ghtriage.ReviewIndexStore) {
+	rf.review = ghtriage.NewReviewer(rf.driver.cases, rf.driver.evidenceStore, index, rf.model, rf.driver.clock)
 }
 
 func (rf *reviewerFixture) verdictCount(t *testing.T) int {
@@ -86,6 +116,39 @@ func (rf *reviewerFixture) lastVerdict(t *testing.T) ghtriage.ReviewVerdict {
 		t.Fatal(err)
 	}
 	return verdict
+}
+
+// rewriteLatestAssessmentReason edits the reason in the assessment the driver
+// recorded, which is the only way to reach a case closed as not-actionable under
+// some other reason: Assess refuses a case that is not ACTIVE, so a blocked case
+// cannot be assessed a second time. The assessment id is left alone, so the
+// fingerprint - and therefore the review this reaches - is the one the matching
+// case earned with the same case state and the same assessment.
+func (rf *reviewerFixture) rewriteLatestAssessmentReason(t *testing.T, reason string) {
+	t.Helper()
+	createdCase := rf.driver.casesByRev[fixtureRevision]
+	records, err := rf.driver.cases.ListAssessments(rf.driver.ctx, createdCase.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) == 0 {
+		t.Fatal("the case has no assessment to rewrite")
+	}
+	latest := records[len(records)-1]
+	var result workflowcase.AssessmentResult
+	if err := json.Unmarshal([]byte(latest.ResultJSON), &result); err != nil {
+		t.Fatal(err)
+	}
+	result.Decision.Reason = reason
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rf.driver.store.DB().ExecContext(rf.driver.ctx,
+		`UPDATE workflow_assessments SET result_json = ? WHERE assessment_id = ?`,
+		string(raw), latest.ID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // rewriteDecision stores a new decision document and repoints the driver's
@@ -170,6 +233,53 @@ func TestReviewerReviewsAgainAfterSupersessionChangesTheFingerprint(t *testing.T
 	}
 	if got := rf.verdictCount(t); got != 2 {
 		t.Fatalf("verdict documents = %d, want 2", got)
+	}
+}
+
+// Supersession closes the older case by citing the newer revision's decision: the
+// evidence for "this revision is out of date" is the thing that replaced it. So
+// the older case's newest assessment names a decision that is not its own, and a
+// reviewer that took the first decision it could decode from an assessment
+// resolved to the newer revision's - reviewing the same decision a second time,
+// under a state it was never in. What the older case is entitled to is nothing:
+// it was never triaged, so it made no decision and there is nothing of its own
+// to check, which is what Skipped says.
+func TestReviewerReviewsOnlyTheDecisionTheCaseItselfMade(t *testing.T) {
+	const older = "2026-09-28T09:00:00Z"
+	rf := newReviewerFixture(t, older)
+	rf.model.ScriptedReview = []bool{true, true}
+
+	if got := rf.driver.caseState(t, older); got != string(workflowcase.Blocked) {
+		t.Fatalf("older case state = %q, want BLOCKED: the driver superseded it", got)
+	}
+	if got := rf.driver.latestAssessmentEvidence(t, older); len(got) != 1 ||
+		string(got[0]) != string(rf.driver.decisionEvidenceID(t)) {
+		t.Fatalf("older assessment evidence = %v, want the newer revision's decision %s",
+			got, rf.driver.decisionEvidenceID(t))
+	}
+
+	result, err := rf.review.Tick(context.Background(), rf.driver.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reviewed != 1 || result.Skipped != 1 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want one review and one skip over two cases", result)
+	}
+	if got := len(rf.model.ReviewInputs); got != 1 {
+		t.Fatalf("model calls = %d, want exactly one: the newer decision, reviewed once", got)
+	}
+	if got := rf.reviewLinkCount(t); got != 1 {
+		t.Fatalf("review index rows = %d, want 1: one per decision and state", got)
+	}
+	verdict := rf.lastVerdict(t)
+	if verdict.Revision != fixtureRevision {
+		t.Fatalf("verdict revision = %q, want %q", verdict.Revision, fixtureRevision)
+	}
+	if verdict.CaseState != string(workflowcase.Active) {
+		t.Fatalf("verdict case state = %q, want ACTIVE: the newer case is the one that was reviewed", verdict.CaseState)
+	}
+	if verdict.LatestAssessmentID != nil {
+		t.Fatalf("verdict latest assessment = %q, want none: the newer case has none", *verdict.LatestAssessmentID)
 	}
 }
 
@@ -339,6 +449,114 @@ func TestReviewerAcceptsASupersededCaseAsAnAllowedTerminalState(t *testing.T) {
 	if !verdict.Structural.StateMatchesDisposition {
 		t.Fatalf("a correctly superseded case was reported as a violation: %+v", verdict.Structural)
 	}
+}
+
+// The other two branches of stateMatches, which the superseded case above never
+// reaches: a review of a case that is behaving exactly as its disposition says
+// has to come back clean, and a review of one that was closed for some other
+// reason has to come back flagged. A rule that only ever reports false is not
+// a rule - it makes the whole field meaningless - so all three outcomes are
+// pinned here, not only the one a violation would exercise.
+func TestReviewerAcceptsARecentReadyToPlanCaseAsMatchingItsDisposition(t *testing.T) {
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	verdict := rf.lastVerdict(t)
+	// The precondition the branch reads: a ready-to-plan decision leaves the
+	// case ACTIVE and assesses nothing, so there is no assessment to disagree
+	// with and the case is not waiting on anybody.
+	if verdict.LatestAssessmentID != nil {
+		t.Fatalf("latest assessment = %q, want none: ready-to-plan closes nothing", *verdict.LatestAssessmentID)
+	}
+	if verdict.CaseState != string(workflowcase.Active) {
+		t.Fatalf("case state = %q, want ACTIVE", verdict.CaseState)
+	}
+	if !verdict.Structural.StateMatchesDisposition {
+		t.Fatalf("an active case with a ready-to-plan decision was reported as a violation: %+v", verdict.Structural)
+	}
+}
+
+// A not-actionable decision is closed by the driver as an assessment whose
+// reason is the disposition itself, so the matching case is BLOCKED and its
+// latest assessment says not-actionable. That is the pair the default branch
+// compares, and it has to be accepted for the check to mean anything.
+func TestReviewerAcceptsANotActionableCaseClosedUnderItsOwnDisposition(t *testing.T) {
+	rf := newNotActionableReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	verdict := rf.lastVerdict(t)
+	if verdict.CaseState != string(workflowcase.Blocked) {
+		t.Fatalf("case state = %q, want BLOCKED: not-actionable closes the case", verdict.CaseState)
+	}
+	if got := rf.driver.latestAssessmentReason(t, fixtureRevision); got != string(ghtriage.DispositionNotActionable) {
+		t.Fatalf("assessment reason = %q, want %q", got, ghtriage.DispositionNotActionable)
+	}
+	if !verdict.Structural.StateMatchesDisposition {
+		t.Fatalf("a case closed under its own disposition was reported as a violation: %+v", verdict.Structural)
+	}
+}
+
+// The same case, the same decision, the same assessment, one field apart: a
+// case closed for a reason the decision does not name. Nothing else in the
+// verdict moves, so this is the only thing that says the default branch reads
+// the reason at all rather than only the case state - and a not-actionable case
+// closed under some other reason is exactly the state a disagreement between
+// the decision and the driver's disposition would produce.
+func TestReviewerReportsANotActionableCaseClosedUnderAnotherReason(t *testing.T) {
+	rf := newNotActionableReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+	rf.rewriteLatestAssessmentReason(t, "ready-to-plan")
+
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	verdict := rf.lastVerdict(t)
+	if verdict.Structural.StateMatchesDisposition {
+		t.Fatalf("a case closed as ready-to-plan against a not-actionable decision was accepted: %+v", verdict.Structural)
+	}
+}
+
+// Two ticks that reach the same decision at the same time both pay for the model
+// call, and the primary key on the index decides which verdict is the one a
+// reader finds. The loser has already written its document by then, so the only
+// thing the bool it gets back buys is that it does not report or count a verdict
+// no reader can reach.
+func TestReviewerSaysNothingWhenTheIndexKeptTheOtherTicksVerdict(t *testing.T) {
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+	rf.reviewWithIndex(losingLinkIndex{ReviewIndexStore: rf.index})
+
+	readStderr := captureReviewerStderr(t)
+	result, err := rf.review.Tick(context.Background(), rf.driver.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reviewed != 0 || result.Skipped != 1 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want the case skipped: this tick stored no verdict", result)
+	}
+	if printed := readStderr(); strings.TrimSpace(printed) != "" {
+		t.Fatalf("stderr = %q, want nothing: the verdict this tick did not store was reported", printed)
+	}
+	if got := rf.reviewLinkCount(t); got != 0 {
+		t.Fatalf("review index rows = %d, want 0: the other tick's row is not this fixture's", got)
+	}
+}
+
+// losingLinkIndex is the index as a concurrent tick would have it by the time
+// this one reaches the link: the decision has already been reviewed for this
+// state, and this tick's row is the one that loses.
+type losingLinkIndex struct {
+	ghtriage.ReviewIndexStore
+}
+
+func (losingLinkIndex) LinkReview(context.Context, domain.ID, string, string, domain.ID) (bool, error) {
+	return false, nil
 }
 
 func TestReviewerReportsAClassificationThatDisagreesWithIntake(t *testing.T) {
