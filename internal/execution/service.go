@@ -515,23 +515,23 @@ func (s *Service) ChallengeTaskIfInStates(ctx context.Context, taskID domain.ID,
 			return err
 		}
 		if currentAttempt.Valid {
-			result, err := tx.ExecContext(ctx,
+			var result sql.Result
+			if result, err = tx.ExecContext(ctx,
 				`UPDATE attempts SET lease_state = ?, state = ?, completed_at = COALESCE(completed_at, ?) WHERE attempt_id = ? AND lease_state = ?`,
 				domain.LeaseRevoked, domain.AttemptCancelled, formatTime(now), currentAttempt.String, domain.LeaseActive,
-			)
-			if err != nil {
+			); err != nil {
 				return err
 			}
-			revoked, err := result.RowsAffected()
-			if err != nil {
+			var revoked int64
+			if revoked, err = result.RowsAffected(); err != nil {
 				return err
 			}
 			if revoked != 1 {
-				terminal, err := terminalAttempt(ctx, tx, domain.ID(currentAttempt.String))
-				if err != nil {
+				var exists bool
+				if exists, err = attemptExists(ctx, tx, domain.ID(currentAttempt.String)); err != nil {
 					return err
 				}
-				if !terminal {
+				if !exists {
 					return domain.ErrStaleAttempt
 				}
 			}
@@ -898,33 +898,28 @@ func validTaskState(state domain.TaskState) bool {
 	}
 }
 
-// terminalAttempt reports whether an attempt the revocation UPDATE could not
-// touch is already finished, so the challenge may go ahead. FailAttempt and
-// RevokeLease both leave tasks.current_attempt_id pointing at the terminal
-// attempt they wrote, so a task awaiting retry holds one; its lease is not
-// ACTIVE, the UPDATE matches nothing, and there is no live attempt to leave
-// behind. An attempt_id that no longer resolves is not terminal either, and
-// the caller reports it the way GuardAttempt and RevokeLease already do.
-func terminalAttempt(ctx context.Context, tx *sql.Tx, attemptID domain.ID) (bool, error) {
-	var leaseState domain.LeaseState
-	var state domain.AttemptState
+// attemptExists reports whether an attempt the revocation UPDATE could not touch
+// still has a row. The UPDATE carries a lease_state = ACTIVE predicate, so a
+// count of zero means the lease is not ACTIVE and no state can change that: the
+// attempt is already terminal, as it is on a task awaiting retry, where
+// FailAttempt and RevokeLease leave current_attempt_id pointing at the attempt
+// they made terminal and there is no live attempt left to leave behind. What the
+// guard actually protects is the other explanation for the zero count, a
+// current_attempt_id that no longer resolves. execution_events.attempt_id
+// references attempts(attempt_id) with foreign keys on, so proceeding there fails
+// appendEvent on the foreign key and the caller gets a raw driver error it cannot
+// classify, rather than the sentinel GuardAttempt and RevokeLease already return.
+func attemptExists(ctx context.Context, tx *sql.Tx, attemptID domain.ID) (bool, error) {
+	var found int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT lease_state, state FROM attempts WHERE attempt_id = ?`, attemptID,
-	).Scan(&leaseState, &state); err != nil {
+		`SELECT 1 FROM attempts WHERE attempt_id = ?`, attemptID,
+	).Scan(&found); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
 		}
 		return false, err
 	}
-	if leaseState != domain.LeaseActive {
-		return true, nil
-	}
-	switch state {
-	case domain.AttemptFailed, domain.AttemptCancelled, domain.AttemptExpired, domain.AttemptCompleted:
-		return true, nil
-	default:
-		return false, nil
-	}
+	return found == 1, nil
 }
 
 func validateTimeWindow(earliest, deadline time.Time) error {

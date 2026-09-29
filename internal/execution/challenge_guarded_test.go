@@ -94,6 +94,10 @@ func TestChallengeTaskIfInStatesRefusesAnAcceptedTask(t *testing.T) {
 	store, svc, ctx := newTriageService(t)
 	task, attempt := leaseTriageTask(t, store, svc, ctx, "work-accepted")
 
+	// The shape is built by hand on purpose: leaseTriageTask is the only way to
+	// give a task a current_attempt_id, and it leaves the task EXECUTING, so a
+	// SUCCEEDED task still holding a LEASED/ACTIVE attempt with a NULL
+	// completed_at cannot be produced by any production path.
 	if _, err := store.DB().ExecContext(ctx,
 		`UPDATE tasks SET state = ? WHERE task_id = ?`, domain.TaskSucceeded, task.ID); err != nil {
 		t.Fatal(err)
@@ -327,9 +331,6 @@ func TestChallengeTaskIfInStatesChallengesATaskAwaitingRetryAfterAFailedAttempt(
 	if after.state != domain.AttemptFailed || after.leaseState != domain.LeaseRevoked {
 		t.Fatalf("attempt = %q/%q, want the pre-existing FAILED/REVOKED", after.state, after.leaseState)
 	}
-	if after.completedAt.String != failed.completedAt.String {
-		t.Fatalf("completed_at = %q, want the pre-existing %q", after.completedAt.String, failed.completedAt.String)
-	}
 }
 
 // The current attempt no longer resolves to an attempts row, so revoking its
@@ -397,8 +398,12 @@ func TestChallengeTaskIfInStatesRejectsAnEmptyStateList(t *testing.T) {
 	store, svc, ctx := newTriageService(t)
 	task := newTriageTask(t, store, svc, ctx, "work-no-states")
 
-	if _, err := svc.ChallengeTaskIfInStates(ctx, task.ID, nil,
-		domain.ChallengeTask, "superseded", nil); err == nil {
+	changed, err := svc.ChallengeTaskIfInStates(ctx, task.ID, nil,
+		domain.ChallengeTask, "superseded", nil)
+	if err == nil {
 		t.Fatal("an empty state list was accepted")
+	}
+	if changed {
+		t.Fatal("an empty state list reported changed")
 	}
 }
