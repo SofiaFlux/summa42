@@ -1334,9 +1334,11 @@ func parseGHTriageReviewFlags(args []string) (domain.ID, climodel.Config, error)
 // assessment) it has not already recorded - and prints the result as JSON on
 // stdout. A per-case failure is reported inside
 // that JSON and on stderr, and it decides the exit code, because the reviewer
-// records nothing for a case it could not review: an exit 0 over one would be a
-// mission that looks reviewed for ever. The result is encoded before the failure
-// is reported, so the verdicts the tick did write are on stdout either way.
+// records nothing for a case it could not review, and the case is not marked
+// reviewed, so the next tick tries it again: the exit code is the only signal an
+// operator gating on it alone ever gets that a case is failing. The result is
+// encoded before the failure is reported, so the verdicts the tick did write are
+// on stdout either way.
 //
 // The box is the driver's composition - no executor, no capability provider, no
 // operation provider - because the reviewer changes nothing and calls none of

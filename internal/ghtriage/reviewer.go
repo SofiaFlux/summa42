@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/SofiaFlux/summa42/internal/clock"
@@ -22,17 +23,26 @@ type Structural struct {
 	ClassificationAgreesWithIntake bool   `json:"classification_agrees_with_intake"`
 }
 
+// ReviewVerdict is the record one tick leaves behind: the decision it reviewed,
+// the observation it re-derived from, the case state and latest assessment it
+// observed, and the checks it ran over them.
+//
+// The observation is named in its own right rather than read out of the
+// decision's snapshot citation, because the reviewer derives from the case's own
+// observation and never trusts the citation: a verdict carrying only the
+// citation would name the one document the review is not about.
 type ReviewVerdict struct {
-	Schema             string     `json:"schema"`
-	ReviewerVersion    string     `json:"reviewer_version"`
-	DecisionEvidenceID string     `json:"decision_evidence_id"`
-	Repository         string     `json:"repository"`
-	Issue              int64      `json:"issue"`
-	Revision           string     `json:"revision"`
-	CaseState          string     `json:"case_state"`
-	LatestAssessmentID *string    `json:"latest_assessment_id"`
-	Structural         Structural `json:"structural"`
-	Plausible          bool       `json:"plausible"`
+	Schema                string     `json:"schema"`
+	ReviewerVersion       string     `json:"reviewer_version"`
+	DecisionEvidenceID    string     `json:"decision_evidence_id"`
+	ObservationEvidenceID string     `json:"observation_evidence_id"`
+	Repository            string     `json:"repository"`
+	Issue                 int64      `json:"issue"`
+	Revision              string     `json:"revision"`
+	CaseState             string     `json:"case_state"`
+	LatestAssessmentID    *string    `json:"latest_assessment_id"`
+	Structural            Structural `json:"structural"`
+	Plausible             bool       `json:"plausible"`
 }
 
 // ReviewResult is what one tick did to one mission's cases. Skipped is the
@@ -148,10 +158,16 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (outcome
 		return alreadyReviewed, nil
 	}
 
-	snap, err := r.caseSnapshot(ctx, c)
+	snap, observationID, err := r.caseSnapshot(ctx, c)
 	if err != nil {
 		return noDecision, err
 	}
+	// The decision is handed over as it was recorded, whatever identity it claims:
+	// it is the document under review, and a record claiming another issue's is
+	// exactly what the question should be able to see against this issue's text.
+	// The disagreement is reported in the block below rather than tidied away
+	// before the model is asked, because a reviewer that edited the record it is
+	// reviewing would be answering a different question than the one it reports.
 	plausible, err := r.model.Review(ctx, ReviewInput{
 		Schema:   ReviewSchema,
 		Title:    snap.Title,
@@ -165,16 +181,17 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (outcome
 	}
 
 	verdict := ReviewVerdict{
-		Schema:             ReviewSchema,
-		ReviewerVersion:    ReviewerVersion,
-		DecisionEvidenceID: string(decisionID),
-		Repository:         decision.Repository,
-		Issue:              decision.Issue,
-		Revision:           decision.Revision,
-		CaseState:          string(c.State),
-		LatestAssessmentID: latest,
-		Structural:         r.structural(ctx, c, records, latest, *decision, snap),
-		Plausible:          plausible,
+		Schema:                ReviewSchema,
+		ReviewerVersion:       ReviewerVersion,
+		DecisionEvidenceID:    string(decisionID),
+		ObservationEvidenceID: observationID,
+		Repository:            decision.Repository,
+		Issue:                 decision.Issue,
+		Revision:              decision.Revision,
+		CaseState:             string(c.State),
+		LatestAssessmentID:    latest,
+		Structural:            r.structural(ctx, c, records, latest, *decision, snap),
+		Plausible:             plausible,
 	}
 	raw, err := json.Marshal(verdict)
 	if err != nil {
@@ -209,10 +226,13 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (outcome
 // structural re-derives what can be re-derived from stored inputs. It never
 // re-runs the classifier.
 //
-// Every check reads the snapshot this case was observed from - never the one the
-// decision names, which a tampered record can point at another issue's - and the
-// other stored documents, so a decision citing someone else's snapshot is
-// reported rather than agreed with by construction.
+// Every check that needs the snapshot reads the one this case was observed from
+// - never the one the decision names, which a tampered record can point at
+// another issue's - and the other stored documents, so a decision citing
+// someone else's snapshot is reported rather than agreed with by construction.
+// The snapshot is proved to be this case's own when it is loaded, and the
+// decision is compared against the case's own object id, so the block cannot
+// come back clean for a record that is about a different issue entirely.
 //
 // The limit of that is worth stating here rather than leaving to a reader of
 // the verdict, because it is why the model is asked anything at all. A stage 2
@@ -289,31 +309,93 @@ func (r *Reviewer) stateMatches(c workflowcase.Case, records []workflowcase.Asse
 // itself part of what this check says: a decision derived from anything other
 // than this case's observation has not been shown to agree with intake, and the
 // recorded triage is not compared at all.
+//
+// So is the identity the decision claims. Repository and issue are copied into a
+// decision from the task payload and are nothing the reader re-establishes, so a
+// record about #99 filed against this case's snapshot re-derives cleanly and is
+// published as this case's verdict - a verdict about an issue nobody asked
+// about. The case's own object id is what says which issue this is, and a
+// decision naming a different one has not been shown to agree with intake; it is
+// reported here rather than dropped, because the reviewer reports violations and
+// does not decide which records exist.
 func classificationAgrees(c workflowcase.Case, decision Decision, snap Snapshot) bool {
+	repository, issue, err := caseIssue(c)
+	if err != nil {
+		return false
+	}
+	if decision.Repository != repository || decision.Issue != issue {
+		return false
+	}
 	if strings.TrimSpace(decision.SnapshotEvidenceID) != strings.TrimSpace(c.ObservationEvidenceID) {
 		return false
 	}
 	return Stage1(snap).Triage == decision.Stage1.Triage
 }
 
-// caseSnapshot reads the snapshot intake recorded for this case. It is the only
-// snapshot the reviewer derives anything from, and the one the plausibility
-// question is asked about, so a decision citing another issue's snapshot cannot
-// borrow another issue's content here.
-func (r *Reviewer) caseSnapshot(ctx context.Context, c workflowcase.Case) (Snapshot, error) {
+// caseIssue is the issue a case is about, read out of the object id intake
+// writes: "<source>:<repository>#<number>". The reviewer walks GitHub cases only,
+// so the source qualifier is stripped when present and a case registered without
+// one names the same issue - which is what lets a case object id be compared
+// against a decision's repository and issue at all.
+func caseIssue(c workflowcase.Case) (string, int64, error) {
+	object := strings.TrimSpace(c.ObjectID)
+	if qualifier := strings.TrimSpace(c.Source) + ":"; strings.HasPrefix(object, qualifier) {
+		object = strings.TrimPrefix(object, qualifier)
+	}
+	repository, number, found := strings.Cut(object, "#")
+	if !found {
+		return "", 0, fmt.Errorf("case object id %q names no issue number", c.ObjectID)
+	}
+	issue, err := strconv.ParseInt(number, 10, 64)
+	if err != nil || issue <= 0 {
+		return "", 0, fmt.Errorf("case object id %q names no issue number", c.ObjectID)
+	}
+	return strings.TrimSpace(repository), issue, nil
+}
+
+// caseSnapshot reads the snapshot intake recorded for this case and proves it is
+// that object: the right kind, canonical, and about the issue the case names.
+// It is the only snapshot the reviewer derives anything from, and the one the
+// plausibility question is asked about, so a decision citing another issue's
+// snapshot cannot borrow another issue's content here.
+//
+// The provenance is re-established on this side of the package boundary rather
+// than inherited from the writer's: the executor proves the same three things on
+// its own copy of the id when it stores a decision, but the case row outlives
+// that call and nothing re-checks it afterwards. Reading the field on faith would
+// leave a document that decodes to an empty snapshot, and then a correct decision
+// re-derived against nothing earns a reported mismatch - a false accusation, which
+// is the one direction of error worse than saying nothing. So every check here
+// that is not the load itself fails the review, which the tick counts as Failed
+// and the next tick retries.
+func (r *Reviewer) caseSnapshot(ctx context.Context, c workflowcase.Case) (Snapshot, string, error) {
 	id := strings.TrimSpace(c.ObservationEvidenceID)
 	if id == "" {
-		return Snapshot{}, errors.New("the case carries no observation evidence to review against")
+		return Snapshot{}, "", errors.New("the case carries no observation evidence to review against")
 	}
-	_, raw, err := r.evidence.Get(ctx, domain.ID(id))
+	repository, issue, err := caseIssue(c)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("load issue snapshot %s: %w", id, err)
+		return Snapshot{}, "", err
+	}
+	object, raw, err := r.evidence.Get(ctx, domain.ID(id))
+	if err != nil {
+		return Snapshot{}, "", fmt.Errorf("load issue snapshot %s: %w", id, err)
+	}
+	if object.Kind != snapshotEvidenceKind {
+		return Snapshot{}, "", fmt.Errorf("evidence %s is a %q, not an issue snapshot", id, object.Kind)
 	}
 	var snap Snapshot
 	if err := json.Unmarshal(raw, &snap); err != nil {
-		return Snapshot{}, fmt.Errorf("decode issue snapshot %s: %w", id, err)
+		return Snapshot{}, "", fmt.Errorf("decode issue snapshot %s: %w", id, err)
 	}
-	return snap, nil
+	if snap.Repo == "" || snap.Issue <= 0 {
+		return Snapshot{}, "", fmt.Errorf("evidence %s is not a canonical issue snapshot", id)
+	}
+	if snap.Repo != repository || snap.Issue != issue {
+		return Snapshot{}, "", fmt.Errorf("evidence %s is a snapshot of %s#%d, but the case is %s#%d",
+			id, snap.Repo, snap.Issue, repository, issue)
+	}
+	return snap, id, nil
 }
 
 // findDecision locates the decision of a case: the assessment of its own task

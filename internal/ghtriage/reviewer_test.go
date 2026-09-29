@@ -228,6 +228,38 @@ func (rf *reviewerFixture) corruptStage3Rule(t *testing.T, rule string) {
 	rf.rewriteDecision(t, func(d *ghtriage.Decision) { d.Stage3.Rule = rule })
 }
 
+// repointObservation rewrites the case's own observation evidence id. Intake
+// writes it once and nothing re-checks it, so this is the only way to reach a
+// case whose observation is not the snapshot its decision names - the shape a
+// case falls into when something other than a canonical issue snapshot is
+// recorded against it.
+// decisionOfVerdict loads the decision document a verdict names. A tampered
+// fixture leaves the record it replaced on the store as well, so the decision a
+// verdict is about is the one named by the verdict and not the newest document
+// carrying the revision.
+func (rf *reviewerFixture) decisionOfVerdict(t *testing.T, verdict ghtriage.ReviewVerdict) ghtriage.Decision {
+	t.Helper()
+	_, raw, err := rf.driver.evidenceStore.Get(rf.driver.ctx, domain.ID(verdict.DecisionEvidenceID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decision ghtriage.Decision
+	if err := json.Unmarshal(raw, &decision); err != nil {
+		t.Fatal(err)
+	}
+	return decision
+}
+
+func (rf *reviewerFixture) repointObservation(t *testing.T, evidenceID string) {
+	t.Helper()
+	createdCase := rf.driver.casesByRev[fixtureRevision]
+	if _, err := rf.driver.store.DB().ExecContext(rf.driver.ctx,
+		`UPDATE workflow_cases SET observation_evidence_id = ? WHERE case_id = ?`,
+		evidenceID, createdCase.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // supersedeCase blocks the case with a superseded reason, which the reviewer
 // must treat as an allowed terminal state rather than a violation. The work ID
 // is the case's own current work, which is the task's idempotency key and not
@@ -700,6 +732,193 @@ func TestReviewerReportsADecisionThatCitesAnotherIssuesSnapshot(t *testing.T) {
 	}
 }
 
+// The branch of the re-derivation that has no outcome of its own to accept: a
+// stage 1 that did not resolve the issue has to carry both stage 2 and stage 3,
+// so a record missing either one cannot be re-derived from anything and is
+// reported as a mismatch rather than compared. It is reachable only for a
+// decision the schema already rejects, which is why it is worth pinning in the
+// same place as the schema check: a re-derivation that read the missing stage
+// instead of refusing it would not return a verdict at all, and the block would
+// say nothing about a record it cannot read.
+func TestReviewerReportsAMismatchForAnUnresolvedDecisionMissingStage2(t *testing.T) {
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+	rf.rewriteDecision(t, func(d *ghtriage.Decision) { d.Stage2 = nil })
+
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	// The precondition the branch depends on: the decision's own stage 1 left the
+	// issue unresolved, so the disposition rules are the ones in force and the
+	// stage 3 on the record is the one nothing can be re-derived from.
+	verdict := rf.lastVerdict(t)
+	decision := rf.decisionOfVerdict(t, verdict)
+	if decision.Stage1.Resolved() || decision.Stage2 != nil || decision.Stage3 == nil {
+		t.Fatalf("reviewed decision = %+v, want an unresolved stage 1 and no stage 2", decision)
+	}
+	structural := verdict.Structural
+	if structural.RuleMatchesRecomputation != "mismatch" {
+		t.Fatalf("recomputation = %q, want mismatch: there is nothing to re-derive the stage 3 from",
+			structural.RuleMatchesRecomputation)
+	}
+	if structural.SchemaConformant {
+		t.Fatal("an unresolved decision with no stage 2 was reported as schema conformant")
+	}
+	if got := len(rf.model.ReviewInputs); got != 1 {
+		t.Fatalf("model calls = %d, want exactly the reviewer's own question", got)
+	}
+}
+
+// The other half of "this record is about this case": the citation says which
+// snapshot a decision was derived from, and nothing rewrites the repository and
+// issue it claims, so a record about #99 filed against this case's snapshot
+// re-derives cleanly through every other check and is published as this case's
+// verdict. Without the comparison the artefact makes a claim nobody verified,
+// and the identity check is where it is verified.
+func TestReviewerReportsADecisionThatIsAboutAnotherIssue(t *testing.T) {
+	cases := []struct {
+		name           string
+		mutate         func(*ghtriage.Decision)
+		wantRepository string
+		wantIssue      int64
+	}{
+		{
+			name:           "another issue number",
+			mutate:         func(d *ghtriage.Decision) { d.Issue = 99 },
+			wantRepository: "o/r", wantIssue: 99,
+		},
+		{
+			name:           "another repository",
+			mutate:         func(d *ghtriage.Decision) { d.Repository = "other/repo" },
+			wantRepository: "other/repo", wantIssue: 42,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rf := newReviewerFixture(t)
+			rf.model.ScriptedReview = []bool{true}
+			rf.rewriteDecision(t, tc.mutate)
+
+			if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
+				t.Fatal(err)
+			}
+			verdict := rf.lastVerdict(t)
+			if verdict.Structural.ClassificationAgreesWithIntake {
+				t.Fatalf("a decision claiming %s#%d was reported as agreeing with intake to a case about %s: %+v",
+					tc.wantRepository, tc.wantIssue, fixtureIssue, verdict.Structural)
+			}
+			// Not simply all-false: the record agrees with this case's snapshot on
+			// everything it says about the issue, and the identity is the only thing
+			// that is wrong. A block reporting a disagreement has to say which one.
+			if !verdict.Structural.SchemaConformant || !verdict.Structural.Stage2OnlyIfUnresolved ||
+				!verdict.Structural.StateMatchesDisposition ||
+				verdict.Structural.RuleMatchesRecomputation != "match" {
+				t.Fatalf("only the identity disagrees, but the block reports %+v", verdict.Structural)
+			}
+			// The verdict reports the decision as written, identity included: the
+			// disagreement is in the block, and the document says what was reviewed.
+			if verdict.Repository != tc.wantRepository || verdict.Issue != tc.wantIssue {
+				t.Fatalf("verdict identity = %s#%d, want the decision's own %s#%d",
+					verdict.Repository, verdict.Issue, tc.wantRepository, tc.wantIssue)
+			}
+			// The model is asked about this case's issue and handed the record as it
+			// was written, foreign identity included. Sending it is the decision:
+			// the document under review is the question's subject, and editing it
+			// before the model sees it would answer a question the verdict does not
+			// answer.
+			if got := len(rf.model.ReviewInputs); got != 1 {
+				t.Fatalf("model calls = %d, want 1", got)
+			}
+			asked := rf.model.ReviewInputs[0]
+			if asked.Title != "Crash on save" {
+				t.Fatalf("question title = %q, want this case's own title", asked.Title)
+			}
+			if asked.Decision.Issue != tc.wantIssue || asked.Decision.Repository != tc.wantRepository {
+				t.Fatalf("decision handed to the model = %s#%d, want the record's own %s#%d",
+					asked.Decision.Repository, asked.Decision.Issue, tc.wantRepository, tc.wantIssue)
+			}
+		})
+	}
+}
+
+// The case's observation is the one document every check that needs it reads, and
+// the field naming it is written once by intake and never re-checked - the
+// executor proves it on its own copy of the id when it stores a decision, but
+// that check does not travel with the case row. So the reader re-establishes it:
+// an observation that is not a canonical snapshot of this case's issue fails the
+// review, which is counted as a failure and retried, rather than decoding to an
+// empty snapshot and reporting a correct decision as a mismatch. False
+// accusation is the one direction of this error worse than silence.
+func TestReviewerFailsWhenTheObservationIsNotACanonicalSnapshot(t *testing.T) {
+	cases := []struct {
+		name        string
+		observation func(*testing.T, *reviewerFixture) string
+		wantErr     string
+	}{
+		{
+			// The case's own decision document: a real object the store holds,
+			// decoding cleanly and naming no issue.
+			name: "evidence of another kind",
+			observation: func(t *testing.T, rf *reviewerFixture) string {
+				return string(rf.driver.decisionEvidenceID(t))
+			},
+			wantErr: `is a "github.issue.triage.decision", not an issue snapshot`,
+		},
+		{
+			name: "a snapshot naming no issue",
+			observation: func(t *testing.T, rf *reviewerFixture) string {
+				return string(putSnapshot(t, rf.driver.evidenceStore, ghtriage.Snapshot{}))
+			},
+			wantErr: "not a canonical issue snapshot",
+		},
+		{
+			name: "a snapshot of another issue",
+			observation: func(t *testing.T, rf *reviewerFixture) string {
+				return string(putSnapshot(t, rf.driver.evidenceStore, ghtriage.Snapshot{
+					Repo: "o/r", Issue: 43, Title: "Crash on export", Triage: "bug",
+				}))
+			},
+			wantErr: "is a snapshot of o/r#43, but the case is o/r#42",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rf := newReviewerFixture(t)
+			rf.model.ScriptedReview = []bool{true}
+			rf.repointObservation(t, tc.observation(t, rf))
+			readStderr := captureReviewerStderr(t)
+
+			result, err := rf.review.Tick(context.Background(), rf.driver.missionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Failed != 1 || result.Reviewed != 0 || result.Skipped != 0 {
+				t.Fatalf("result = %+v, want the one case failed and nothing else", result)
+			}
+			// The failure is the case's and it says why on stderr, because an
+			// operator reading the counters cannot tell an unreadable observation
+			// from anything else.
+			if printed := readStderr(); !strings.Contains(printed, tc.wantErr) {
+				t.Fatalf("stderr %q does not report %q", printed, tc.wantErr)
+			}
+			// No verdict, and nothing linked: a false accusation is the failure
+			// shape this check exists to prevent, so the store is left clean and
+			// the next tick asks again.
+			if got := rf.verdictCount(t); got != 0 {
+				t.Fatalf("verdict documents = %d, want 0: the decision was correct, the observation was not readable", got)
+			}
+			if got := rf.reviewLinkCount(t); got != 0 {
+				t.Fatalf("review index rows = %d, want 0 so the next tick retries", got)
+			}
+			// The question is not asked of a model about an observation the
+			// reviewer could not prove it read.
+			if got := len(rf.model.ReviewInputs); got != 0 {
+				t.Fatalf("model calls = %d, want none: the case was never read", got)
+			}
+		})
+	}
+}
+
 func TestReviewerReportsAnInjectedStage3Mismatch(t *testing.T) {
 	rf := newReviewerFixture(t)
 	rf.model.ScriptedReview = []bool{true}
@@ -980,7 +1199,11 @@ func TestReviewerReportsAStage1DecisionThatStillCarriesStage2(t *testing.T) {
 	}
 }
 
-func TestReviewerRecordsTheDecisionAndTheStateItObserved(t *testing.T) {
+// The verdict names what was reviewed and what it was read against. The
+// observation is not decoration: every check that needs the snapshot derives from
+// it and the decision's own citation is never trusted, so a verdict that named
+// only the citation would name the one document the review is not about.
+func TestReviewerRecordsTheDecisionTheObservationAndTheStateItObserved(t *testing.T) {
 	rf := newReviewerFixture(t)
 	rf.model.ScriptedReview = []bool{true}
 
@@ -990,6 +1213,15 @@ func TestReviewerRecordsTheDecisionAndTheStateItObserved(t *testing.T) {
 	verdict := rf.lastVerdict(t)
 	if verdict.DecisionEvidenceID == "" {
 		t.Fatal("the verdict does not name the decision it reviewed")
+	}
+	if want := rf.driver.observationEvidenceID(t, fixtureRevision); verdict.ObservationEvidenceID != want {
+		t.Fatalf("verdict observation = %q, want the case's own %q", verdict.ObservationEvidenceID, want)
+	}
+	// The observation it names is the one the decision cites in this fixture, and
+	// it is named in its own right: the reviewer does not read the citation.
+	if want := rf.driver.snapshotEvidenceID(t, fixtureRevision); verdict.ObservationEvidenceID != want {
+		t.Fatalf("verdict observation = %q, want the snapshot the case was observed from %q",
+			verdict.ObservationEvidenceID, want)
 	}
 	if verdict.ReviewerVersion != ghtriage.ReviewerVersion {
 		t.Fatalf("reviewer version = %q", verdict.ReviewerVersion)
