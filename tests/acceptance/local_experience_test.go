@@ -60,7 +60,7 @@ func newExperienceAcceptanceFixture(t *testing.T, withGrant bool) *experienceAcc
 	}
 	server, err := control.NewServer(control.ServerConfig{
 		AuthToken:"experience-product-path",OwnerPrincipalID:owner.PrincipalID(),
-		OwnerPublicKey:owner.PublicKey(),ChallengeTTL:time.Minute,
+		OwnerPublicKey:owner.PublicKey(),ChallengeTTL:time.Minute,Now:clk.Now,
 	},control.Dependencies{
 		Status:feedbackStatusProvider{box:box},Tasks:box.Execution,Missions:box.Purpose,Approvals:box.Approvals,
 		Feedback:box.Feedback,Sanitizer:box.Sanitizer,FieldObserver:box.FieldObserver,Experience:box.Experience,
