@@ -716,6 +716,78 @@ func TestDriverReportsACaseItCannotReplayBecauseItsIndexIsMissing(t *testing.T) 
 	}
 }
 
+// Three revisions of one issue are the case the two-revision tests cannot
+// reach: the supersession loop compares every revision against the newest, so
+// with R1 < R2 < R3 it is R2 and R1 that are both superseded, in that order, by
+// R3. Here R2's triage has completed and R3's has not, which is the state that
+// makes the two older revisions take different paths in the same tick: R2's task
+// is accepted on its own decision before the supersession reaches it, so it is
+// SUCCEEDED and never challenged, while R1's is still pending and is. Both
+// cases close as superseded-by R3, and each closure is counted once.
+func TestDriverSupersedesTwoOlderRevisionsAgainstOneNewest(t *testing.T) {
+	oldest, middle, newest := "2026-09-28T08:00:00Z", "2026-09-28T09:00:00Z", "2026-09-28T11:00:00Z"
+	f := newDriverFixture(t)
+	f.registerRevision(t, oldest)
+	f.registerRevision(t, middle)
+	f.registerRevision(t, newest)
+	// A ready-to-plan decision, so R2's case is still ACTIVE when the
+	// supersession runs. A not-actionable one would have closed it as
+	// not-actionable in applyDisposition first, and the supersession would find
+	// nothing to do.
+	f.completeTaskWithDecision(t, middle, readyToPlanDecision(42, middle))
+
+	result, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 0 {
+		t.Fatalf("failures = %v, want none", result.Failures)
+	}
+	// One acceptance, for R2's own completed triage, and two supersessions for
+	// the two cases that closed. A case closed as superseded is not also an
+	// assessment and not also a block, so both counters stay zero.
+	if result.Accepted != 1 || result.Superseded != 2 || result.Assessed != 0 || result.Blocked != 0 {
+		t.Fatalf("result = %+v, want one acceptance and two supersessions", result)
+	}
+
+	if got := f.taskState(t, middle); got != "SUCCEEDED" {
+		t.Fatalf("R2 task state = %q, want SUCCEEDED: its triage completed, so it was accepted rather than challenged", got)
+	}
+	if got := f.caseState(t, middle); got != "BLOCKED" {
+		t.Fatalf("R2 case state = %q, want BLOCKED", got)
+	}
+	if got := f.latestAssessmentReason(t, middle); got != "superseded-by:"+newest {
+		t.Fatalf("R2 assessment reason = %q, want superseded-by:%s", got, newest)
+	}
+	if got := f.taskState(t, oldest); got != "CHALLENGED" {
+		t.Fatalf("R1 task state = %q, want CHALLENGED", got)
+	}
+	if got := f.caseState(t, oldest); got != "BLOCKED" {
+		t.Fatalf("R1 case state = %q, want BLOCKED", got)
+	}
+	if got := f.latestAssessmentReason(t, oldest); got != "superseded-by:"+newest {
+		t.Fatalf("R1 assessment reason = %q, want superseded-by:%s", got, newest)
+	}
+	// The newest revision is the one everything was superseded for: untouched.
+	if got := f.caseState(t, newest); got != "ACTIVE" {
+		t.Fatalf("R3 case state = %q, want ACTIVE", got)
+	}
+	if got := f.latestAssessmentReason(t, newest); got != "" {
+		t.Fatalf("R3 assessment reason = %q, want none", got)
+	}
+
+	second, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Failures) != 0 {
+		t.Fatalf("second tick failures = %v, want none", second.Failures)
+	}
+	if second.Accepted != 0 || second.Assessed != 0 || second.Blocked != 0 || second.Superseded != 0 {
+		t.Fatalf("second tick = %+v, want no repeated work", second)
+	}
+}
+
 // The restart path reads back the very record recordAccepted wrote, so the
 // recorded task ID has to be the identity findAccepted matches on: the case's
 // work ID, which is the task's idempotency key. A driver that recorded the
