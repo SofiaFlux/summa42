@@ -99,8 +99,10 @@ func TestRunGHTriageReviewPrintsAnEmptyResultForAMissionWithNothingToReview(t *t
 
 // A reviewer that cannot ask its one question has nothing to do, and saying so
 // is the difference between an operator fixing a path and an operator reading a
-// mission of zero verdicts. The box's own notice explains the executor it did
-// not register; this is the one that stops the command.
+// mission of zero verdicts. The notice is triageModelAdapter's, and it is
+// printed before the box is ever opened - the adapter resolves the binary first,
+// and the command stops there - so it is the adapter explaining the executor it
+// could not register, not a box that started degraded.
 func TestRunGHTriageReviewFailsTheCommandWithoutAUsableModel(t *testing.T) {
 	ctx := context.Background()
 	config := initializedCollective(t)
@@ -122,7 +124,7 @@ func TestRunGHTriageReviewFailsTheCommandWithoutAUsableModel(t *testing.T) {
 		t.Fatalf("stdout = %q, want nothing: the command did not run a tick", out)
 	}
 	if stderr := readStderr(); !strings.Contains(stderr, "not registered") {
-		t.Fatalf("stderr = %q, want the box's own degraded-model notice", stderr)
+		t.Fatalf("stderr = %q, want the adapter's own degraded-model notice", stderr)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
@@ -94,17 +95,16 @@ func (rf *reviewerFixture) reviewLinkCount(t *testing.T) int {
 	return n
 }
 
-// lastVerdict reads the verdict of the most recently observed case state. The
-// clock does not move between the two reviews a supersession earns, so created_at
-// alone is not an order: the fingerprint is what tells a review of ACTIVE|none
-// from a review of BLOCKED|assessment-...
+// lastVerdict reads the verdict of the most recently linked review. A test that
+// reviews twice advances the clock between the two ticks, so created_at is an
+// honest order and the tiebreaks below are only there to make a same-instant
+// read deterministic.
 func (rf *reviewerFixture) lastVerdict(t *testing.T) ghtriage.ReviewVerdict {
 	t.Helper()
 	var id string
 	if err := rf.driver.store.DB().QueryRowContext(rf.driver.ctx,
 		`SELECT verdict_evidence_id FROM github_issue_triage_reviews
-		 ORDER BY created_at DESC, state_fingerprint DESC, decision_evidence_id DESC,
-		          verdict_evidence_id DESC LIMIT 1`).Scan(&id); err != nil {
+		 ORDER BY created_at DESC, decision_evidence_id DESC, verdict_evidence_id DESC LIMIT 1`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	_, raw, err := rf.driver.evidenceStore.Get(rf.driver.ctx, domain.ID(id))
@@ -202,14 +202,18 @@ func TestReviewerMakesNoSecondModelCallWhileTheCaseStateIsUnchanged(t *testing.T
 	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	first := rf.model.ReviewCallCount()
+	// The count is len(ReviewInputs) and not the fake's own call counter: that one
+	// counts scripted responses consumed, so it reads 1 after two calls whose
+	// second response was never scripted, and a test written against it cannot
+	// tell one call from two.
+	first := len(rf.model.ReviewInputs)
 	if first != 1 {
 		t.Fatalf("model calls on the first tick = %d, want 1", first)
 	}
 	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	if got := rf.model.ReviewCallCount(); got != first {
+	if got := len(rf.model.ReviewInputs); got != first {
 		t.Fatalf("an unchanged case triggered %d extra model calls", got-first)
 	}
 	if got := rf.verdictCount(t); got != 1 {
@@ -225,14 +229,24 @@ func TestReviewerReviewsAgainAfterSupersessionChangesTheFingerprint(t *testing.T
 		t.Fatal(err)
 	}
 	rf.supersedeCase(t)
+	// The clock moves, so the second review is later than the first by a time
+	// rather than by a tiebreak on the fingerprint - which is what lets
+	// lastVerdict order by recency and still read the second one.
+	rf.driver.clock.Advance(time.Second)
 	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
 	}
-	if got := rf.model.ReviewCallCount(); got != 2 {
+	if got := len(rf.model.ReviewInputs); got != 2 {
 		t.Fatalf("model calls = %d, want a second call after the fingerprint changed", got)
 	}
 	if got := rf.verdictCount(t); got != 2 {
 		t.Fatalf("verdict documents = %d, want 2", got)
+	}
+	// The verdict of the later tick is the one over the superseded state, and
+	// reading it is what makes the helper's ordering load-bearing rather than a
+	// tiebreak that happens to land the right way.
+	if got := rf.lastVerdict(t).CaseState; got != string(workflowcase.Blocked) {
+		t.Fatalf("latest verdict case state = %q, want %q: the review after the supersession", got, workflowcase.Blocked)
 	}
 }
 
@@ -432,8 +446,8 @@ func TestReviewerReportsNotApplicableForAFutureTriageRulesVersion(t *testing.T) 
 	// current rules would derive no disposition at all here. Reporting
 	// not-applicable rather than a mismatch is what keeps the record honest
 	// about why it did not check.
-	if rf.model.ReviewCallCount() != 1 {
-		t.Fatalf("model calls = %d, want only the reviewer's own question", rf.model.ReviewCallCount())
+	if got := len(rf.model.ReviewInputs); got != 1 {
+		t.Fatalf("model calls = %d, want only the reviewer's own question", got)
 	}
 }
 
@@ -519,6 +533,47 @@ func TestReviewerReportsANotActionableCaseClosedUnderAnotherReason(t *testing.T)
 	verdict := rf.lastVerdict(t)
 	if verdict.Structural.StateMatchesDisposition {
 		t.Fatalf("a case closed as ready-to-plan against a not-actionable decision was accepted: %+v", verdict.Structural)
+	}
+}
+
+// A case whose triage exhausted its retries was never triaged, so it has no
+// decision and the driver has already reported it. It is skipped rather than
+// reviewed, and no question is asked of the model on its behalf - which is what
+// a case with nothing to review means, so the behaviour is pinned here rather
+// than a triage-failed test of its own in the loop.
+func TestReviewerSkipsACaseWhoseTriageFailed(t *testing.T) {
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+	rf.supersedeCase(t)
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	// A second case, triaged by the executor rather than completed by the
+	// fixture, whose retries run out.
+	rf.driver.failTaskTwice(t, "2026-09-28T10:30:00Z")
+	if _, err := rf.driver.driver.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := rf.driver.latestAssessmentReason(t, "2026-09-28T10:30:00Z"); got != ghtriage.ReasonTriageFailed {
+		t.Fatalf("assessment reason = %q, want %q", got, ghtriage.ReasonTriageFailed)
+	}
+	before := len(rf.model.ReviewInputs)
+
+	result, err := rf.review.Tick(context.Background(), rf.driver.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Failed != 0 {
+		t.Fatalf("result = %+v, want no failure: nothing about this case is unreadable", result)
+	}
+	if result.Reviewed != 0 || result.Skipped != 2 {
+		t.Fatalf("result = %+v, want both cases skipped", result)
+	}
+	if got := len(rf.model.ReviewInputs); got != before {
+		t.Fatalf("model calls = %d, want %d: a case with no decision is not worth a question", got, before)
+	}
+	if got := rf.reviewLinkCount(t); got != 1 {
+		t.Fatalf("review index rows = %d, want 1: only the first tick linked one", got)
 	}
 }
 

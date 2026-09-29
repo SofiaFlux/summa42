@@ -46,11 +46,16 @@ type Reviewer struct {
 	evidence *evidence.Store
 	index    ReviewIndexStore
 	model    ReviewerModel
-	clock    clock.Clock
 }
 
-func NewReviewer(cases *workflowcase.Service, store *evidence.Store, index ReviewIndexStore, model ReviewerModel, clk clock.Clock) *Reviewer {
-	return &Reviewer{cases: cases, evidence: store, index: index, model: model, clock: clk}
+// NewReviewer builds the reviewer over the four collaborators it uses. The
+// clock is taken and deliberately not kept: the verdict document is
+// content-addressed and carries no timestamp of its own, and the one time this
+// loop writes - the index row's created_at - belongs to the index, which stamps
+// it from its own clock. The parameter stays so the construction keeps the
+// driver's shape and a change that does need a time has one to take.
+func NewReviewer(cases *workflowcase.Service, store *evidence.Store, index ReviewIndexStore, model ReviewerModel, _ clock.Clock) *Reviewer {
+	return &Reviewer{cases: cases, evidence: store, index: index, model: model}
 }
 
 // Tick reviews every decision whose case state it has not already observed. It
@@ -86,19 +91,16 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (bool, e
 		return false, err
 	}
 	fingerprint, latest := stateFingerprint(c, records)
-	reason := latestReason(records, latest)
 
-	// A task that exhausted its retries has no decision to review, and the
-	// driver already reported it. Recording "review unavailable" as a verdict
-	// would mark it reviewed without performing any check.
-	if reason == ReasonTriageFailed {
-		return false, nil
-	}
 	decision, decisionID, err := r.findDecision(ctx, c, records)
 	if err != nil {
 		return false, err
 	}
 	if decision == nil {
+		// A case that produced no decision of its own has nothing to review. A
+		// task that exhausted its retries lands here too, the driver having
+		// already reported it, so there is no separate triage-failed case to
+		// make: a case either decided something of its own or it is skipped.
 		return false, nil
 	}
 	linked, err := r.index.ReviewLinked(ctx, decisionID, ReviewerVersion, fingerprint)
@@ -169,6 +171,18 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (bool, e
 
 // structural re-derives what can be re-derived from stored inputs. It never
 // re-runs the classifier.
+//
+// The limit of that is worth stating here rather than leaving to a reader of
+// the verdict, because it is why the model is asked anything at all. Every check
+// in the block reads the stored documents and nothing else, so a stage 2
+// fabricated so that Stage3 of it yields exactly the recorded stage 3 rule is a
+// match by construction: the record agrees with itself and no re-derivation of
+// it can say otherwise. What the block does catch is a record that disagrees
+// with itself - a stage 3 that does not follow from its own stage 2, a stage 1
+// triage that disagrees with the snapshot, a stage 1 that claims to have
+// resolved the issue and carries stage 2 anyway, a case state that does not
+// match the disposition, a schema that does not validate. The plausibility
+// question beside it is the one check a re-derivation cannot be.
 func (r *Reviewer) structural(ctx context.Context, c workflowcase.Case, records []workflowcase.AssessmentRecord, latest *string, decision Decision) Structural {
 	return Structural{
 		Stage2OnlyIfUnresolved:         decision.Stage1.Resolved() == (decision.Stage2 == nil),
