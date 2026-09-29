@@ -179,6 +179,17 @@ func (d *Driver) advanceAccepted(ctx context.Context, cases []workflowcase.Case,
 				return accepted, err
 			}
 			if decision == nil {
+				// Evidence not attached to a completed attempt is not a decision,
+				// and a task in this state has a completed attempt. So this is a
+				// completed triage that recorded no decision to accept, which the
+				// driver can neither move nor wait for: the case stays ACTIVE on
+				// work that will produce nothing more. Reported rather than
+				// skipped, and reported again on every later tick, for the reason
+				// the other unadvanceable states are: a skipped case keeps a
+				// healthy tick reporting success for ever.
+				result.Failures = append(result.Failures, fmt.Sprintf(
+					"case %s revision %s has work %s %s whose completed attempt recorded no %s to accept",
+					c.ID, c.RevisionID, c.CurrentWorkID, task.State, KindDecision))
 				continue
 			}
 			current, err := d.cases.Get(ctx, c.ID)
@@ -429,6 +440,14 @@ func (d *Driver) applyDisposition(ctx context.Context, c workflowcase.Case, task
 // column on workflow_cases is required. It reports whether it moved the case, so
 // a caller whose guard short-circuited does not count an assessment it did not
 // perform.
+//
+// The identity half of the guard is currently unreachable: every call site passes
+// the case's own CurrentWorkID, because Assess refuses an assessment naming work
+// that is not the case's current. It is kept anyway, and the taskID it is passed
+// is the one Assess records, so a caller that ever has a stale work id in hand
+// fails here instead of writing an assessment about the wrong task. The comment
+// is here because a guard that cannot fire reads as a check the driver makes and
+// does not.
 func (d *Driver) block(ctx context.Context, c workflowcase.Case, taskID domain.ID, reason string, evidenceID domain.ID) (bool, error) {
 	if c.State != workflowcase.Active || c.CurrentWorkID != taskID {
 		return false, nil

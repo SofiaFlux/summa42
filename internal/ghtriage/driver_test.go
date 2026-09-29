@@ -870,6 +870,78 @@ func TestDriverReportsATerminalTaskItCannotCloseAndLeavesTheCaseAlone(t *testing
 	}
 }
 
+// A completed attempt carrying no decision is the one state of that switch that
+// had no counter and no report: the arm continued, so a case whose triage
+// completed without producing a decision stayed ACTIVE on work that will produce
+// nothing more, and every tick reported an empty result with no failure and exit
+// 0 - the shape every neighbouring arm was hardened against. It is not reachable
+// through the shipped executor, which returns a failure rather than an empty
+// result, so this is the shape a completed attempt of another kind would have.
+//
+// The completion cannot be empty - the manifest requires evidence - so the shape
+// is an attempt whose evidence is not a decision, which is exactly what the
+// driver has to reject: the worker also stores the executor's stderr summary, and
+// evidence not attached to a completed attempt is not a decision whatever it is.
+func TestDriverReportsACompletedTriageThatCarriesNoDecision(t *testing.T) {
+	f := newDriverFixture(t)
+	f.registerRevision(t, fixtureRevision)
+	task := f.tasksByRev[fixtureRevision]
+	attempt, err := f.execSvc.StartAttempt(f.ctx, task.ID, ghtriage.ExecutorKind, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The worker's own summary blob: real evidence, not a decision.
+	summary, err := f.evidenceStore.Put(f.ctx, strings.NewReader("triage o/r#42: not-actionable via stage-1"),
+		evidence.Metadata{MediaType: "text/plain", Kind: "github.issue.triage.stderr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.verifSvc.CompleteAttempt(f.ctx, attempt.ID, verification.CompletionManifest{
+		EvidenceIDs: []domain.ID{summary.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.taskState(t, fixtureRevision); got != string(domain.TaskAwaitingVerification) {
+		t.Fatalf("task state = %q, want AWAITING_VERIFICATION", got)
+	}
+
+	result, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reported, so it reaches the command's exit code. Every other counter is
+	// zero: the tick moved nothing, because there was nothing to move.
+	if len(result.Failures) != 1 {
+		t.Fatalf("failures = %v, want exactly one naming the case with nothing to accept", result.Failures)
+	}
+	for _, want := range []string{
+		string(f.casesByRev[fixtureRevision].ID), fixtureRevision, string(domain.TaskAwaitingVerification),
+	} {
+		if !strings.Contains(result.Failures[0], want) {
+			t.Fatalf("failure %q does not name %q", result.Failures[0], want)
+		}
+	}
+	if result.Accepted != 0 || result.Assessed != 0 || result.Blocked != 0 || result.Superseded != 0 {
+		t.Fatalf("result = %+v, want every counter zero: the tick moved nothing", result)
+	}
+	// Left exactly as it was. The driver has no decision to record a closure
+	// from, so it must not invent one - and it says so again on every later tick,
+	// which is the point of reporting rather than skipping.
+	if got := f.caseState(t, fixtureRevision); got != string(workflowcase.Active) {
+		t.Fatalf("case state = %q, want ACTIVE", got)
+	}
+	if got := f.latestAssessmentReason(t, fixtureRevision); got != "" {
+		t.Fatalf("assessment reason = %q, want none: nothing was decided", got)
+	}
+	second, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Failures) != 1 {
+		t.Fatalf("second tick failures = %v, want the same case reported again", second.Failures)
+	}
+}
+
 // A revision is a timestamp, and a string comparison of two timestamps is not
 // the same order. The pair here is 09:00+05:00, which is 04:00Z, against 04:30Z:
 // the older revision sorts LATER as a string and EARLIER as a time, so a driver
