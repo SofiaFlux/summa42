@@ -476,6 +476,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "run-gh-triage-review" {
+		if err := runGHTriageReview(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "run-final-verifier" {
 		if err := runFinalVerifier(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -1295,6 +1302,101 @@ func ghtriageDriverTickFailure(result ghtriage.DriverResult) error {
 	}
 	return fmt.Errorf("%d GitHub object(s) could not be advanced: %s",
 		len(result.Failures), strings.Join(result.Failures, "; "))
+}
+
+// parseGHTriageReviewFlags reads the mission the reviewer walks and the model it
+// asks, which are the two things it cannot do without: there is no triage to
+// review without a mission, and a reviewer with no model fails every case it
+// looks at, so both are startup errors rather than a tick's findings. The model
+// flags are the worker's, read through triageModelConfig so the two commands
+// cannot drift onto different models.
+func parseGHTriageReviewFlags(args []string) (domain.ID, climodel.Config, error) {
+	var mission string
+	flags := flag.NewFlagSet("run-gh-triage-review", flag.ContinueOnError)
+	flags.StringVar(&mission, "mission", "", "mission ID whose GitHub decisions are reviewed")
+	flags.String("model-binary", "codex", "model binary answering the reviewer question")
+	flags.String("model-timeout", "60s", "per-invocation model timeout")
+	if err := flags.Parse(args); err != nil {
+		return "", climodel.Config{}, err
+	}
+	if strings.TrimSpace(mission) == "" {
+		return "", climodel.Config{}, errors.New("run-gh-triage-review requires --mission")
+	}
+	modelConfig, err := triageModelConfig(flags)
+	if err != nil {
+		return "", climodel.Config{}, err
+	}
+	return domain.ID(strings.TrimSpace(mission)), modelConfig, nil
+}
+
+// runGHTriageReview reviews every GitHub case of the mission exactly once and
+// prints the result as JSON on stdout. A per-case failure is reported inside
+// that JSON and on stderr, and it decides the exit code, because the reviewer
+// records nothing for a case it could not review: an exit 0 over one would be a
+// mission that looks reviewed for ever. The result is encoded before the failure
+// is reported, so the verdicts the tick did write are on stdout either way.
+//
+// The box is the driver's composition - no executor, no capability provider, no
+// operation provider - because the reviewer changes nothing and calls none of
+// them. It is not the worker's: the model is handed to the reviewer directly
+// rather than registered as an executor, so a missing model is this command's
+// error and not a box that starts without a triage kind.
+func runGHTriageReview(ctx context.Context, args []string) error {
+	if ctx == nil {
+		return errors.New("Box context is required")
+	}
+	missionID, modelConfig, err := parseGHTriageReviewFlags(args)
+	if err != nil {
+		return err
+	}
+	adapter, ok := triageModelAdapter(modelConfig, os.Stderr)
+	if !ok {
+		return fmt.Errorf("run-gh-triage-review needs a model: --model-binary %q is not usable", modelConfig.Binary)
+	}
+	home, err := localconfig.ResolveHome("")
+	if err != nil {
+		return err
+	}
+	cfg, err := localconfig.Load(home)
+	if err != nil {
+		return fmt.Errorf("load initialized Collective: %w", err)
+	}
+	material, err := loadStartupMaterial(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	box, err := openGHTriageDriverBox(ctx, summa42runtime.Config{
+		StatePath:        cfg.DatabasePath,
+		EvidencePath:     cfg.EvidencePath,
+		CollectiveID:     cfg.CollectiveID,
+		OwnerPrincipalID: cfg.OwnerPrincipalID,
+		PolicyEngine:     material.policyEngine,
+	})
+	if err != nil {
+		return fmt.Errorf("open Box runtime: %w", err)
+	}
+	defer box.Close()
+	reviewer := ghtriage.NewReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose),
+		box.Evidence, ghtriage.NewReviewIndex(box.Store, box.Clock), adapter, box.Clock)
+	result, err := reviewer.Tick(ctx, missionID)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		return fmt.Errorf("encode triage review result: %w", err)
+	}
+	return ghtriageReviewTickFailure(result)
+}
+
+// ghtriageReviewTickFailure turns a per-case failure into the subcommand's
+// error. Skipped is not a failure: a case with no decision to review, and a
+// case whose triage failed and was already reported by the driver, are both
+// things the reviewer correctly did nothing about.
+func ghtriageReviewTickFailure(result ghtriage.ReviewResult) error {
+	if result.Failed == 0 {
+		return nil
+	}
+	return fmt.Errorf("%d GitHub case(s) could not be reviewed", result.Failed)
 }
 
 const (

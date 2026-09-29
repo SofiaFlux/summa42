@@ -403,6 +403,65 @@ func (f *driverFixture) hasEvidenceKind(t *testing.T, kind string) bool {
 	return n > 0
 }
 
+// decisionFor loads the decision document stored for a revision, newest first, so
+// a test that tampered with one reads the tampered document back.
+func (f *driverFixture) decisionFor(t *testing.T, revision string) ghtriage.Decision {
+	t.Helper()
+	_, raw, found, err := f.evidenceStore.FindByKind(f.ctx, ghtriage.KindDecision, 10,
+		func(_ evidence.EvidenceObject, raw []byte) bool {
+			var decision ghtriage.Decision
+			if err := json.Unmarshal(raw, &decision); err != nil {
+				return false
+			}
+			return decision.Revision == revision
+		})
+	if err != nil || !found {
+		t.Fatalf("decision for revision %s: found=%v err=%v", revision, found, err)
+	}
+	var decision ghtriage.Decision
+	if err := json.Unmarshal(raw, &decision); err != nil {
+		t.Fatal(err)
+	}
+	return decision
+}
+
+// decisionEvidenceID finds the decision evidence the driver recorded.
+func (f *driverFixture) decisionEvidenceID(t *testing.T) domain.ID {
+	t.Helper()
+	var id string
+	if err := f.store.DB().QueryRowContext(f.ctx,
+		`SELECT evidence_id FROM evidence_objects WHERE kind = ? ORDER BY created_at DESC, evidence_id DESC LIMIT 1`,
+		ghtriage.KindDecision).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	return domain.ID(id)
+}
+
+// repointAccepted rewrites the driver's accepted index so it names a different
+// decision document, which is how a test injects a corrupted decision. The
+// record is otherwise the one recordAccepted writes, task ID included: the case
+// carries that ID as its current work, and the task's own row ID is a different
+// value.
+func (f *driverFixture) repointAccepted(t *testing.T, revision string, decisionID domain.ID) {
+	t.Helper()
+	if _, err := f.store.DB().ExecContext(f.ctx,
+		`DELETE FROM evidence_objects WHERE kind = ?`, ghtriage.KindAccepted); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]any{
+		"schema": "github.issue.triage.accepted.v1", "case_id": f.casesByRev[revision].ID,
+		"task_id": f.casesByRev[revision].CurrentWorkID, "revision": revision, "decision_evidence_id": decisionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
+		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindAccepted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // putAcceptedIndex stores a record of the accepted index kind naming a case that
 // is not registered here, which is what every other accepted triage in a store
 // leaves behind. The clock is advanced first so the record sorts ahead of
