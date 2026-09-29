@@ -281,6 +281,41 @@ func (f *driverFixture) crashAfterAcceptance(t *testing.T, object, revision stri
 	}
 }
 
+// challengeTask records the challenge supersession commits before the case
+// assessment, with the reason and the evidence the assessment was about to
+// cite. Driving it from here is how the fixture models a crash between the two:
+// the task is inert and its case is still ACTIVE, which is the state the next
+// tick has to finish on its own.
+func (f *driverFixture) challengeTask(t *testing.T, revision, reason string, evidenceIDs ...string) {
+	t.Helper()
+	if _, ok := f.casesByRev[revision]; !ok {
+		f.registerRevision(t, revision)
+	}
+	ids := make([]domain.ID, 0, len(evidenceIDs))
+	for _, id := range evidenceIDs {
+		ids = append(ids, domain.ID(id))
+	}
+	changed, err := f.execSvc.ChallengeTaskIfInStates(f.ctx, f.tasksByRev[revision].ID,
+		[]domain.TaskState{domain.TaskEligible, domain.TaskExecuting},
+		domain.ChallengeTask, reason, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatalf("task for revision %s was not challenged", revision)
+	}
+}
+
+// setTaskState puts a task into a state no production path writes, which is the
+// only way to pin what the driver does with FAILED, CANCELLED and EXPIRED.
+func (f *driverFixture) setTaskState(t *testing.T, revision string, state domain.TaskState) {
+	t.Helper()
+	if _, err := f.store.DB().ExecContext(f.ctx,
+		`UPDATE tasks SET state = ? WHERE task_id = ?`, state, f.tasksByRev[revision].ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f *driverFixture) caseState(t *testing.T, revision string) string {
 	t.Helper()
 	createdCase, err := f.cases.Get(f.ctx, f.casesByRev[revision].ID)
@@ -318,6 +353,27 @@ func (f *driverFixture) latestAssessmentReason(t *testing.T, revision string) st
 func (f *driverFixture) observationEvidenceID(t *testing.T, revision string) string {
 	t.Helper()
 	return f.casesByRev[revision].ObservationEvidenceID
+}
+
+// latestAssessmentEvidence reads the evidence the closing assessment cited, which
+// is the column that says whether a closure repeated something already recorded
+// or asserted something new.
+func (f *driverFixture) latestAssessmentEvidence(t *testing.T, revision string) []string {
+	t.Helper()
+	records, err := f.cases.ListAssessments(f.ctx, f.casesByRev[revision].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	var request struct {
+		Assessment workflow.Assessment
+	}
+	if err := json.Unmarshal([]byte(records[len(records)-1].RequestJSON), &request); err != nil {
+		t.Fatal(err)
+	}
+	return request.Assessment.EvidenceIDs
 }
 
 // challengeEvidenceIDs reads the evidence the challenge was recorded against,
@@ -424,6 +480,30 @@ func TestDriverAcceptsAndLeavesReadyToPlanActive(t *testing.T) {
 	}
 	if got := f.taskState(t, fixtureRevision); got != "SUCCEEDED" {
 		t.Fatalf("task state = %q, want SUCCEEDED", got)
+	}
+
+	// A ready-to-plan outcome is the steady state of a triaged issue rather than
+	// a one-off: the case stays ACTIVE on a SUCCEEDED task, so every later tick
+	// re-reads it and replays the accepted index to confirm the disposition is
+	// still ready-to-plan. That is the accepted-index walk on the path a mission
+	// takes for as long as a triaged issue exists, not only in the crash window
+	// the index exists for, and what is pinned here is that it buys nothing: the
+	// second tick changes nothing.
+	second, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Failures) != 0 {
+		t.Fatalf("second tick failures = %v, want none", second.Failures)
+	}
+	if second.Accepted != 0 || second.Assessed != 0 || second.Blocked != 0 || second.Superseded != 0 {
+		t.Fatalf("second tick = %+v, want no repeated work", second)
+	}
+	if got := f.caseState(t, fixtureRevision); got != "ACTIVE" {
+		t.Fatalf("case state after the second tick = %q, want ACTIVE", got)
+	}
+	if got := f.latestAssessmentReason(t, fixtureRevision); got != "" {
+		t.Fatalf("assessment reason = %q, want none: ready-to-plan closes nothing", got)
 	}
 }
 
@@ -555,6 +635,134 @@ func TestDriverSupersedesWithTheNewerRevisionsSnapshotWhenItHasNoDecision(t *tes
 	}
 	if got := f.caseState(t, newer); got != "ACTIVE" {
 		t.Fatalf("newer case state = %q, want ACTIVE", got)
+	}
+}
+
+// Supersession commits the challenge, then the assessment. A crash between the
+// two leaves the older case ACTIVE on a CHALLENGED task, and the only thing that
+// used to close such a case was a newer ACTIVE revision to supersede it against.
+// Once the newer revision's own case is closed it is not in the accepted slice at
+// all, so the older one is the newest of a one-element slice and the loop that
+// would have closed it has nothing to iterate: the case sat ACTIVE on work that
+// can never produce a decision, and every tick reported all-zero counters, an
+// empty failure list and exit 0. This is the state the driver has to finish, and
+// the reason it can is on the task - the challenge recorded the reason and the
+// evidence supersession was about to cite.
+func TestDriverClosesACaseLeftOnAChallengedTaskByASupersession(t *testing.T) {
+	older, newer := "2026-09-28T09:00:00Z", "2026-09-28T10:30:00Z"
+	f := newDriverFixture(t)
+	f.registerRevision(t, older)
+	f.registerRevision(t, newer)
+	// The half of supersede that ran before the process died.
+	f.challengeTask(t, older, "superseded-by:"+newer, f.observationEvidenceID(t, newer))
+	// The newer revision's own triage then exhausts its retries, so this tick
+	// closes that case as triage-failed and leaves the older one nothing to be
+	// compared against on this tick or any later one.
+	f.failTaskTwice(t, newer)
+
+	result, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reported, so it reaches the command's exit code. A case parked on work
+	// that can produce no decision is not a healthy tick, however well the
+	// closure itself went.
+	if len(result.Failures) != 1 {
+		t.Fatalf("failures = %v, want exactly one naming the case left on an inert task", result.Failures)
+	}
+	for _, want := range []string{string(f.casesByRev[older].ID), older, "CHALLENGED"} {
+		if !strings.Contains(result.Failures[0], want) {
+			t.Fatalf("failure %q does not name %q", result.Failures[0], want)
+		}
+	}
+	if got := f.caseState(t, older); got != "BLOCKED" {
+		t.Fatalf("older case state = %q, want BLOCKED", got)
+	}
+	// The reason and the evidence are the ones the challenge already recorded, so
+	// this finishes a transition that began and was interrupted rather than
+	// asserting a new fact about the case.
+	if got, want := f.latestAssessmentReason(t, older), "superseded-by:"+newer; got != want {
+		t.Fatalf("older assessment reason = %q, want %q", got, want)
+	}
+	if got, want := f.latestAssessmentEvidence(t, older), f.observationEvidenceID(t, newer); len(got) != 1 || got[0] != want {
+		t.Fatalf("older assessment evidence = %v, want the evidence the challenge recorded (%s)", got, want)
+	}
+	// Two closures and nothing else: the newer revision's own triage failure, and
+	// this one. The closure is counted as a block rather than a supersession
+	// because this tick superseded nothing - it completed a challenge supersession
+	// had already committed.
+	if result.Blocked != 2 || result.Superseded != 0 || result.Accepted != 0 || result.Assessed != 0 {
+		t.Fatalf("result = %+v, want two blocks and nothing else", result)
+	}
+
+	// The steady state: both cases are closed, so neither is in the active scan
+	// and the next tick has nothing to say about either.
+	second, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Failures) != 0 || second.Blocked != 0 || second.Superseded != 0 ||
+		second.Accepted != 0 || second.Assessed != 0 {
+		t.Fatalf("second tick = %+v, want no repeated work", second)
+	}
+}
+
+// FAILED, CANCELLED and EXPIRED are states nothing in the system writes, so
+// unlike a challenge they carry nothing recorded about them: no reason, no
+// evidence, nothing a later reader could check. Closing a case on one of them
+// would write a decision into the audit row that nobody made and take the case
+// out of the active scan, which is exactly what hides the operator's next move -
+// re-run the triage, or find out who cancelled it. So they are reported and left
+// alone, which repeats on every tick on purpose: it is the same trade a missing
+// accepted index makes, and the opposite of a fabricated resolution.
+func TestDriverReportsATerminalTaskItCannotCloseAndLeavesTheCaseAlone(t *testing.T) {
+	for _, state := range []domain.TaskState{domain.TaskFailed, domain.TaskCancelled, domain.TaskExpired} {
+		t.Run(string(state), func(t *testing.T) {
+			f := newDriverFixture(t)
+			f.registerRevision(t, fixtureRevision)
+			f.setTaskState(t, fixtureRevision, state)
+
+			result, err := f.driver.Tick(context.Background(), f.missionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Failures) != 1 {
+				t.Fatalf("failures = %v, want exactly one naming the case", result.Failures)
+			}
+			for _, want := range []string{string(f.casesByRev[fixtureRevision].ID), fixtureRevision, string(state)} {
+				if !strings.Contains(result.Failures[0], want) {
+					t.Fatalf("failure %q does not name %q", result.Failures[0], want)
+				}
+			}
+			// Every counter zero: the tick moved nothing, and it says so.
+			if result.Blocked != 0 || result.Superseded != 0 || result.Accepted != 0 || result.Assessed != 0 {
+				t.Fatalf("result = %+v, want every counter zero: the tick moved nothing", result)
+			}
+			// Untouched. The case is still ACTIVE on its work and the work is
+			// still in the state it was in, because a human is the only thing
+			// that can say what should have happened to this triage.
+			if got := f.caseState(t, fixtureRevision); got != "ACTIVE" {
+				t.Fatalf("case state = %q, want ACTIVE", got)
+			}
+			if got := f.taskState(t, fixtureRevision); got != string(state) {
+				t.Fatalf("task state = %q, want %s", got, state)
+			}
+			if got := f.latestAssessmentReason(t, fixtureRevision); got != "" {
+				t.Fatalf("assessment reason = %q, want none: nothing was decided", got)
+			}
+			// Reported again on the next tick, for the same reason: nothing about
+			// this has changed and nothing will.
+			second, err := f.driver.Tick(context.Background(), f.missionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(second.Failures) != 1 {
+				t.Fatalf("second tick failures = %v, want the same case reported again", second.Failures)
+			}
+			if second.Blocked != 0 || second.Superseded != 0 || second.Accepted != 0 || second.Assessed != 0 {
+				t.Fatalf("second tick = %+v, want every counter zero", second)
+			}
+		})
 	}
 }
 

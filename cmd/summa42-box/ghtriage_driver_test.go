@@ -338,8 +338,41 @@ func TestRunGHTriageDriverExitsZeroForAMissionWithNothingToAdvance(t *testing.T)
 	}
 }
 
-// A mission that was never created is a command error, not an empty tick: the
-// operator asked about something that does not exist.
+// A mission that was never created is not a command error, and this says so
+// rather than leaving it to a comment. ListActive filters on mission_id and
+// never resolves the mission, so a mistyped --mission finds no cases and the
+// tick reports exactly what it reports over a mission that exists and had nothing
+// to advance: exit 0, every counter zero, no failures. The two are
+// indistinguishable, which is the behaviour an operator with a typo is actually
+// given. It is asserted rather than left implicit because the obvious fix -
+// resolving the mission and failing on a miss - changes what a scheduler sees for
+// a typo, and should be a deliberate change with its own test rather than a
+// side effect of somebody tidying this one up.
+func TestRunGHTriageDriverExitsZeroForAMissionThatWasNeverCreated(t *testing.T) {
+	ctx := context.Background()
+	config := initializedCollective(t)
+	f := newTriageDriverFixture(t, config)
+	f.Close()
+
+	readStdout := captureStdout(t)
+	if err := runGHTriageDriver(ctx, []string{"--mission", "mission-does-not-exist"}); err != nil {
+		t.Fatalf("run-gh-triage-driver over a mission that was never created: %v", err)
+	}
+	result := decodeDriverResult(t, readStdout())
+	// The same assertions, and the same result, as the mission that exists and
+	// has nothing in it.
+	if len(result.Failures) != 0 {
+		t.Fatalf("result = %+v, want no failures", result)
+	}
+	if result.Accepted != 0 || result.Assessed != 0 || result.Blocked != 0 || result.Superseded != 0 {
+		t.Fatalf("result = %+v, want every counter zero", result)
+	}
+}
+
+// The two invocation errors the subcommand does catch: no --mission at all, and
+// no context to run in. It says nothing about a mission that was never created -
+// TestRunGHTriageDriverExitsZeroForAMissionThatWasNeverCreated covers that, and
+// the answer there is an empty tick.
 func TestRunGHTriageDriverRejectsAMissingFlagAndAMissingContext(t *testing.T) {
 	ctx := context.Background()
 	config := initializedCollective(t)

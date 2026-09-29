@@ -149,9 +149,16 @@ func (d *Driver) tickObject(ctx context.Context, missionID domain.ID, object str
 }
 
 // advanceAccepted accepts the task of every completed revision and applies its
-// disposition. It returns every ACTIVE revision of the object, newest first,
-// because a revision whose triage task has not finished is still superseded by
-// a newer one: its pending task is exactly what supersession has to challenge.
+// disposition. It returns every ACTIVE revision of the object whose triage task
+// can still produce a decision, newest first, because a revision whose task has
+// not finished is still superseded by a newer one: its pending task is exactly
+// what supersession has to challenge.
+//
+// A revision whose task has stopped for good is not returned. It is closed or
+// reported instead, and either way it is not a candidate for the newest of the
+// slice - which matters, because tickObject compares only the older entries
+// against the newest, so a terminal revision returned as the newest one was
+// compared against nothing and nothing closed its case.
 func (d *Driver) advanceAccepted(ctx context.Context, cases []workflowcase.Case, result *DriverResult) ([]acceptedRevision, error) {
 	accepted := make([]acceptedRevision, 0, len(cases))
 	for _, c := range cases {
@@ -202,19 +209,30 @@ func (d *Driver) advanceAccepted(ctx context.Context, cases []workflowcase.Case,
 			if err := d.blockFailedTask(ctx, c, task, result); err != nil {
 				return accepted, err
 			}
-		default:
-			// A revision whose triage has not finished is still superseded by
-			// a newer one, and it has no decision to carry yet. The evidence
-			// that does exist for it is the snapshot intake stored: that
-			// observation is what established the newer revision, so it is
-			// what the supersession and the block below can be recorded
-			// against. Without it the newer revision hands a blank evidence
-			// ID to both, which workflow.Decide rejects, so the older case
-			// is challenged, never blocked, and stays ACTIVE on every tick.
+		case domain.TaskCreated, domain.TaskEligible, domain.TaskExecuting:
+			// A revision whose triage has not finished is still superseded by a
+			// newer one, and it has no decision to carry yet. The evidence that
+			// does exist for it is the snapshot intake stored: that observation is
+			// what established the newer revision, so it is what the supersession
+			// and the block below can be recorded against. Without it the newer
+			// revision hands a blank evidence ID to both, which workflow.Decide
+			// rejects, so the older case is challenged, never blocked, and stays
+			// ACTIVE on every tick.
 			accepted = append(accepted, acceptedRevision{
 				c: c, revision: parseRevision(c.RevisionID),
 				evidenceID: domain.ID(c.ObservationEvidenceID),
 			})
+		default:
+			// Anything else is a task that will not run again, and a revision
+			// holding one is not a revision to supersede. It is reported rather
+			// than returned, because returning it made it eligible to be the
+			// newest revision of the slice, and the newest revision of the slice
+			// is compared against nothing: a case on a CHALLENGED task whose newer
+			// revision has since been closed sat ACTIVE for good while every tick
+			// reported an empty result.
+			if err := d.reportTerminalTask(ctx, c, task, result); err != nil {
+				return accepted, err
+			}
 		}
 	}
 	sort.SliceStable(accepted, func(i, j int) bool {
@@ -257,10 +275,12 @@ func (d *Driver) acceptDecision(ctx context.Context, c workflowcase.Case, task d
 // recoverAccepted replays a task the driver already accepted on an earlier
 // tick. internal/verification has no read accessor for an acceptance record, so
 // the driver's own accepted index is the replay path, and a case whose index is
-// not there cannot be replayed at all: its task is already SUCCEEDED, so the
-// driver will accept it a second time on every tick and never assess the case.
-// That is reported rather than skipped, because a skipped case keeps a
-// SUCCEEDED task on an ACTIVE case for good while every tick reports success.
+// not there cannot be replayed at all. The TaskSucceeded branch only reads: it
+// never calls AcceptTask a second time, so nothing re-accepts the task and
+// nothing assesses the case, and the case stays ACTIVE on a task that will
+// produce nothing more. That is reported rather than skipped, and reported again
+// on every later tick, because a skipped case keeps a SUCCEEDED task on an
+// ACTIVE case for good while every tick reports success.
 func (d *Driver) recoverAccepted(ctx context.Context, c workflowcase.Case, task domain.Task) (*Decision, domain.ID, error) {
 	raw, found, err := d.findAccepted(ctx, c, task)
 	if err != nil {
@@ -465,11 +485,94 @@ func (d *Driver) blockFailedTask(ctx context.Context, c workflowcase.Case, task 
 	return nil
 }
 
+// reportTerminalTask handles a revision whose triage task is in a state the
+// driver can neither advance nor wait for: the work cannot produce a decision,
+// and no newer revision is going to challenge it. Reporting it through Failures
+// is what makes it reach the command's exit code, because a case the driver
+// cannot move is otherwise announced as a healthy tick - every counter zero, no
+// failure, exit 0 - and stays that way for good.
+func (d *Driver) reportTerminalTask(ctx context.Context, c workflowcase.Case, task domain.Task, result *DriverResult) error {
+	closed, reason, err := d.closeChallengedCase(ctx, c, task, result)
+	if err != nil {
+		return err
+	}
+	if closed {
+		result.Failures = append(result.Failures, fmt.Sprintf(
+			"case %s revision %s has work %s %s, which this tick closed on the challenge it already records (%s)",
+			c.ID, c.RevisionID, c.CurrentWorkID, task.State, reason))
+		return nil
+	}
+	// A CHALLENGED task with no challenge to replay, and every other state here,
+	// is left exactly as it is: the case stays ACTIVE and the failure repeats on
+	// every tick, which is the point. It is reported because it needs a decision
+	// from outside the driver, and it is not closed because the driver has
+	// nothing to record that anyone actually decided.
+	result.Failures = append(result.Failures, fmt.Sprintf(
+		"case %s revision %s has work %s %s, which no tick can advance and which needs a human",
+		c.ID, c.RevisionID, c.CurrentWorkID, task.State))
+	return nil
+}
+
+// closeChallengedCase closes the case of a CHALLENGED task on the reason and the
+// evidence its own challenge recorded, and reports whether it did. This is the
+// one terminal state with something to replay: supersession commits the challenge
+// before the assessment, so a crash between them leaves a case ACTIVE on an inert
+// task, and the reason the challenge carries is the reason the assessment was
+// about to cite. Replaying it finishes a transition that began rather than
+// asserting a new fact.
+//
+// The other terminal states are not closed, and the difference is deliberate.
+// FAILED, CANCELLED and EXPIRED carry no reason and no evidence, so a reason
+// string here would be one the driver invented, written into the case's permanent
+// record of why it closed, on a case that leaving the active scan also hides from
+// whoever has to find out what happened. blockFailedTask does close a task the
+// driver knows the whole story of; this knows none of one.
+func (d *Driver) closeChallengedCase(ctx context.Context, c workflowcase.Case, task domain.Task, result *DriverResult) (bool, string, error) {
+	if task.State != domain.TaskChallenged {
+		return false, "", nil
+	}
+	challenge, found, err := d.execution.Challenge(ctx, task.ID)
+	if err != nil {
+		return false, "", err
+	}
+	if !found || strings.TrimSpace(challenge.Reason) == "" {
+		return false, "", nil
+	}
+	// The driver's own supersession challenges with exactly one evidence ID - the
+	// newer revision's snapshot or decision - so that is what the reason cites.
+	// A challenge some other component raised may name several, and the first is
+	// the one this repeats; the rest stay on the challenge row.
+	evidenceID := domain.ID("")
+	for _, id := range challenge.EvidenceIDs {
+		if strings.TrimSpace(string(id)) != "" {
+			evidenceID = id
+			break
+		}
+	}
+	if evidenceID == "" {
+		return false, "", nil
+	}
+	blocked, err := d.block(ctx, c, c.CurrentWorkID, challenge.Reason, evidenceID)
+	if err != nil {
+		return false, "", err
+	}
+	if !blocked {
+		return false, "", nil
+	}
+	result.Blocked++
+	return true, challenge.Reason, nil
+}
+
 // supersede stops an older revision's pending work and blocks its case. The
-// challenge runs before the assessment, so a crash between them leaves an
-// inert task and an ACTIVE case the next tick can finish. Every revision it
-// closes records the same superseded-by reason, whether its triage had already
-// produced a decision or had not run at all.
+// challenge runs before the assessment, so a crash between them leaves an inert
+// task and an ACTIVE case. The next tick finishes that, by two routes: while a
+// newer ACTIVE revision still exists this function supersedes against it and
+// challenges nothing twice, and once every newer revision is closed it is
+// closeChallengedCase that finishes the case on the reason the challenge
+// recorded, because a case on an inert task is no longer a revision to supersede
+// but one to close. Every revision this closes records the same superseded-by
+// reason, whether its triage had already produced a decision or had not run at
+// all.
 func (d *Driver) supersede(ctx context.Context, older, newest acceptedRevision, result *DriverResult) error {
 	// A supersession is recorded against evidence: the challenge persists it and
 	// the assessment cites it. A newer revision that has neither a decision nor
