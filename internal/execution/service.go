@@ -445,7 +445,9 @@ func (s *Service) ChallengeTask(ctx context.Context, taskID domain.ID, scope dom
 // the supplied states. The caller must re-read the task when changed is false,
 // because the state may have moved since it was read. An accepted task can
 // never be returned to CHALLENGED, which is the property the unguarded
-// ChallengeTask lacks.
+// ChallengeTask lacks. A current attempt that is already terminal does not stop
+// the challenge: revoking its lease matches nothing, and there is no live
+// attempt left to leave behind.
 func (s *Service) ChallengeTaskIfInStates(ctx context.Context, taskID domain.ID, states []domain.TaskState, scope domain.ChallengeScope, reason string, evidenceIDs []domain.ID) (changed bool, err error) {
 	if err := s.configured(); err != nil {
 		return false, err
@@ -525,7 +527,13 @@ func (s *Service) ChallengeTaskIfInStates(ctx context.Context, taskID domain.ID,
 				return err
 			}
 			if revoked != 1 {
-				return domain.ErrStaleAttempt
+				terminal, err := terminalAttempt(ctx, tx, domain.ID(currentAttempt.String))
+				if err != nil {
+					return err
+				}
+				if !terminal {
+					return domain.ErrStaleAttempt
+				}
 			}
 		}
 		if err := appendEvent(ctx, tx, taskID, domain.ID(currentAttempt.String), "TASK_CHALLENGED", now); err != nil {
@@ -887,6 +895,35 @@ func validTaskState(state domain.TaskState) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// terminalAttempt reports whether an attempt the revocation UPDATE could not
+// touch is already finished, so the challenge may go ahead. FailAttempt and
+// RevokeLease both leave tasks.current_attempt_id pointing at the terminal
+// attempt they wrote, so a task awaiting retry holds one; its lease is not
+// ACTIVE, the UPDATE matches nothing, and there is no live attempt to leave
+// behind. An attempt_id that no longer resolves is not terminal either, and
+// the caller reports it the way GuardAttempt and RevokeLease already do.
+func terminalAttempt(ctx context.Context, tx *sql.Tx, attemptID domain.ID) (bool, error) {
+	var leaseState domain.LeaseState
+	var state domain.AttemptState
+	if err := tx.QueryRowContext(ctx,
+		`SELECT lease_state, state FROM attempts WHERE attempt_id = ?`, attemptID,
+	).Scan(&leaseState, &state); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if leaseState != domain.LeaseActive {
+		return true, nil
+	}
+	switch state {
+	case domain.AttemptFailed, domain.AttemptCancelled, domain.AttemptExpired, domain.AttemptCompleted:
+		return true, nil
+	default:
+		return false, nil
 	}
 }
 

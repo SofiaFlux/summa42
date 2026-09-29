@@ -273,14 +273,75 @@ func TestChallengeTaskIfInStatesAdmitsExactlyOneConcurrentCaller(t *testing.T) {
 	}
 }
 
-// The current attempt is no longer ACTIVE, so revoking its lease cannot match.
-// The challenge must fail rather than leave the attempt non-terminal.
+// FailAttempt leaves current_attempt_id pointing at the attempt it just made
+// terminal and returns the task to ELIGIBLE, so a transient model failure leaves
+// a task that is ELIGIBLE with a terminal current attempt. That is a routine
+// state, and a superseded revision must still be able to stop it.
+func TestChallengeTaskIfInStatesChallengesATaskAwaitingRetryAfterAFailedAttempt(t *testing.T) {
+	store, svc, ctx := newTriageService(t)
+	task, attempt := leaseTriageTask(t, store, svc, ctx, "work-awaiting-retry")
+
+	if err := svc.FailAttempt(ctx, attempt.ID, domain.FailureTransient,
+		"transient-model-error", nil); err != nil {
+		t.Fatal(err)
+	}
+	awaiting, err := svc.Task(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if awaiting.State != domain.TaskEligible {
+		t.Fatalf("state after FailAttempt = %q, want ELIGIBLE", awaiting.State)
+	}
+	failed := readAttempt(t, store, ctx, attempt.ID)
+	if failed.state != domain.AttemptFailed || failed.leaseState != domain.LeaseRevoked {
+		t.Fatalf("attempt after FailAttempt = %q/%q, want FAILED/REVOKED", failed.state, failed.leaseState)
+	}
+
+	changed, err := svc.ChallengeTaskIfInStates(ctx, task.ID,
+		[]domain.TaskState{domain.TaskEligible, domain.TaskExecuting},
+		domain.ChallengeTask, "superseded-by:2026-09-28T11:00:00Z", nil)
+	if err != nil {
+		t.Fatalf("an ELIGIBLE task with a terminal current attempt was refused: %v", err)
+	}
+	if !changed {
+		t.Fatal("an ELIGIBLE task awaiting retry was not challenged")
+	}
+	stored, err := svc.Task(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != domain.TaskChallenged {
+		t.Fatalf("state = %q, want CHALLENGED", stored.State)
+	}
+	if challenges := countRows(t, store, ctx,
+		`SELECT count(*) FROM task_challenges WHERE task_id = ?`, task.ID); challenges != 1 {
+		t.Fatalf("challenge rows = %d, want 1", challenges)
+	}
+	if events := countRows(t, store, ctx,
+		`SELECT count(*) FROM execution_events WHERE task_id = ? AND event_type = 'TASK_CHALLENGED'`, task.ID); events != 1 {
+		t.Fatalf("TASK_CHALLENGED events = %d, want 1", events)
+	}
+	// The attempt was already terminal, so the challenge must leave it alone
+	// rather than rewrite FAILED as CANCELLED.
+	after := readAttempt(t, store, ctx, attempt.ID)
+	if after.state != domain.AttemptFailed || after.leaseState != domain.LeaseRevoked {
+		t.Fatalf("attempt = %q/%q, want the pre-existing FAILED/REVOKED", after.state, after.leaseState)
+	}
+	if after.completedAt.String != failed.completedAt.String {
+		t.Fatalf("completed_at = %q, want the pre-existing %q", after.completedAt.String, failed.completedAt.String)
+	}
+}
+
+// The current attempt no longer resolves to an attempts row, so revoking its
+// lease cannot match and there is nothing to show it is terminal. The challenge
+// must fail rather than report changed for an attempt it never touched.
 func TestChallengeTaskIfInStatesReportsAStaleCurrentAttempt(t *testing.T) {
 	store, svc, ctx := newTriageService(t)
-	task, attempt := leaseTriageTask(t, store, svc, ctx, "work-stale-attempt")
+	task, _ := leaseTriageTask(t, store, svc, ctx, "work-stale-attempt")
 
 	if _, err := store.DB().ExecContext(ctx,
-		`UPDATE attempts SET lease_state = ? WHERE attempt_id = ?`, domain.LeaseRevoked, attempt.ID); err != nil {
+		`UPDATE tasks SET current_attempt_id = ? WHERE task_id = ?`,
+		domain.NewID("attempt"), task.ID); err != nil {
 		t.Fatal(err)
 	}
 
