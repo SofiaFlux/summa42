@@ -216,7 +216,7 @@ func (f *driverFixture) simulateRestartAfterAcceptance(t *testing.T, revision st
 	}
 	acceptedRaw, err := json.Marshal(map[string]any{
 		"schema": "github.issue.triage.accepted.v1", "case_id": createdCase.ID,
-		"task_id": task.ID, "revision": revision, "decision_evidence_id": object.ID,
+		"task_id": createdCase.CurrentWorkID, "revision": revision, "decision_evidence_id": object.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -440,5 +440,56 @@ func TestDriverRecoversWhenTheTaskIsAcceptedButTheCaseIsNot(t *testing.T) {
 	}
 	if got := f.caseState(t, fixtureRevision); got != "BLOCKED" {
 		t.Fatalf("case state = %q, want BLOCKED", got)
+	}
+}
+
+// The restart path reads back the very record recordAccepted wrote, so the
+// recorded task ID has to be the identity findAccepted matches on: the case's
+// work ID, which is the task's idempotency key. A driver that recorded the
+// task row's own ID instead would satisfy a fixture that writes the same value
+// and still never recover, so this pins the writer to the reader's identity.
+func TestDriverWritesTheAcceptedIndexUnderTheIdentityItReadsItBy(t *testing.T) {
+	f := newDriverFixture(t)
+	f.completeTaskWithDecision(t, fixtureRevision, readyToPlanDecision(fixtureRevision))
+
+	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	createdCase := f.casesByRev[fixtureRevision]
+	var indexID domain.ID
+	if err := f.store.DB().QueryRowContext(f.ctx,
+		`SELECT evidence_id FROM evidence_objects WHERE kind = ?`, ghtriage.KindAccepted).Scan(&indexID); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := f.evidenceStore.Get(f.ctx, indexID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record struct {
+		Schema   string    `json:"schema"`
+		CaseID   domain.ID `json:"case_id"`
+		TaskID   domain.ID `json:"task_id"`
+		Revision string    `json:"revision"`
+	}
+	if err := json.Unmarshal(raw, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Schema != "github.issue.triage.accepted.v1" || record.CaseID != createdCase.ID ||
+		record.TaskID != createdCase.CurrentWorkID || record.Revision != fixtureRevision {
+		t.Fatalf("accepted index = %+v, want case %s work %s revision %s",
+			record, createdCase.ID, createdCase.CurrentWorkID, fixtureRevision)
+	}
+
+	// The task is SUCCEEDED and the case still ACTIVE, so this tick is the one
+	// that has to find the record the previous tick wrote.
+	result, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 0 {
+		t.Fatalf("second tick failures = %v, want none", result.Failures)
+	}
+	if result.Accepted != 0 {
+		t.Fatalf("second tick accepted %d tasks, want the task already accepted", result.Accepted)
 	}
 }
