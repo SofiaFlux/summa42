@@ -500,8 +500,7 @@ func parseWorkerFlags(args []string) (pollInterval time.Duration, leaseDuration 
 	flags := flag.NewFlagSet("run-worker", flag.ContinueOnError)
 	flags.DurationVar(&pollInterval, "poll-interval", 30*time.Second, "interval between scheduler polls")
 	flags.DurationVar(&leaseDuration, "lease-duration", 0, "attempt lease duration (0 uses Box default)")
-	flags.String("model-binary", "codex", "model binary classifying a triage issue")
-	flags.String("model-timeout", "60s", "per-invocation model timeout")
+	registerTriageModelFlags(flags, "model binary classifying a triage issue")
 	if err := flags.Parse(args); err != nil {
 		return 0, 0, climodel.Config{}, err
 	}
@@ -518,9 +517,46 @@ func parseWorkerFlags(args []string) (pollInterval time.Duration, leaseDuration 
 	return pollInterval, leaseDuration, modelConfig, nil
 }
 
+// registerTriageModelFlags puts the three model flags on a flag set, so the
+// worker and the review subcommand take the same one and cannot drift onto
+// different models. binaryUse names what the binary is for, because it is the
+// only part of the default that differs between them.
+//
+// The prompt is written to the binary's stdin and nothing else, so a binary that
+// needs a subcommand cannot be used without --model-arg: without it every
+// invocation is a run that reads no prompt and produces no conforming response,
+// which the adapter reports as a model failure after the full timeout, twice per
+// attempt. The help says so rather than leaving the default untested against the
+// binary it names.
+func registerTriageModelFlags(flags *flag.FlagSet, binaryUse string) {
+	flags.String("model-binary", "codex", binaryUse+", which must read the prompt on stdin")
+	flags.String("model-timeout", "60s", "per-invocation model timeout")
+	flags.Var(&modelArgs{}, "model-arg",
+		"argument passed to the model binary before the prompt, repeatable and in order "+
+			"(the prompt is on stdin; a binary needing a subcommand takes it here)")
+}
+
+// modelArgs collects a repeatable string flag, so --model-arg exec --model-arg -
+// reaches the binary as two arguments in the order they were written. flag's own
+// String collects only the last occurrence, which is the wrong answer for a
+// subcommand plus its arguments.
+type modelArgs []string
+
+func (m *modelArgs) String() string { return strings.Join(*m, " ") }
+
+func (m *modelArgs) Set(value string) error {
+	*m = append(*m, value)
+	return nil
+}
+
+// Get is what triageModelConfig reads: the flag package hands a Getter its
+// underlying value, so a []string reaches the config without a second parse of
+// the argument list.
+func (m *modelArgs) Get() any { return []string(*m) }
+
 // triageModelConfig reads the model flags off any flag set, so run-worker,
 // run-gh-triage-driver and run-gh-triage-review agree on the model; the flag
-// set must have registered both of them. A flag value that cannot be honoured
+// set must have registered all of them. A flag value that cannot be honoured
 // is a configuration mistake and stays a startup error: the degradation in
 // triageModelAdapter covers a model binary that is not on PATH, never an
 // unparseable or blank value. The errors name the flag rather than the
@@ -535,6 +571,10 @@ func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
 	if timeoutFlag == nil {
 		return climodel.Config{}, errors.New("model flags are not registered: --model-timeout is missing from the flag set")
 	}
+	argsFlag := flags.Lookup("model-arg")
+	if argsFlag == nil {
+		return climodel.Config{}, errors.New("model flags are not registered: --model-arg is missing from the flag set")
+	}
 	binary := binaryFlag.Value.String()
 	timeout := timeoutFlag.Value.String()
 	if strings.TrimSpace(binary) == "" {
@@ -547,7 +587,15 @@ func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
 	if duration <= 0 {
 		return climodel.Config{}, fmt.Errorf("--model-timeout must be positive, got %q", timeout)
 	}
-	return climodel.Config{Binary: binary, Timeout: duration}, nil
+	getter, ok := argsFlag.Value.(flag.Getter)
+	if !ok {
+		return climodel.Config{}, errors.New("--model-arg does not collect values from the flag set")
+	}
+	args, ok := getter.Get().([]string)
+	if !ok {
+		return climodel.Config{}, errors.New("--model-arg does not collect values from the flag set")
+	}
+	return climodel.Config{Binary: binary, Args: args, Timeout: duration}, nil
 }
 
 // triageModelAdapter builds the classifier the triage executor needs and reports
@@ -1314,8 +1362,7 @@ func parseGHTriageReviewFlags(args []string) (domain.ID, climodel.Config, error)
 	var mission string
 	flags := flag.NewFlagSet("run-gh-triage-review", flag.ContinueOnError)
 	flags.StringVar(&mission, "mission", "", "mission ID whose GitHub decisions are reviewed")
-	flags.String("model-binary", "codex", "model binary answering the reviewer question")
-	flags.String("model-timeout", "60s", "per-invocation model timeout")
+	registerTriageModelFlags(flags, "model binary answering the reviewer question")
 	if err := flags.Parse(args); err != nil {
 		return "", climodel.Config{}, err
 	}

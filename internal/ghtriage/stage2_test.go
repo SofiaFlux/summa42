@@ -1,6 +1,7 @@
 package ghtriage
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -112,6 +113,65 @@ func TestBuildStage2InputDoesNotReorderTheCallersSlices(t *testing.T) {
 	}
 	if want := []string{"title:[bug]", "has-repro"}; !reflect.DeepEqual(signals, want) {
 		t.Fatalf("the caller's signals were reordered in place: %v, want %v", signals, want)
+	}
+}
+
+// The document the model reads says labels and signals are arrays, and a real
+// unlabelled issue with a plain title has neither. append(nil, empty...) yields a
+// nil slice, which json.Marshal writes as null, so the model was handed
+// "labels":null on the very issues with the least to say - and this is the only
+// document it ever sees. The accepting direction matters as much as the empty
+// one: a preparation that emptied the fields for every issue would pass a test
+// that only checked they were not null.
+func TestBuildStage2InputRendersEmptyCollectionsAsArrays(t *testing.T) {
+	snap := snapshot(nil, "Crash on save", "it crashes", TriageUnclassified)
+	input := BuildStage2Input(snap, nil)
+	// The signals stage 2 is given are the ones stage 1 produced for this very
+	// snapshot, so the empty case is a real one rather than a hand-built nil.
+	if got := Stage1(snap).Signals; len(got) != 0 {
+		t.Fatalf("fixture signals = %q, want an issue that signals nothing", got)
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"labels", "signals"} {
+		if decoded[key] == nil {
+			t.Fatalf("%s = null in %s, want an empty array", key, raw)
+		}
+		if values, ok := decoded[key].([]any); !ok || len(values) != 0 {
+			t.Fatalf("%s = %v in %s, want an empty array", key, decoded[key], raw)
+		}
+	}
+	// And a populated issue is still populated: the fix is the empty case.
+	populated := BuildStage2Input(
+		snapshot([]string{"bug"}, "Crash on save", "it crashes", TriageBug), []string{"label:bug"})
+	raw, err = json.Marshal(populated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"labels":["bug"]`) ||
+		!strings.Contains(string(raw), `"signals":["label:bug"]`) {
+		t.Fatalf("prompt = %s, want the issue's own labels and signals", raw)
+	}
+}
+
+// What is stored is not what is sent, and the difference is deliberate: the
+// decision records stage 1's own signal list, which is built non-nil whether or
+// not there was anything to record. So the change above cannot have moved
+// stage1.signals from [] to null, and this says so on the stored document rather
+// than leaving it to be inferred.
+func TestStage1SignalsAreStoredAsAnArrayNotNull(t *testing.T) {
+	raw, err := json.Marshal(Stage1(snapshot(nil, "Crash on save", "it crashes", TriageUnclassified)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"signals":[]`) {
+		t.Fatalf("stage 1 = %s, want an empty signal array rather than null", raw)
 	}
 }
 

@@ -124,6 +124,70 @@ func TestReviewReturnsOnlyABoolean(t *testing.T) {
 // still pass against an adapter that ignored the exit status entirely. The
 // stderr assertion is what pins the capture, which is otherwise unpinned: drop
 // the ": %s" and the suite stays green.
+// Config.Args is what makes a provider CLI that needs a subcommand usable at
+// all: the prompt is on stdin and nothing else, so without arguments the binary
+// is exec'd with nothing and reads no prompt. The field was reachable only from
+// a hand-built Config, so a configuration that dropped it on the way in - a flag
+// set that never read it, say - would leave the default model exec'd with zero
+// arguments and every attempt failing after the full timeout, with no test
+// anywhere that had ever run a binary with an argument.
+func TestClassifyPassesTheConfiguredArgumentsToTheBinary(t *testing.T) {
+	const marker = "the-binary-ran-with-its-arguments"
+	binary := filepath.Join(t.TempDir(), "model.sh")
+	script := "#!/bin/sh\ncat > /dev/null\n" +
+		"for arg in \"$@\"; do echo " + marker + " \"$arg\" >&2; done\n" +
+		`cat <<'JSON'` + "\n" +
+		`{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"x"}` +
+		"\nJSON\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := New(Config{Binary: binary, Args: []string{"exec", "--model", "gpt-5"}, Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := adapter.Classify(context.Background(), ghtriage.Stage2Input{Schema: ghtriage.Stage2InputSchema}); err != nil {
+		t.Fatalf("a conforming response from a binary taking arguments was rejected: %v", err)
+	}
+	// The adapter captures stderr and returns it only on a failure, so the
+	// arguments a binary was called with are visible on the failing path, which
+	// is the one an operator reads anyway.
+	failing := failingScript(t, marker)
+	adapter, err = New(Config{Binary: failing, Args: []string{"exec", "--model", "gpt-5"}, Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Classify(context.Background(), ghtriage.Stage2Input{Schema: ghtriage.Stage2InputSchema})
+	if err == nil {
+		t.Fatal("a failing model process was treated as success")
+	}
+	// Both the presence of the arguments and their order, which is the whole
+	// reason the flag is repeatable rather than a single string: a subcommand and
+	// its own options have to reach the binary in the order they were written.
+	for _, want := range []string{
+		marker + " exec", marker + " --model", marker + " gpt-5",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not carry %q, so the arguments did not reach the binary in order", err, want)
+		}
+	}
+}
+
+// failingScript writes a binary that reports the arguments it was given on
+// stderr and then fails, which is the only way to see them: a successful run
+// returns stdout and keeps stderr.
+func failingScript(t *testing.T, marker string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "failing.sh")
+	script := "#!/bin/sh\ncat > /dev/null\n" +
+		"for arg in \"$@\"; do echo " + marker + " \"$arg\" >&2; done\nexit 3\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestClassifyFailsWhenTheProcessFails(t *testing.T) {
 	const stderrText = "model provider unavailable"
 	failing := filepath.Join(t.TempDir(), "failing.sh")

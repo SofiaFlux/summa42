@@ -228,6 +228,54 @@ func triageModelConfigFor(t *testing.T, args ...string) climodel.Config {
 	return modelConfig
 }
 
+// The model binary is exec'd with the prompt on stdin and nothing else, so a
+// provider CLI that needs a subcommand cannot be used at all without arguments -
+// and Config.Args was reachable only from a hand-built Config, which no
+// production path builds. The default is --model-binary codex, so a deployment
+// needing arguments had no way to say so and every attempt ran the full timeout
+// twice and then blocked the case. The flag is repeatable because a subcommand
+// and its own options have to arrive in order, and it is on both the worker's
+// and the reviewer's flag set because both invoke the model.
+func TestModelArgsReachTheModelConfigurationInOrder(t *testing.T) {
+	args := []string{"exec", "--model", "gpt-5"}
+	flags := make([]string, 0, len(args))
+	for _, arg := range args {
+		flags = append(flags, "--model-arg="+arg)
+	}
+	got := triageModelConfigFor(t, append(
+		[]string{"--model-binary=" + usableModelBinary(t), "--model-timeout=5s"}, flags...)...)
+	if len(got.Args) != len(args) {
+		t.Fatalf("args = %q, want %q", got.Args, args)
+	}
+	for i, want := range args {
+		if got.Args[i] != want {
+			t.Fatalf("args = %q, want %q in the order they were written", got.Args, args)
+		}
+	}
+	// And the reviewer's flag set, which is the other one that calls a model: a
+	// flag registered on run-worker alone would leave the reviewer invoking a
+	// binary configured one way and the worker another.
+	mission, config, err := parseGHTriageReviewFlags(append(
+		[]string{"--mission", "mission-1", "--model-binary", usableModelBinary(t),
+			"--model-timeout", "5s"}, flags...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mission != "mission-1" || len(config.Args) != len(args) {
+		t.Fatalf("review model config = %+v, want the same arguments in order", config)
+	}
+	for i, want := range args {
+		if config.Args[i] != want {
+			t.Fatalf("review args = %q, want %q in the order they were written", config.Args, args)
+		}
+	}
+	// Omitting the flag is not an error and means no arguments, which is the
+	// documented contract of the binary: it reads the prompt on stdin.
+	if got := triageModelConfigFor(t, "--model-binary="+usableModelBinary(t), "--model-timeout=5s"); len(got.Args) != 0 {
+		t.Fatalf("args = %q, want none when the flag is omitted", got.Args)
+	}
+}
+
 // A model binary that is not on PATH must leave the registry holding no triage
 // executor, because that registry is the only capability source workerCapacity
 // reads: no key, no github.issue.read, no lease. An executor registered with a
@@ -319,6 +367,34 @@ func TestTriageModelConfigReportsAFlagSetThatNeverRegisteredTheModelFlags(t *tes
 	if _, err := triageModelConfig(partial); err == nil {
 		t.Fatal("triageModelConfig accepted a flag set with no --model-timeout")
 	} else if !strings.Contains(err.Error(), "--model-timeout") {
-		t.Fatalf("error = %q, want it to name the missing --model-timeout", err)
+		t.Fatalf("error = %q, want it to name --model-timeout", err)
+	}
+	// Every flag has to be there, in the order they are checked, and one that
+	// does not collect a list is refused rather than read as "no arguments":
+	// silently dropping the arguments is the failure this flag exists to remove.
+	for _, tc := range []struct {
+		name  string
+		setup func(*flag.FlagSet)
+		want  string
+	}{
+		{"no --model-arg", func(f *flag.FlagSet) {
+			f.String("model-binary", "codex", "b")
+			f.String("model-timeout", "60s", "t")
+		}, "--model-arg"},
+		{"a --model-arg that keeps only one value", func(f *flag.FlagSet) {
+			f.String("model-binary", "codex", "b")
+			f.String("model-timeout", "60s", "t")
+			f.String("model-arg", "", "a")
+		}, "--model-arg does not collect"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := flag.NewFlagSet("partial", flag.ContinueOnError)
+			tc.setup(set)
+			if _, err := triageModelConfig(set); err == nil {
+				t.Fatal("triageModelConfig accepted the flag set")
+			} else if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want it to name %q", err, tc.want)
+			}
+		})
 	}
 }

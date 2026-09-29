@@ -31,14 +31,21 @@ type Stage2Input struct {
 // reproduction block that opens the body is removed, because stage 1 already
 // turned it into a signal, and both free-text fields are bounded. A leading
 // block is left in place in two cases, for different reasons: a backtick fence
-// that is never closed has no safe cut point, and stripping it to the end of
-// the body would discard the reporter's entire description; a fence written
-// with anything other than backticks is simply not recognised, because the
-// matcher only looks for backticks.
+// that is never closed has no safe cut point, and stripping it to the end of the
+// body would discard the reporter's entire description; a fence written with
+// anything other than backticks is simply not recognised, because the matcher
+// only looks for backticks.
+//
+// The two collections are copied into a non-nil slice, so an issue with no labels
+// and no signals reaches the model as [] and not as null. This document is the
+// only thing the model ever sees and its schema says both are arrays, and a null
+// where the document says an array is a model asked to read a shape the design
+// does not describe. It changes nothing that is stored: stage 1 builds its own
+// non-nil signal list, so the recorded stage1.signals is unaffected.
 func BuildStage2Input(snap Snapshot, signals []string) Stage2Input {
-	labels := append([]string(nil), snap.Labels...)
+	labels := append(make([]string, 0, len(snap.Labels)), snap.Labels...)
 	sort.Strings(labels)
-	sorted := append([]string(nil), signals...)
+	sorted := append(make([]string, 0, len(signals)), signals...)
 	sort.Strings(sorted)
 
 	body := stripLeadingFence(snap.Body)
