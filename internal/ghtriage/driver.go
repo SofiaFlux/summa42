@@ -183,8 +183,17 @@ func (d *Driver) advanceAccepted(ctx context.Context, cases []workflowcase.Case,
 				return accepted, err
 			}
 		default:
+			// A revision whose triage has not finished is still superseded by
+			// a newer one, and it has no decision to carry yet. The evidence
+			// that does exist for it is the snapshot intake stored: that
+			// observation is what established the newer revision, so it is
+			// what the supersession and the block below can be recorded
+			// against. Without it the newer revision hands a blank evidence
+			// ID to both, which workflow.Decide rejects, so the older case
+			// is challenged, never blocked, and stays ACTIVE on every tick.
 			accepted = append(accepted, acceptedRevision{
 				c: c, revision: parseRevision(c.RevisionID),
+				evidenceID: domain.ID(c.ObservationEvidenceID),
 			})
 		}
 	}
@@ -352,19 +361,30 @@ func (d *Driver) applyDisposition(ctx context.Context, c workflowcase.Case, task
 	if disposition == DispositionReadyToPlan {
 		return nil
 	}
-	if err := d.block(ctx, c, taskID, string(disposition), evidenceID); err != nil {
+	blocked, err := d.block(ctx, c, taskID, string(disposition), evidenceID)
+	if err != nil {
 		return err
 	}
-	result.Assessed++
+	if blocked {
+		result.Assessed++
+	}
 	return nil
 }
 
 // block moves an ACTIVE case to BLOCKED through Assess, which is idempotent by
 // exact-request replay and already records the reason in the audit row. No new
-// column on workflow_cases is required.
-func (d *Driver) block(ctx context.Context, c workflowcase.Case, taskID domain.ID, reason string, evidenceID domain.ID) error {
+// column on workflow_cases is required. It reports whether it moved the case, so
+// a caller whose guard short-circuited does not count an assessment it did not
+// perform.
+func (d *Driver) block(ctx context.Context, c workflowcase.Case, taskID domain.ID, reason string, evidenceID domain.ID) (bool, error) {
 	if c.State != workflowcase.Active || c.CurrentWorkID != taskID {
-		return nil
+		return false, nil
+	}
+	// A blank evidence ID is refused here rather than handed to Assess:
+	// workflow.Decide rejects one, and the rejection would repeat identically on
+	// every tick with the case stuck ACTIVE and the task already changed.
+	if strings.TrimSpace(string(evidenceID)) == "" {
+		return false, fmt.Errorf("no evidence to record blocking case %s as %s", c.ID, reason)
 	}
 	_, err := d.cases.Assess(ctx, workflowcase.AssessmentRequest{
 		CaseID: c.ID,
@@ -376,7 +396,10 @@ func (d *Driver) block(ctx context.Context, c workflowcase.Case, taskID domain.I
 		},
 		RemainingBudget: c.RemainingBudget,
 	})
-	return err
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // blockFailedTask handles a task that exhausted its retries and therefore has
@@ -399,12 +422,13 @@ func (d *Driver) blockFailedTask(ctx context.Context, c workflowcase.Case, task 
 	if err != nil {
 		return err
 	}
-	result.Failures = append(result.Failures, fmt.Sprintf(
-		"triage task %s exhausted its retries and was blocked", task.ID))
-	if err := d.block(ctx, c, c.CurrentWorkID, ReasonTriageFailed, evidenceID); err != nil {
+	blocked, err := d.block(ctx, c, c.CurrentWorkID, ReasonTriageFailed, evidenceID)
+	if err != nil {
 		return err
 	}
-	result.Blocked++
+	if blocked {
+		result.Blocked++
+	}
 	return nil
 }
 
@@ -414,6 +438,16 @@ func (d *Driver) blockFailedTask(ctx context.Context, c workflowcase.Case, task 
 func (d *Driver) supersede(ctx context.Context, older, newest acceptedRevision, result *DriverResult) error {
 	if older.c.State != workflowcase.Active {
 		return nil
+	}
+	// A supersession is recorded against evidence: the challenge persists it and
+	// the assessment cites it. A newer revision that has neither a decision nor
+	// an observation has nothing to record, and both writes would either persist
+	// a blank ID or be rejected by workflow.Decide, leaving the older case
+	// ACTIVE for good. Refusing before the challenge leaves the older task
+	// running and says why.
+	if strings.TrimSpace(string(newest.evidenceID)) == "" {
+		return fmt.Errorf("revision %s supersedes %s with no evidence to record",
+			newest.c.RevisionID, older.c.RevisionID)
 	}
 	reason := supersededReasonHead + newest.c.RevisionID
 	taskID := older.c.CurrentWorkID
@@ -455,8 +489,12 @@ func (d *Driver) supersede(ctx context.Context, older, newest acceptedRevision, 
 	if current.State != workflowcase.Active {
 		return nil
 	}
-	if err := d.block(ctx, current, current.CurrentWorkID, reason, newest.evidenceID); err != nil {
+	blocked, err := d.block(ctx, current, current.CurrentWorkID, reason, newest.evidenceID)
+	if err != nil {
 		return err
+	}
+	if !blocked {
+		return nil
 	}
 	result.Superseded++
 	return nil

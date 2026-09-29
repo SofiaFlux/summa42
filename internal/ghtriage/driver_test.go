@@ -297,6 +297,28 @@ func (f *driverFixture) latestAssessmentReason(t *testing.T, revision string) st
 	return result.Decision.Reason
 }
 
+func (f *driverFixture) observationEvidenceID(t *testing.T, revision string) string {
+	t.Helper()
+	return f.casesByRev[revision].ObservationEvidenceID
+}
+
+// challengeEvidenceIDs reads the evidence the challenge was recorded against,
+// which is the column that must never hold a blank ID.
+func (f *driverFixture) challengeEvidenceIDs(t *testing.T, revision string) []string {
+	t.Helper()
+	var raw string
+	if err := f.store.DB().QueryRowContext(f.ctx,
+		`SELECT evidence_ids_json FROM task_challenges WHERE task_id = ? ORDER BY created_at DESC, challenge_id DESC LIMIT 1`,
+		f.tasksByRev[revision].ID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
 func (f *driverFixture) hasEvidenceKind(t *testing.T, kind string) bool {
 	t.Helper()
 	var n int
@@ -430,6 +452,62 @@ func TestDriverSupersedesAnOlderRevisionAndChallengesItsPendingTask(t *testing.T
 	}
 	if got := f.latestAssessmentReason(t, older); got != "superseded-by:"+fixtureRevision {
 		t.Fatalf("assessment reason = %q", got)
+	}
+}
+
+// The driver has not run for a revision when the next one is registered, so the
+// newer revision has no decision and nothing of its own to cite. The snapshot
+// intake stored for it is the evidence that exists, and it is what establishes
+// that the revision was seen at all. Superseding with a blank evidence ID
+// instead challenges the older task and then fails to assess the older case, on
+// every tick, forever.
+func TestDriverSupersedesWithTheNewerRevisionsSnapshotWhenItHasNoDecision(t *testing.T) {
+	older, newer := "2026-09-28T09:00:00Z", "2026-09-28T10:30:00Z"
+	f := newDriverFixture(t)
+	f.registerRevision(t, older)
+	f.registerRevision(t, newer)
+
+	result, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 0 {
+		t.Fatalf("failures = %v, want none", result.Failures)
+	}
+	if result.Superseded != 1 {
+		t.Fatalf("result = %+v, want one superseded revision", result)
+	}
+	if got := f.taskState(t, older); got != "CHALLENGED" {
+		t.Fatalf("older task state = %q, want CHALLENGED", got)
+	}
+	if got := f.caseState(t, older); got != "BLOCKED" {
+		t.Fatalf("older case state = %q, want BLOCKED", got)
+	}
+	if got := f.latestAssessmentReason(t, older); got != "superseded-by:"+newer {
+		t.Fatalf("assessment reason = %q, want superseded-by:%s", got, newer)
+	}
+	wantEvidence := f.observationEvidenceID(t, newer)
+	gotEvidence := f.challengeEvidenceIDs(t, older)
+	if len(gotEvidence) != 1 || gotEvidence[0] != wantEvidence {
+		t.Fatalf("challenge evidence = %v, want the newer revision's snapshot %s",
+			gotEvidence, wantEvidence)
+	}
+
+	// The older case is closed and the newer one is still waiting for its own
+	// triage, so a second tick has nothing to do. It must say so, not repeat the
+	// older revision.
+	second, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Failures) != 0 {
+		t.Fatalf("second tick failures = %v, want none", second.Failures)
+	}
+	if second.Superseded != 0 || second.Assessed != 0 || second.Accepted != 0 {
+		t.Fatalf("second tick = %+v, want no repeated work", second)
+	}
+	if got := f.caseState(t, newer); got != "ACTIVE" {
+		t.Fatalf("newer case state = %q, want ACTIVE", got)
 	}
 }
 
