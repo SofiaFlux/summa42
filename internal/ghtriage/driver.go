@@ -545,14 +545,19 @@ func (d *Driver) putOnce(ctx context.Context, raw []byte, kind string) (evidence
 
 // parseRevision turns a revision into the time it names. This is defensive, not
 // load-bearing: intake writes every revision as
-// UpdatedAt.UTC().Format(time.RFC3339Nano) (internal/ghissue/source.go), and for
-// two strings of that one shape lexicographic order provably equals
-// chronological order, so comparing the strings would give the same answer for
-// every revision the system produces. It is parsed because a revision is a
-// timestamp, and a caller that supplies a differently shaped one - an offset, a
-// fractional second - would otherwise be ordered by a byte rather than by a
-// moment. An unparseable revision is the zero time and therefore the oldest,
-// which leaves a broken revision to be superseded rather than to supersede.
+// UpdatedAt.UTC().Format(time.RFC3339Nano) (internal/ghissue/source.go) and
+// GitHub returns whole seconds, so every string the system produces has the
+// same layout, the same length and the same "Z" suffix - and for two strings of
+// that one shape, lexicographic order does equal chronological order, so
+// comparing the strings would give the same answer for every revision the
+// system produces. The claim holds at exactly that precision and no wider.
+// RFC3339Nano drops trailing zeros in the fraction, so
+// 2026-09-28T10:00:00Z and 2026-09-28T10:00:00.5Z are both that shape and order
+// oppositely: 'Z' is 0x5A and '.' is 0x2E. It is parsed because a revision is a
+// timestamp, and a caller that supplies such a value - or a UTC offset - would
+// otherwise be ordered by a byte rather than by a moment. An unparseable
+// revision is the zero time and therefore the oldest, which leaves a broken
+// revision to be superseded rather than to supersede.
 func parseRevision(revision string) time.Time {
 	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(revision))
 	if err != nil {
