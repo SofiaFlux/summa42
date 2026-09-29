@@ -550,6 +550,43 @@ func readyToPlanDecision(issue int64, revision string) ghtriage.Decision {
 	}
 }
 
+// needsHumanDecision is a decision whose disposition closes the case: the
+// newer revision resolves to BLOCKED with its work id cleared, which is the
+// shape the accepted slice never contains.
+func needsHumanDecision(issue int64, revision string) ghtriage.Decision {
+	return ghtriage.Decision{
+		Schema: ghtriage.DecisionSchema, Repository: "o/r", Issue: issue, Revision: revision,
+		TriageRulesVersion: ghtriage.TriageRulesVersion, DispositionRulesVersion: ghtriage.DispositionRulesVersion,
+		Stage1: ghtriage.Stage1Result{Triage: ghtriage.TriageBug, Signals: []string{"has-repro"}},
+		Stage2: &ghtriage.Stage2Output{IsActionable: true, NeedsRepro: true, Scope: ghtriage.ScopeSmall, Rationale: "needs a repro to act on"},
+		Stage3: &ghtriage.Stage3Result{Disposition: ghtriage.DispositionNeedsHuman, Rule: "needs-repro-required"},
+	}
+}
+
+// assessmentCount reads how many assessments a case carries, which is what says
+// whether a later tick assessed it again: Assess replays a byte-identical
+// request, so a repeated block would not change state but must not be counted.
+func (f *driverFixture) assessmentCount(t *testing.T, revision string) int {
+	t.Helper()
+	records, err := f.cases.ListAssessments(f.ctx, f.casesByRev[revision].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(records)
+}
+
+// challengeCount reads how many challenges a task carries, which is what says
+// whether a later tick challenged it again.
+func (f *driverFixture) challengeCount(t *testing.T, revision string) int {
+	t.Helper()
+	var n int
+	if err := f.store.DB().QueryRowContext(f.ctx,
+		`SELECT count(*) FROM task_challenges WHERE task_id = ?`, f.tasksByRev[revision].ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 func TestDriverAcceptsThenBlocksNotActionable(t *testing.T) {
 	f := newDriverFixture(t)
 	f.completeTaskWithDecision(t, fixtureRevision, notActionableDecision(42, fixtureRevision))
@@ -867,6 +904,249 @@ func TestDriverReportsATerminalTaskItCannotCloseAndLeavesTheCaseAlone(t *testing
 				t.Fatalf("second tick = %+v, want every counter zero", second)
 			}
 		})
+	}
+}
+
+// attemptCount reads how many attempts a task ever started, which is what says
+// whether a superseded triage ever ran.
+func (f *driverFixture) attemptCount(t *testing.T, revision string) int {
+	t.Helper()
+	var n int
+	if err := f.store.DB().QueryRowContext(f.ctx,
+		`SELECT count(*) FROM attempts WHERE task_id = ?`, f.tasksByRev[revision].ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A newer revision that already resolved never enters the accepted slice: its
+// case is BLOCKED with its work id cleared, so advanceAccepted skips it. The
+// older revision is then the newest of a one-element slice and is compared
+// against nothing. Here the newer revision resolved to needs-human on an
+// earlier tick while the older one is still pending, and the tick must still
+// supersede the older case against the newer registration: the older task is
+// challenged before it ever ran, and the newer case is untouched.
+func TestDriverSupersedesAnOlderPendingRevisionAgainstATerminalNewerRevision(t *testing.T) {
+	older, newer := "2026-09-28T09:00:00Z", "2026-09-28T10:30:00Z"
+	f := newDriverFixture(t)
+	f.registerRevision(t, newer)
+	f.completeTaskWithDecision(t, newer, needsHumanDecision(42, newer))
+	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.caseState(t, newer); got != "BLOCKED" {
+		t.Fatalf("newer case state = %q, want BLOCKED", got)
+	}
+	// The older revision arrives with its triage still pending after the newer
+	// one already closed.
+	f.registerRevision(t, older)
+
+	result, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 0 {
+		t.Fatalf("failures = %v, want none", result.Failures)
+	}
+	if result.Superseded != 1 {
+		t.Fatalf("result = %+v, want one superseded revision", result)
+	}
+	// The older triage never ran: its task went from ELIGIBLE straight to
+	// CHALLENGED without starting an attempt, and its case closed as
+	// superseded by the newer revision.
+	if got := f.taskState(t, older); got != "CHALLENGED" {
+		t.Fatalf("older task state = %q, want CHALLENGED", got)
+	}
+	if n := f.attemptCount(t, older); n != 0 {
+		t.Fatalf("older attempts = %d, want none: the superseded triage ran", n)
+	}
+	if got := f.caseState(t, older); got != "BLOCKED" {
+		t.Fatalf("older case state = %q, want BLOCKED", got)
+	}
+	if got := f.latestAssessmentReason(t, older); got != "superseded-by:"+newer {
+		t.Fatalf("older assessment reason = %q, want superseded-by:%s", got, newer)
+	}
+	// The newer revision resolved on its own facts and is untouched: still
+	// BLOCKED as needs-human, on the SUCCEEDED task the earlier tick accepted.
+	if got := f.caseState(t, newer); got != "BLOCKED" {
+		t.Fatalf("newer case state = %q, want BLOCKED", got)
+	}
+	if got := f.latestAssessmentReason(t, newer); got != "needs-human" {
+		t.Fatalf("newer assessment reason = %q, want needs-human", got)
+	}
+	if got := f.taskState(t, newer); got != "SUCCEEDED" {
+		t.Fatalf("newer task state = %q, want SUCCEEDED", got)
+	}
+	if n := f.assessmentCount(t, newer); n != 1 {
+		t.Fatalf("newer assessments = %d, want exactly its own closing assessment", n)
+	}
+
+	// A second tick is a no-op: no repeated challenge, no repeated assessment.
+	assessments, challenges := f.assessmentCount(t, older), f.challengeCount(t, older)
+	second, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Failures) != 0 {
+		t.Fatalf("second tick failures = %v, want none", second.Failures)
+	}
+	if second.Accepted != 0 || second.Assessed != 0 || second.Blocked != 0 || second.Superseded != 0 {
+		t.Fatalf("second tick = %+v, want no repeated work", second)
+	}
+	if n := f.assessmentCount(t, older); n != assessments {
+		t.Fatalf("older assessments = %d, want %d: the case was assessed again", n, assessments)
+	}
+	if n := f.challengeCount(t, older); n != challenges {
+		t.Fatalf("older challenges = %d, want %d: the task was challenged again", n, challenges)
+	}
+}
+
+// A newer revision that never produced a decision - its triage exhausted its
+// retries - has no decision evidence id to cite. The snapshot intake stored is
+// what establishes that the revision exists, so the older case is superseded
+// against that snapshot rather than left pending on stale facts.
+func TestDriverSupersedesAnOlderPendingRevisionAgainstATriageFailedNewerRevision(t *testing.T) {
+	older, newer := "2026-09-28T09:00:00Z", "2026-09-28T10:30:00Z"
+	f := newDriverFixture(t)
+	f.registerRevision(t, newer)
+	f.failTaskTwice(t, newer)
+	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.caseState(t, newer); got != "BLOCKED" {
+		t.Fatalf("newer case state = %q, want BLOCKED", got)
+	}
+	f.registerRevision(t, older)
+
+	result, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 0 {
+		t.Fatalf("failures = %v, want none", result.Failures)
+	}
+	if result.Superseded != 1 {
+		t.Fatalf("result = %+v, want one superseded revision", result)
+	}
+	if got := f.taskState(t, older); got != "CHALLENGED" {
+		t.Fatalf("older task state = %q, want CHALLENGED", got)
+	}
+	if n := f.attemptCount(t, older); n != 0 {
+		t.Fatalf("older attempts = %d, want none: the superseded triage ran", n)
+	}
+	if got := f.caseState(t, older); got != "BLOCKED" {
+		t.Fatalf("older case state = %q, want BLOCKED", got)
+	}
+	if got := f.latestAssessmentReason(t, older); got != "superseded-by:"+newer {
+		t.Fatalf("older assessment reason = %q, want superseded-by:%s", got, newer)
+	}
+	// Both writes cite the newer revision's snapshot: the challenge that
+	// stopped the older task and the assessment that closed its case.
+	wantEvidence := f.observationEvidenceID(t, newer)
+	if got := f.challengeEvidenceIDs(t, older); len(got) != 1 || got[0] != wantEvidence {
+		t.Fatalf("challenge evidence = %v, want the newer revision's snapshot %s", got, wantEvidence)
+	}
+	if got := f.latestAssessmentEvidence(t, older); len(got) != 1 || got[0] != wantEvidence {
+		t.Fatalf("older assessment evidence = %v, want the newer revision's snapshot %s", got, wantEvidence)
+	}
+	// The newer revision closed as triage-failed on its own and is untouched.
+	if got := f.caseState(t, newer); got != "BLOCKED" {
+		t.Fatalf("newer case state = %q, want BLOCKED", got)
+	}
+	if got := f.latestAssessmentReason(t, newer); got != ghtriage.ReasonTriageFailed {
+		t.Fatalf("newer assessment reason = %q, want %q", got, ghtriage.ReasonTriageFailed)
+	}
+	if n := f.assessmentCount(t, newer); n != 1 {
+		t.Fatalf("newer assessments = %d, want exactly its own closing assessment", n)
+	}
+
+	// A second tick is a no-op: no repeated challenge, no repeated assessment.
+	assessments, challenges := f.assessmentCount(t, older), f.challengeCount(t, older)
+	second, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Failures) != 0 {
+		t.Fatalf("second tick failures = %v, want none", second.Failures)
+	}
+	if second.Accepted != 0 || second.Assessed != 0 || second.Blocked != 0 || second.Superseded != 0 {
+		t.Fatalf("second tick = %+v, want no repeated work", second)
+	}
+	if n := f.assessmentCount(t, older); n != assessments {
+		t.Fatalf("older assessments = %d, want %d: the case was assessed again", n, assessments)
+	}
+	if n := f.challengeCount(t, older); n != challenges {
+		t.Fatalf("older challenges = %d, want %d: the task was challenged again", n, challenges)
+	}
+}
+
+// The facts moved on even where the older triage already completed: an older
+// revision that triaged to ready-to-plan is still superseded once a newer
+// revision is registered, because leaving a stale ready-to-plan case ACTIVE is
+// exactly what firing on registration forbids. Its task is SUCCEEDED, so it is
+// accepted rather than challenged - and the case still closes as superseded.
+func TestDriverSupersedesACompletedReadyToPlanRevisionAgainstATerminalNewer(t *testing.T) {
+	older, newer := "2026-09-28T09:00:00Z", "2026-09-28T10:30:00Z"
+	f := newDriverFixture(t)
+	f.registerRevision(t, newer)
+	f.failTaskTwice(t, newer)
+	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.caseState(t, newer); got != "BLOCKED" {
+		t.Fatalf("newer case state = %q, want BLOCKED", got)
+	}
+	f.registerRevision(t, older)
+	f.completeTaskWithDecision(t, older, readyToPlanDecision(42, older))
+
+	result, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 0 {
+		t.Fatalf("failures = %v, want none", result.Failures)
+	}
+	if result.Accepted != 1 || result.Superseded != 1 || result.Blocked != 0 {
+		t.Fatalf("result = %+v, want the older acceptance and its supersession", result)
+	}
+	// Accepted on its own decision, never challenged, but the case closed as
+	// superseded all the same.
+	if got := f.taskState(t, older); got != "SUCCEEDED" {
+		t.Fatalf("older task state = %q, want SUCCEEDED: its triage completed, so it was accepted rather than challenged", got)
+	}
+	if got := f.caseState(t, older); got != "BLOCKED" {
+		t.Fatalf("older case state = %q, want BLOCKED", got)
+	}
+	if got := f.latestAssessmentReason(t, older); got != "superseded-by:"+newer {
+		t.Fatalf("older assessment reason = %q, want superseded-by:%s", got, newer)
+	}
+	if got := f.caseState(t, newer); got != "BLOCKED" {
+		t.Fatalf("newer case state = %q, want BLOCKED", got)
+	}
+	if got := f.latestAssessmentReason(t, newer); got != ghtriage.ReasonTriageFailed {
+		t.Fatalf("newer assessment reason = %q, want %q", got, ghtriage.ReasonTriageFailed)
+	}
+	if n := f.assessmentCount(t, newer); n != 1 {
+		t.Fatalf("newer assessments = %d, want exactly its own closing assessment", n)
+	}
+
+	// A second tick is a no-op: no repeated challenge, no repeated assessment.
+	assessments, challenges := f.assessmentCount(t, older), f.challengeCount(t, older)
+	second, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Failures) != 0 {
+		t.Fatalf("second tick failures = %v, want none", second.Failures)
+	}
+	if second.Accepted != 0 || second.Assessed != 0 || second.Blocked != 0 || second.Superseded != 0 {
+		t.Fatalf("second tick = %+v, want no repeated work", second)
+	}
+	if n := f.assessmentCount(t, older); n != assessments {
+		t.Fatalf("older assessments = %d, want %d: the case was assessed again", n, assessments)
+	}
+	if n := f.challengeCount(t, older); n != challenges {
+		t.Fatalf("older challenges = %d, want %d: the task was challenged again", n, challenges)
 	}
 }
 

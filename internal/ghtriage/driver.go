@@ -133,19 +133,66 @@ func (d *Driver) tickObject(ctx context.Context, missionID domain.ID, object str
 	if err != nil {
 		return err
 	}
-	if len(accepted) == 0 {
+	// The newest REGISTERED revision governs, not the newest accepted one. A
+	// newer revision that already resolved - assessed to BLOCKED with its work
+	// id cleared - never enters the accepted slice, so comparing only accepted
+	// entries against each other leaves an older pending revision newest of one
+	// and supersedes nothing: its task is eventually leased and triaged on
+	// stale facts. Firing on registration keeps a stale ACTIVE case from
+	// surviving on facts the newer revision moved past.
+	newest, ok := newestRegistered(cases, accepted)
+	if !ok {
 		return nil
 	}
-	newest := accepted[0]
-	for _, older := range accepted[1:] {
-		if !older.revision.Before(newest.revision) {
+	for _, c := range cases {
+		if !parseRevision(c.RevisionID).Before(newest.revision) {
 			continue
 		}
+		current, err := d.cases.Get(ctx, c.ID)
+		if err != nil {
+			return err
+		}
+		if current.State != workflowcase.Active {
+			continue
+		}
+		older := acceptedRevision{c: current, revision: parseRevision(current.RevisionID)}
 		if err := d.supersede(ctx, older, newest, result); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// newestRegistered returns the newest registered revision of the object across
+// all its cases, regardless of state or whether its triage task can still
+// produce a decision. The evidence is the accepted slice's when the newest
+// case is still in it, and the snapshot intake stored otherwise: that
+// observation is what establishes that the newer revision exists, and a newer
+// revision with no decision - never triaged, or closed as triage-failed - has
+// no decision evidence id to cite.
+func newestRegistered(cases []workflowcase.Case, accepted []acceptedRevision) (acceptedRevision, bool) {
+	if len(cases) == 0 {
+		return acceptedRevision{}, false
+	}
+	byCase := make(map[domain.ID]acceptedRevision, len(accepted))
+	for _, a := range accepted {
+		byCase[a.c.ID] = a
+	}
+	var newest acceptedRevision
+	first := true
+	for _, c := range cases {
+		rev := parseRevision(c.RevisionID)
+		if !first && !rev.After(newest.revision) {
+			continue
+		}
+		evidenceID := domain.ID(c.ObservationEvidenceID)
+		if a, ok := byCase[c.ID]; ok {
+			evidenceID = a.evidenceID
+		}
+		newest = acceptedRevision{c: c, revision: rev, evidenceID: evidenceID}
+		first = false
+	}
+	return newest, true
 }
 
 // advanceAccepted accepts the task of every completed revision and applies its
@@ -155,10 +202,10 @@ func (d *Driver) tickObject(ctx context.Context, missionID domain.ID, object str
 // what supersession has to challenge.
 //
 // A revision whose task has stopped for good is not returned. It is closed or
-// reported instead, and either way it is not a candidate for the newest of the
-// slice - which matters, because tickObject compares only the older entries
-// against the newest, so a terminal revision returned as the newest one was
-// compared against nothing and nothing closed its case.
+// reported instead. That is not where the governing revision comes from:
+// tickObject computes the newest REGISTERED revision across all cases, so a
+// terminal newer revision still supersedes older ones even though it is absent
+// here.
 func (d *Driver) advanceAccepted(ctx context.Context, cases []workflowcase.Case, result *DriverResult) ([]acceptedRevision, error) {
 	accepted := make([]acceptedRevision, 0, len(cases))
 	for _, c := range cases {
@@ -585,7 +632,7 @@ func (d *Driver) closeChallengedCase(ctx context.Context, c workflowcase.Case, t
 // supersede stops an older revision's pending work and blocks its case. The
 // challenge runs before the assessment, so a crash between them leaves an inert
 // task and an ACTIVE case. The next tick finishes that, by two routes: while a
-// newer ACTIVE revision still exists this function supersedes against it and
+// newer registered revision still exists this function supersedes against it and
 // challenges nothing twice, and once every newer revision is closed it is
 // closeChallengedCase that finishes the case on the reason the challenge
 // recorded, because a case on an inert task is no longer a revision to supersede
@@ -612,10 +659,28 @@ func (d *Driver) supersede(ctx context.Context, older, newest acceptedRevision, 
 	if found {
 		switch task.State {
 		case domain.TaskEligible, domain.TaskExecuting:
-			if _, err := d.execution.ChallengeTaskIfInStates(ctx, task.ID,
+			changed, err := d.execution.ChallengeTaskIfInStates(ctx, task.ID,
 				[]domain.TaskState{domain.TaskEligible, domain.TaskExecuting},
-				domain.ChallengeTask, reason, []domain.ID{newest.evidenceID}); err != nil {
+				domain.ChallengeTask, reason, []domain.ID{newest.evidenceID})
+			if err != nil {
 				return err
+			}
+			if !changed {
+				// A refusal is not a terminal answer: the task moved since it
+				// was read. Re-read it and follow the row that is now current.
+				// A triage that completed in the meantime is accepted on the
+				// decision it produced; anything else falls through to the
+				// block below, which closes the case without touching the task
+				// again.
+				current, found, err := d.execution.FindByIdempotencyKey(ctx, string(taskID))
+				if err != nil {
+					return err
+				}
+				if found && current.State == domain.TaskAwaitingVerification {
+					if _, _, err := d.acceptDecision(ctx, older.c, current, result); err != nil {
+						return err
+					}
+				}
 			}
 		case domain.TaskAwaitingVerification:
 			// The older revision's triage did run, so its task is accepted on
