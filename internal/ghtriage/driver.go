@@ -521,6 +521,16 @@ func (d *Driver) putOnce(ctx context.Context, raw []byte, kind string) (evidence
 	return object, object.ID, nil
 }
 
+// parseRevision turns a revision into the time it names. This is defensive, not
+// load-bearing: intake writes every revision as
+// UpdatedAt.UTC().Format(time.RFC3339Nano) (internal/ghissue/source.go), and for
+// two strings of that one shape lexicographic order provably equals
+// chronological order, so comparing the strings would give the same answer for
+// every revision the system produces. It is parsed because a revision is a
+// timestamp, and a caller that supplies a differently shaped one - an offset, a
+// fractional second - would otherwise be ordered by a byte rather than by a
+// moment. An unparseable revision is the zero time and therefore the oldest,
+// which leaves a broken revision to be superseded rather than to supersede.
 func parseRevision(revision string) time.Time {
 	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(revision))
 	if err != nil {

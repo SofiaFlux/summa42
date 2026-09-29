@@ -162,8 +162,12 @@ func (f *driverFixture) completeTaskWithDecision(t *testing.T, revision string, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The worker stores every executor blob as text/plain whatever the executor
+	// meant by it, so a decision reaches the store as text/plain and is found by
+	// its kind. A fixture that wrote the decision's own media type let a driver
+	// selecting on media type pass against a shape production never produces.
 	object, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
-		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindDecision,
+		MediaType: "text/plain", Kind: ghtriage.KindDecision,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -232,8 +236,12 @@ func (f *driverFixture) simulateRestartAfterAcceptance(t *testing.T, object, rev
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The worker stores every executor blob as text/plain whatever the executor
+	// meant by it, so a decision reaches the store as text/plain and is found by
+	// its kind. A fixture that wrote the decision's own media type let a driver
+	// selecting on media type pass against a shape production never produces.
 	decisionObject, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
-		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindDecision,
+		MediaType: "text/plain", Kind: ghtriage.KindDecision,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -511,8 +519,17 @@ func TestDriverSupersedesWithTheNewerRevisionsSnapshotWhenItHasNoDecision(t *tes
 	}
 }
 
+// A revision is a timestamp, and a string comparison of two timestamps is not
+// the same order. The pair here is 09:00+05:00, which is 04:00Z, against 04:30Z:
+// the older revision sorts LATER as a string and EARLIER as a time, so a driver
+// that compared revision_id with < would supersede the wrong case. Two
+// identically formatted UTC timestamps could never catch that - see the note on
+// parseRevision - so the fixture has to be shaped to disagree.
 func TestDriverComparesRevisionsAsTimesNotStrings(t *testing.T) {
-	older, newer := "2026-09-29T09:00:00Z", "2026-10-01T09:00:00Z"
+	older, newer := "2026-09-28T09:00:00+05:00", "2026-09-28T04:30:00Z"
+	if older <= newer {
+		t.Fatalf("fixture ranks the older revision last as a string too: %q <= %q", older, newer)
+	}
 	f := newDriverFixture(t)
 	f.registerRevision(t, older)
 	f.registerRevision(t, newer)
