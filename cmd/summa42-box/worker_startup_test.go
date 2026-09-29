@@ -120,14 +120,26 @@ func workerRuntimeConfigFor(t *testing.T, ctx context.Context, config localconfi
 // t.Parallel() must not use this: the swap is process-wide.
 func captureStderr(t *testing.T) func() string {
 	t.Helper()
+	return captureProcessStream(t, &os.Stderr)
+}
+
+// captureStdout is captureStderr for the stream the subcommands report their
+// result on, with the same process-wide caveat.
+func captureStdout(t *testing.T) func() string {
+	t.Helper()
+	return captureProcessStream(t, &os.Stdout)
+}
+
+func captureProcessStream(t *testing.T, target **os.File) func() string {
+	t.Helper()
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	original := os.Stderr
-	os.Stderr = writer
+	original := *target
+	*target = writer
 	t.Cleanup(func() {
-		os.Stderr = original
+		*target = original
 		_ = writer.Close()
 		_ = reader.Close()
 	})
