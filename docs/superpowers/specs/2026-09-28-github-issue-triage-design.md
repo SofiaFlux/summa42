@@ -191,14 +191,16 @@ value is `question` or `duplicate`.
 
 **Stage 1, deterministic.** A pure function from the canonical snapshot to signals and a
 classification. Signals are: the sorted label set, a title prefix, the presence of a
-fenced reproduction block, an explicit `duplicate-of:<n>` label, and `#N` references in the
-body. A duplicate label is decisive only when exactly one `duplicate-of:<n>` label is
-present and `<n>` is a positive issue number other than the current issue number. Multiple
-or malformed duplicate labels leave stage 1 unresolved. A valid label is an explicit
-maintainer assertion about the same repository; stage 1 does not claim to verify the
-target's current open state. A bare `#N` is context,
-not proof of duplication. The canonical snapshot contains no other issue's state, so
-neither target lookup nor live GitHub state is part of this pure function.
+fenced reproduction block, and an explicit `duplicate-of:<n>` label. A duplicate label is
+decisive only when exactly one `duplicate-of:<n>` label is present and `<n>` is a positive
+issue number other than the current issue number. Multiple or malformed duplicate labels
+leave stage 1 unresolved. A valid label is an explicit maintainer assertion about the same
+repository; stage 1 does not claim to verify the target's current open state. A bare `#N` in
+the body is context, not proof of duplication, and stage 1 does not emit it as a signal: the
+canonical snapshot carries no other issue's state, so a `#N` cannot be resolved here, and
+emitting an unresolved reference would only give the model a string that looks like a target
+without being one. The canonical snapshot contains no other issue's state, so neither target
+lookup nor live GitHub state is part of this pure function.
 
 Stage 1 is deliberately conservative and resolves exactly one case decisively:
 
@@ -362,11 +364,15 @@ Task for the same issue at that revision. This is the free retriage path: the hu
 changes the facts at the source and triage re-runs with the new signals, while the older
 case remains as a record of the earlier reading.
 
-The cost is that two `ACTIVE` cases and two triage Tasks can exist for one issue. After the
-driver accepts the newest revision's valid decision, it compares revision timestamps as
-parsed times, not lexicographic strings, and visits older cases with the same mission and
-object ID. The newest case's state follows its disposition; it is `ACTIVE` only for
-`ready-to-plan`. An older case already `BLOCKED` needs no further transition. The
+The cost is that two `ACTIVE` cases and two triage Tasks can exist for one issue. As soon
+as a newer revision of the same issue is **registered**, the driver compares revision
+timestamps as parsed times, not lexicographic strings, and visits older cases with the same
+mission and object ID. Firing on registration rather than after the newest revision's
+decision is accepted keeps a mis-touched issue from leaving a stale `ready-to-plan` case
+`ACTIVE`; the planning guard below excludes an older revision either way, so the end state
+is the same and only the window differs. The newest case's state follows its disposition;
+it is `ACTIVE` only for `ready-to-plan`. An older case already `BLOCKED` needs no further
+transition. The
 supersession scan includes accepted decisions on `BLOCKED` newer cases: after an assessment
 clears `current_work_id`, its `workflow_assessments.work_id` still identifies the accepted
 Task. Scanning only `ListActive` would lose this work after a driver restart, so the driver
