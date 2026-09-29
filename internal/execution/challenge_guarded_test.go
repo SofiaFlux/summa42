@@ -3,6 +3,9 @@ package execution_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,9 +15,11 @@ import (
 	"github.com/SofiaFlux/summa42/internal/testutil"
 )
 
-func newTriageTask(t *testing.T, store interface {
+type storeDB interface {
 	DB() *sql.DB
-}, svc *execution.Service, ctx context.Context, key string) domain.Task {
+}
+
+func newTriageTask(t *testing.T, store storeDB, svc *execution.Service, ctx context.Context, key string) domain.Task {
 	t.Helper()
 	envelope := domain.NewID("envelope")
 	if _, err := store.DB().ExecContext(ctx,
@@ -39,12 +44,55 @@ func newTriageTask(t *testing.T, store interface {
 	return task
 }
 
-func TestChallengeTaskIfInStatesRefusesAnAcceptedTask(t *testing.T) {
-	ctx := context.Background()
+func newTriageService(t *testing.T) (storeDB, *execution.Service, context.Context) {
+	t.Helper()
 	store := testutil.OpenStore(t)
 	clk := testutil.NewClock(time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC))
-	svc := execution.New(store, clk, purpose.New(store, clk))
-	task := newTriageTask(t, store, svc, ctx, "work-accepted")
+	return store, execution.New(store, clk, purpose.New(store, clk)), context.Background()
+}
+
+// leaseTriageTask leaves the task EXECUTING with a live lease, which is the
+// only state in which the lease-revocation branch of the guarded challenge can
+// run.
+func leaseTriageTask(t *testing.T, store storeDB, svc *execution.Service, ctx context.Context, key string) (domain.Task, domain.Attempt) {
+	t.Helper()
+	task := newTriageTask(t, store, svc, ctx, key)
+	attempt, err := svc.StartAttempt(ctx, task.ID, "github.issue.triage", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task, attempt
+}
+
+type attemptRow struct {
+	leaseState  domain.LeaseState
+	state       domain.AttemptState
+	completedAt sql.NullString
+}
+
+func readAttempt(t *testing.T, store storeDB, ctx context.Context, attemptID domain.ID) attemptRow {
+	t.Helper()
+	var row attemptRow
+	if err := store.DB().QueryRowContext(ctx,
+		`SELECT lease_state, state, completed_at FROM attempts WHERE attempt_id = ?`, attemptID,
+	).Scan(&row.leaseState, &row.state, &row.completedAt); err != nil {
+		t.Fatal(err)
+	}
+	return row
+}
+
+func countRows(t *testing.T, store storeDB, ctx context.Context, query string, args ...any) int {
+	t.Helper()
+	var count int
+	if err := store.DB().QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+func TestChallengeTaskIfInStatesRefusesAnAcceptedTask(t *testing.T) {
+	store, svc, ctx := newTriageService(t)
+	task, attempt := leaseTriageTask(t, store, svc, ctx, "work-accepted")
 
 	if _, err := store.DB().ExecContext(ctx,
 		`UPDATE tasks SET state = ? WHERE task_id = ?`, domain.TaskSucceeded, task.ID); err != nil {
@@ -67,27 +115,35 @@ func TestChallengeTaskIfInStatesRefusesAnAcceptedTask(t *testing.T) {
 	if stored.State != domain.TaskSucceeded {
 		t.Fatalf("state = %q, want SUCCEEDED", stored.State)
 	}
-	var challenges int
-	if err := store.DB().QueryRowContext(ctx,
-		`SELECT count(*) FROM task_challenges WHERE task_id = ?`, task.ID).Scan(&challenges); err != nil {
-		t.Fatal(err)
-	}
-	if challenges != 0 {
+	if challenges := countRows(t, store, ctx,
+		`SELECT count(*) FROM task_challenges WHERE task_id = ?`, task.ID); challenges != 0 {
 		t.Fatalf("challenge rows = %d, want 0", challenges)
+	}
+	if events := countRows(t, store, ctx,
+		`SELECT count(*) FROM execution_events WHERE task_id = ? AND event_type = 'TASK_CHALLENGED'`, task.ID); events != 0 {
+		t.Fatalf("TASK_CHALLENGED events = %d, want 0", events)
+	}
+	got := readAttempt(t, store, ctx, attempt.ID)
+	if got.leaseState != domain.LeaseActive {
+		t.Fatalf("lease state = %q, want ACTIVE untouched by the refusal", got.leaseState)
+	}
+	if got.state != domain.AttemptLeased {
+		t.Fatalf("attempt state = %q, want LEASED untouched by the refusal", got.state)
+	}
+	if got.completedAt.Valid {
+		t.Fatalf("completed_at = %q, want NULL after the refusal", got.completedAt.String)
 	}
 }
 
 func TestChallengeTaskIfInStatesChallengesAnEligibleTask(t *testing.T) {
-	ctx := context.Background()
-	store := testutil.OpenStore(t)
-	clk := testutil.NewClock(time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC))
-	svc := execution.New(store, clk, purpose.New(store, clk))
+	store, svc, ctx := newTriageService(t)
 	task := newTriageTask(t, store, svc, ctx, "work-eligible")
+	evidenceID := domain.NewID("evidence")
 
 	changed, err := svc.ChallengeTaskIfInStates(ctx, task.ID,
 		[]domain.TaskState{domain.TaskEligible, domain.TaskExecuting},
 		domain.ChallengeTask, "superseded-by:2026-09-28T11:00:00Z",
-		[]domain.ID{domain.NewID("evidence")})
+		[]domain.ID{evidenceID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,16 +169,171 @@ func TestChallengeTaskIfInStatesChallengesAnEligibleTask(t *testing.T) {
 	if reason != "superseded-by:2026-09-28T11:00:00Z" {
 		t.Fatalf("reason = %q", reason)
 	}
-	if evidence == "" || evidence == "null" || evidence == "[]" {
-		t.Fatalf("evidence_ids_json = %q, want the supplied evidence id", evidence)
+	wantEvidence, err := json.Marshal([]domain.ID{evidenceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence != string(wantEvidence) {
+		t.Fatalf("evidence_ids_json = %q, want %s", evidence, wantEvidence)
+	}
+	if events := countRows(t, store, ctx,
+		`SELECT count(*) FROM execution_events WHERE task_id = ? AND event_type = 'TASK_CHALLENGED'`, task.ID); events != 1 {
+		t.Fatalf("TASK_CHALLENGED events = %d, want 1", events)
+	}
+}
+
+// A task in EXECUTING holds a live lease. The guarded challenge must stop that
+// execution, or the superseded revision keeps working after the challenge.
+func TestChallengeTaskIfInStatesRevokesTheLeaseOfAnExecutingTask(t *testing.T) {
+	store, svc, ctx := newTriageService(t)
+	task, attempt := leaseTriageTask(t, store, svc, ctx, "work-executing")
+
+	changed, err := svc.ChallengeTaskIfInStates(ctx, task.ID,
+		[]domain.TaskState{domain.TaskEligible, domain.TaskExecuting},
+		domain.ChallengeTask, "superseded-by:2026-09-28T11:00:00Z", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("an EXECUTING task was not challenged")
+	}
+	stored, err := svc.Task(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != domain.TaskChallenged {
+		t.Fatalf("state = %q, want CHALLENGED", stored.State)
+	}
+	got := readAttempt(t, store, ctx, attempt.ID)
+	if got.leaseState != domain.LeaseRevoked {
+		t.Fatalf("lease state = %q, want REVOKED", got.leaseState)
+	}
+	if got.state != domain.AttemptCancelled {
+		t.Fatalf("attempt state = %q, want CANCELLED", got.state)
+	}
+	if !got.completedAt.Valid {
+		t.Fatal("completed_at is NULL, want the revocation timestamp")
+	}
+	if challenges := countRows(t, store, ctx,
+		`SELECT count(*) FROM task_challenges WHERE task_id = ?`, task.ID); challenges != 1 {
+		t.Fatalf("challenge rows = %d, want 1", challenges)
+	}
+	if events := countRows(t, store, ctx,
+		`SELECT count(*) FROM execution_events WHERE task_id = ? AND event_type = 'TASK_CHALLENGED'`, task.ID); events != 1 {
+		t.Fatalf("TASK_CHALLENGED events = %d, want 1", events)
+	}
+}
+
+// Two superseded-revision callers racing for the same task: the state predicate
+// is evaluated inside the transaction, so exactly one of them may write.
+func TestChallengeTaskIfInStatesAdmitsExactlyOneConcurrentCaller(t *testing.T) {
+	store, svc, ctx := newTriageService(t)
+	task, attempt := leaseTriageTask(t, store, svc, ctx, "work-concurrent")
+
+	start := make(chan struct{})
+	results := make([]bool, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = svc.ChallengeTaskIfInStates(ctx, task.ID,
+				[]domain.TaskState{domain.TaskEligible, domain.TaskExecuting},
+				domain.ChallengeTask, "superseded-by:2026-09-28T11:00:00Z", nil)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	winners := 0
+	for i := range results {
+		if errs[i] != nil {
+			t.Fatalf("caller %d: %v", i, errs[i])
+		}
+		if results[i] {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("changed = %v, want exactly one true", results)
+	}
+	if challenges := countRows(t, store, ctx,
+		`SELECT count(*) FROM task_challenges WHERE task_id = ?`, task.ID); challenges != 1 {
+		t.Fatalf("challenge rows = %d, want 1", challenges)
+	}
+	if events := countRows(t, store, ctx,
+		`SELECT count(*) FROM execution_events WHERE task_id = ? AND event_type = 'TASK_CHALLENGED'`, task.ID); events != 1 {
+		t.Fatalf("TASK_CHALLENGED events = %d, want 1", events)
+	}
+	got := readAttempt(t, store, ctx, attempt.ID)
+	if got.leaseState != domain.LeaseRevoked || got.state != domain.AttemptCancelled {
+		t.Fatalf("attempt = %q/%q, want CANCELLED/REVOKED", got.state, got.leaseState)
+	}
+}
+
+// The current attempt is no longer ACTIVE, so revoking its lease cannot match.
+// The challenge must fail rather than leave the attempt non-terminal.
+func TestChallengeTaskIfInStatesReportsAStaleCurrentAttempt(t *testing.T) {
+	store, svc, ctx := newTriageService(t)
+	task, attempt := leaseTriageTask(t, store, svc, ctx, "work-stale-attempt")
+
+	if _, err := store.DB().ExecContext(ctx,
+		`UPDATE attempts SET lease_state = ? WHERE attempt_id = ?`, domain.LeaseRevoked, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := svc.ChallengeTaskIfInStates(ctx, task.ID,
+		[]domain.TaskState{domain.TaskEligible, domain.TaskExecuting},
+		domain.ChallengeTask, "superseded-by:2026-09-28T11:00:00Z", nil)
+	if !errors.Is(err, domain.ErrStaleAttempt) {
+		t.Fatalf("err = %v, want ErrStaleAttempt", err)
+	}
+	if changed {
+		t.Fatal("a task with a stale current attempt reported changed")
+	}
+	stored, err := svc.Task(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != domain.TaskExecuting {
+		t.Fatalf("state = %q, want EXECUTING", stored.State)
+	}
+	if challenges := countRows(t, store, ctx,
+		`SELECT count(*) FROM task_challenges WHERE task_id = ?`, task.ID); challenges != 0 {
+		t.Fatalf("challenge rows = %d, want 0 after rollback", challenges)
+	}
+}
+
+func TestChallengeTaskIfInStatesRejectsAnUnknownTaskState(t *testing.T) {
+	store, svc, ctx := newTriageService(t)
+	task := newTriageTask(t, store, svc, ctx, "work-misspelled-state")
+
+	changed, err := svc.ChallengeTaskIfInStates(ctx, task.ID,
+		[]domain.TaskState{domain.TaskState("eligible")},
+		domain.ChallengeTask, "superseded-by:2026-09-28T11:00:00Z", nil)
+	if err == nil {
+		t.Fatal("a misspelled task state was accepted")
+	}
+	if changed {
+		t.Fatal("a misspelled task state reported changed")
+	}
+	stored, err := svc.Task(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != domain.TaskEligible {
+		t.Fatalf("state = %q, want ELIGIBLE", stored.State)
+	}
+	if challenges := countRows(t, store, ctx,
+		`SELECT count(*) FROM task_challenges WHERE task_id = ?`, task.ID); challenges != 0 {
+		t.Fatalf("challenge rows = %d, want 0", challenges)
 	}
 }
 
 func TestChallengeTaskIfInStatesRejectsAnEmptyStateList(t *testing.T) {
-	ctx := context.Background()
-	store := testutil.OpenStore(t)
-	clk := testutil.NewClock(time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC))
-	svc := execution.New(store, clk, purpose.New(store, clk))
+	store, svc, ctx := newTriageService(t)
 	task := newTriageTask(t, store, svc, ctx, "work-no-states")
 
 	if _, err := svc.ChallengeTaskIfInStates(ctx, task.ID, nil,

@@ -457,9 +457,14 @@ func (s *Service) ChallengeTaskIfInStates(ctx context.Context, taskID domain.ID,
 	}
 	allowed := make([]string, 0, len(states))
 	for _, state := range states {
-		if trimmed := strings.TrimSpace(string(state)); trimmed != "" {
-			allowed = append(allowed, trimmed)
+		trimmed := strings.TrimSpace(string(state))
+		if trimmed == "" {
+			continue
 		}
+		if !validTaskState(domain.TaskState(trimmed)) {
+			return false, fmt.Errorf("invalid task state %q", state)
+		}
+		allowed = append(allowed, trimmed)
 	}
 	if len(allowed) == 0 {
 		return false, errors.New("at least one task state is required")
@@ -508,11 +513,19 @@ func (s *Service) ChallengeTaskIfInStates(ctx context.Context, taskID domain.ID,
 			return err
 		}
 		if currentAttempt.Valid {
-			if _, err := tx.ExecContext(ctx,
+			result, err := tx.ExecContext(ctx,
 				`UPDATE attempts SET lease_state = ?, state = ?, completed_at = COALESCE(completed_at, ?) WHERE attempt_id = ? AND lease_state = ?`,
 				domain.LeaseRevoked, domain.AttemptCancelled, formatTime(now), currentAttempt.String, domain.LeaseActive,
-			); err != nil {
+			)
+			if err != nil {
 				return err
+			}
+			revoked, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if revoked != 1 {
+				return domain.ErrStaleAttempt
 			}
 		}
 		if err := appendEvent(ctx, tx, taskID, domain.ID(currentAttempt.String), "TASK_CHALLENGED", now); err != nil {
@@ -860,6 +873,17 @@ func validFailureClass(class domain.FailureClass) bool {
 func validChallengeScope(scope domain.ChallengeScope) bool {
 	switch scope {
 	case domain.ChallengeTask, domain.ChallengeParent, domain.ChallengeGoal, domain.ChallengeMissionAssumption:
+		return true
+	default:
+		return false
+	}
+}
+
+func validTaskState(state domain.TaskState) bool {
+	switch state {
+	case domain.TaskCreated, domain.TaskEligible, domain.TaskExecuting,
+		domain.TaskAwaitingVerification, domain.TaskSucceeded, domain.TaskFailed,
+		domain.TaskBlocked, domain.TaskCancelled, domain.TaskChallenged, domain.TaskExpired:
 		return true
 	default:
 		return false
