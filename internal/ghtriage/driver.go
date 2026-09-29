@@ -51,7 +51,10 @@ const (
 	// protects against is a store whose accepted-index kind grows without
 	// bound - a pruning or an index keyed by case is what that would need, and
 	// neither exists.
-	acceptedIndexScanLimit = math.MaxInt64
+	//
+	// math.MaxInt rather than a large number, so the statement stays a ceiling
+	// on any platform's int rather than one that does not fit on a 32-bit one.
+	acceptedIndexScanLimit = math.MaxInt
 )
 
 type DriverResult struct {
