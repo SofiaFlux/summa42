@@ -3,11 +3,11 @@ package ghtriage_test
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/execution"
@@ -30,7 +30,7 @@ const (
 type driverFixture struct {
 	ctx           context.Context
 	store         *state.Store
-	clock         clock.Clock
+	clock         *testutil.Clock
 	cases         *workflowcase.Service
 	execSvc       *execution.Service
 	verifSvc      *verification.Service
@@ -77,11 +77,29 @@ func newDriverFixture(t *testing.T) *driverFixture {
 	}
 }
 
-// registerRevision materializes the case and its triage Task for one revision.
+// issueOf reads the issue number out of a GitHub object ID, the shape the
+// intake writes: one object per issue, named repo#number.
+func issueOf(t *testing.T, object string) int64 {
+	t.Helper()
+	issue, err := strconv.ParseInt(strings.TrimPrefix(object, "o/r#"), 10, 64)
+	if err != nil {
+		t.Fatalf("object %q carries no issue number: %v", object, err)
+	}
+	return issue
+}
+
+// registerRevision materializes the case and its triage Task for one revision of
+// the fixture issue.
 func (f *driverFixture) registerRevision(t *testing.T, revision string) {
 	t.Helper()
+	f.registerIssueRevision(t, fixtureIssue, revision)
+}
+
+func (f *driverFixture) registerIssueRevision(t *testing.T, object, revision string) {
+	t.Helper()
+	issue := issueOf(t, object)
 	snapshot := ghtriage.Snapshot{
-		Repo: "o/r", Issue: 42, Title: "Crash on save", Body: "it crashes",
+		Repo: "o/r", Issue: issue, Title: "Crash on save", Body: "it crashes",
 		Author: "maintainer", Labels: []string{"bug"}, Triage: "bug", UpdatedAt: revision,
 	}
 	raw, err := json.Marshal(snapshot)
@@ -96,7 +114,7 @@ func (f *driverFixture) registerRevision(t *testing.T, revision string) {
 	}
 	createdCase, task, err := f.cases.EnsureAndMaterialize(f.ctx, f.execSvc,
 		workflowcase.Observation{
-			MissionID: f.missionID, Source: ghtriage.SourceGitHub, ObjectID: fixtureIssue,
+			MissionID: f.missionID, Source: ghtriage.SourceGitHub, ObjectID: object,
 			RevisionID: revision, EvidenceID: string(snapshotObject.ID),
 			FirstWork: workflow.WorkProposal{
 				Kind:                 ghtriage.TaskClass,
@@ -111,13 +129,13 @@ func (f *driverFixture) registerRevision(t *testing.T, revision string) {
 		execution.TaskRequest{
 			Purpose:              domain.PurposeRef{Kind: domain.PurposeMission, ID: f.missionID},
 			TaskClass:            ghtriage.TaskClass,
-			Objective:            "Triage " + fixtureIssue,
+			Objective:            "Triage " + object,
 			AcceptanceCriteria:   []string{"triage decision recorded for " + revision},
 			RequiredCapabilities: []string{ghtriage.RequiredCapability},
 			RequiredEnforcement:  domain.EnforcementEnforced,
 			AuthorityCeiling:     []string{ghtriage.RequiredCapability},
 			ResourceEnvelopeID:   f.envelope,
-			IdempotencyKey:       "triage-" + revision,
+			IdempotencyKey:       "triage-" + object + "-" + revision,
 		})
 	if err != nil {
 		t.Fatal(err)
@@ -159,10 +177,16 @@ func (f *driverFixture) completeTaskWithDecision(t *testing.T, revision string, 
 
 func (f *driverFixture) snapshotEvidenceID(t *testing.T, revision string) string {
 	t.Helper()
-	object, _, found, err := f.evidenceStore.FindLatestByKind(f.ctx, "github.issue.snapshot", &struct {
-		Repo      string `json:"repo"`
-		UpdatedAt string `json:"updatedAt"`
-	}{UpdatedAt: revision}, 10)
+	object, _, found, err := f.evidenceStore.FindByKind(f.ctx, "github.issue.snapshot", 10,
+		func(_ evidence.EvidenceObject, raw []byte) bool {
+			var snapshot struct {
+				UpdatedAt string `json:"updatedAt"`
+			}
+			if err := json.Unmarshal(raw, &snapshot); err != nil {
+				return false
+			}
+			return snapshot.UpdatedAt == revision
+		})
 	if err != nil || !found {
 		t.Fatalf("snapshot for revision %s: found=%v err=%v", revision, found, err)
 	}
@@ -191,10 +215,10 @@ func (f *driverFixture) failTaskTwice(t *testing.T, revision string) {
 // simulateRestartAfterAcceptance accepts the task itself and stops, leaving the
 // case ACTIVE. That is the crash window the driver must recover from, and it is
 // why the driver keeps its own accepted index.
-func (f *driverFixture) simulateRestartAfterAcceptance(t *testing.T, revision string) {
+func (f *driverFixture) simulateRestartAfterAcceptance(t *testing.T, object, revision string) {
 	t.Helper()
 	if _, ok := f.casesByRev[revision]; !ok {
-		f.registerRevision(t, revision)
+		f.registerIssueRevision(t, object, revision)
 	}
 	task := f.tasksByRev[revision]
 	createdCase := f.casesByRev[revision]
@@ -202,13 +226,13 @@ func (f *driverFixture) simulateRestartAfterAcceptance(t *testing.T, revision st
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision := notActionableDecision(revision)
+	decision := notActionableDecision(issueOf(t, object), revision)
 	decision.SnapshotEvidenceID = f.snapshotEvidenceID(t, revision)
 	raw, err := decision.Canonical()
 	if err != nil {
 		t.Fatal(err)
 	}
-	object, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
+	decisionObject, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
 		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindDecision,
 	})
 	if err != nil {
@@ -216,7 +240,7 @@ func (f *driverFixture) simulateRestartAfterAcceptance(t *testing.T, revision st
 	}
 	acceptedRaw, err := json.Marshal(map[string]any{
 		"schema": "github.issue.triage.accepted.v1", "case_id": createdCase.ID,
-		"task_id": createdCase.CurrentWorkID, "revision": revision, "decision_evidence_id": object.ID,
+		"task_id": createdCase.CurrentWorkID, "revision": revision, "decision_evidence_id": decisionObject.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -227,13 +251,13 @@ func (f *driverFixture) simulateRestartAfterAcceptance(t *testing.T, revision st
 		t.Fatal(err)
 	}
 	if _, err := f.verifSvc.CompleteAttempt(f.ctx, attempt.ID, verification.CompletionManifest{
-		EvidenceIDs: []domain.ID{object.ID},
+		EvidenceIDs: []domain.ID{decisionObject.ID},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.verifSvc.AcceptTask(f.ctx, task.ID, verification.AcceptanceRequest{
 		VerifierID: ghtriage.DriverVerifierID, VerifierType: ghtriage.DriverVerifierType,
-		CriteriaMet: true, EvidenceIDs: []domain.ID{object.ID},
+		CriteriaMet: true, EvidenceIDs: []domain.ID{decisionObject.ID},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -283,9 +307,9 @@ func (f *driverFixture) hasEvidenceKind(t *testing.T, kind string) bool {
 	return n > 0
 }
 
-func notActionableDecision(revision string) ghtriage.Decision {
+func notActionableDecision(issue int64, revision string) ghtriage.Decision {
 	return ghtriage.Decision{
-		Schema: ghtriage.DecisionSchema, Repository: "o/r", Issue: 42, Revision: revision,
+		Schema: ghtriage.DecisionSchema, Repository: "o/r", Issue: issue, Revision: revision,
 		TriageRulesVersion: ghtriage.TriageRulesVersion, DispositionRulesVersion: ghtriage.DispositionRulesVersion,
 		Stage1: ghtriage.Stage1Result{Triage: ghtriage.TriageBug, Signals: []string{"has-repro"}},
 		Stage2: &ghtriage.Stage2Output{IsActionable: false, Scope: ghtriage.ScopeSmall, Rationale: "no defect described"},
@@ -293,9 +317,9 @@ func notActionableDecision(revision string) ghtriage.Decision {
 	}
 }
 
-func readyToPlanDecision(revision string) ghtriage.Decision {
+func readyToPlanDecision(issue int64, revision string) ghtriage.Decision {
 	return ghtriage.Decision{
-		Schema: ghtriage.DecisionSchema, Repository: "o/r", Issue: 42, Revision: revision,
+		Schema: ghtriage.DecisionSchema, Repository: "o/r", Issue: issue, Revision: revision,
 		TriageRulesVersion: ghtriage.TriageRulesVersion, DispositionRulesVersion: ghtriage.DispositionRulesVersion,
 		Stage1: ghtriage.Stage1Result{Triage: ghtriage.TriageBug, Signals: []string{"has-repro"}},
 		Stage2: &ghtriage.Stage2Output{IsActionable: true, Scope: ghtriage.ScopeSmall, Rationale: "enough detail"},
@@ -305,7 +329,7 @@ func readyToPlanDecision(revision string) ghtriage.Decision {
 
 func TestDriverAcceptsThenBlocksNotActionable(t *testing.T) {
 	f := newDriverFixture(t)
-	f.completeTaskWithDecision(t, fixtureRevision, notActionableDecision(fixtureRevision))
+	f.completeTaskWithDecision(t, fixtureRevision, notActionableDecision(42, fixtureRevision))
 
 	result, err := f.driver.Tick(context.Background(), f.missionID)
 	if err != nil {
@@ -327,7 +351,7 @@ func TestDriverAcceptsThenBlocksNotActionable(t *testing.T) {
 
 func TestDriverAcceptsAndLeavesReadyToPlanActive(t *testing.T) {
 	f := newDriverFixture(t)
-	f.completeTaskWithDecision(t, fixtureRevision, readyToPlanDecision(fixtureRevision))
+	f.completeTaskWithDecision(t, fixtureRevision, readyToPlanDecision(42, fixtureRevision))
 
 	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
 		t.Fatal(err)
@@ -342,7 +366,7 @@ func TestDriverAcceptsAndLeavesReadyToPlanActive(t *testing.T) {
 
 func TestDriverIsIdempotentAcrossTicks(t *testing.T) {
 	f := newDriverFixture(t)
-	f.completeTaskWithDecision(t, fixtureRevision, notActionableDecision(fixtureRevision))
+	f.completeTaskWithDecision(t, fixtureRevision, notActionableDecision(42, fixtureRevision))
 
 	first, err := f.driver.Tick(context.Background(), f.missionID)
 	if err != nil {
@@ -386,7 +410,7 @@ func TestDriverSupersedesAnOlderRevisionAndChallengesItsPendingTask(t *testing.T
 	older := "2026-09-28T09:00:00Z"
 	f := newDriverFixture(t)
 	f.registerRevision(t, older)
-	f.completeTaskWithDecision(t, fixtureRevision, readyToPlanDecision(fixtureRevision))
+	f.completeTaskWithDecision(t, fixtureRevision, readyToPlanDecision(42, fixtureRevision))
 
 	result, err := f.driver.Tick(context.Background(), f.missionID)
 	if err != nil {
@@ -414,7 +438,7 @@ func TestDriverComparesRevisionsAsTimesNotStrings(t *testing.T) {
 	f := newDriverFixture(t)
 	f.registerRevision(t, older)
 	f.registerRevision(t, newer)
-	f.completeTaskWithDecision(t, newer, readyToPlanDecision(newer))
+	f.completeTaskWithDecision(t, newer, readyToPlanDecision(42, newer))
 
 	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
 		t.Fatal(err)
@@ -429,7 +453,7 @@ func TestDriverComparesRevisionsAsTimesNotStrings(t *testing.T) {
 
 func TestDriverRecoversWhenTheTaskIsAcceptedButTheCaseIsNot(t *testing.T) {
 	f := newDriverFixture(t)
-	f.simulateRestartAfterAcceptance(t, fixtureRevision)
+	f.simulateRestartAfterAcceptance(t, fixtureIssue, fixtureRevision)
 
 	result, err := f.driver.Tick(context.Background(), f.missionID)
 	if err != nil {
@@ -443,6 +467,43 @@ func TestDriverRecoversWhenTheTaskIsAcceptedButTheCaseIsNot(t *testing.T) {
 	}
 }
 
+// The accepted index has no case column, so recovering it means walking the
+// records of its kind and picking the one carrying this case's identity - and
+// the record that sorts first is not necessarily this case's. Two issues of one
+// mission both crash between accepting their task and assessing their case, and
+// the second one's record is written last, so a lookup that stops at the first
+// record it can decode returns the other issue's record, matches nothing, and
+// reports success: that case keeps a SUCCEEDED task and stays ACTIVE forever.
+func TestDriverRecoversEveryCaseWhoseAcceptedIndexIsNotTheNewest(t *testing.T) {
+	const (
+		otherIssue    = "o/r#43"
+		otherRevision = "2026-09-28T11:00:00Z"
+	)
+	f := newDriverFixture(t)
+	f.simulateRestartAfterAcceptance(t, fixtureIssue, fixtureRevision)
+	// A later created_at, so the other case's record sorts ahead of this one's
+	// no matter which way the tiebreak goes.
+	f.clock.Advance(time.Second)
+	f.simulateRestartAfterAcceptance(t, otherIssue, otherRevision)
+
+	result, err := f.driver.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 0 {
+		t.Fatalf("failures = %v, want none", result.Failures)
+	}
+	if result.Assessed != 2 {
+		t.Fatalf("result = %+v, want both cases recovered on the same tick", result)
+	}
+	if got := f.caseState(t, fixtureRevision); got != "BLOCKED" {
+		t.Fatalf("%s case state = %q, want BLOCKED", fixtureIssue, got)
+	}
+	if got := f.caseState(t, otherRevision); got != "BLOCKED" {
+		t.Fatalf("%s case state = %q, want BLOCKED", otherIssue, got)
+	}
+}
+
 // The restart path reads back the very record recordAccepted wrote, so the
 // recorded task ID has to be the identity findAccepted matches on: the case's
 // work ID, which is the task's idempotency key. A driver that recorded the
@@ -450,7 +511,7 @@ func TestDriverRecoversWhenTheTaskIsAcceptedButTheCaseIsNot(t *testing.T) {
 // and still never recover, so this pins the writer to the reader's identity.
 func TestDriverWritesTheAcceptedIndexUnderTheIdentityItReadsItBy(t *testing.T) {
 	f := newDriverFixture(t)
-	f.completeTaskWithDecision(t, fixtureRevision, readyToPlanDecision(fixtureRevision))
+	f.completeTaskWithDecision(t, fixtureRevision, readyToPlanDecision(42, fixtureRevision))
 
 	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
 		t.Fatal(err)

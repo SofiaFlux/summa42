@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -165,17 +164,27 @@ func (s *Store) FindByContentHash(ctx context.Context, contentHash, kind string)
 	return object, true, nil
 }
 
-// FindLatestByKind returns the most recently created evidence object of a kind
-// whose bytes decode into target, together with those bytes. The evidence store
-// has no case or revision column, so a caller that must find a document by a
-// business key decodes the most recent candidates and checks the key itself.
-// The bound keeps a tick's cost predictable on a long-lived store.
-func (s *Store) FindLatestByKind(ctx context.Context, kind string, target any, limit int) (EvidenceObject, []byte, bool, error) {
+// FindByKind returns the most recent evidence object of a kind that match
+// accepts, walking newest first and reading that object's bytes. The evidence
+// store has no case or revision column, so a caller that must find a document by
+// a business key decodes each candidate and checks the key itself; match
+// returning false is how a candidate is passed over. That is not decoration:
+// several objects of one mission each write a record of the same kind, so a
+// lookup that stopped at the first decodable candidate would hand back another
+// object's record and never find its own. A candidate whose bytes do not decode
+// is simply one more candidate the caller rejects.
+//
+// The limit bounds both the query and the number of blobs read, so one lookup
+// cannot become unbounded as the store grows.
+func (s *Store) FindByKind(ctx context.Context, kind string, limit int, match func(EvidenceObject, []byte) bool) (EvidenceObject, []byte, bool, error) {
 	if s == nil || s.state == nil {
 		return EvidenceObject{}, nil, false, errors.New("evidence store is not configured")
 	}
 	if strings.TrimSpace(kind) == "" {
 		return EvidenceObject{}, nil, false, errors.New("evidence kind is required")
+	}
+	if match == nil {
+		return EvidenceObject{}, nil, false, errors.New("evidence match is required")
 	}
 	if limit <= 0 {
 		limit = 100
@@ -210,10 +219,9 @@ func (s *Store) FindLatestByKind(ctx context.Context, kind string, target any, l
 		if err != nil {
 			return EvidenceObject{}, nil, false, err
 		}
-		if err := json.Unmarshal(raw, target); err != nil {
-			continue
+		if match(candidate, raw) {
+			return candidate, raw, true, nil
 		}
-		return candidate, raw, true, nil
 	}
 	return EvidenceObject{}, nil, false, nil
 }

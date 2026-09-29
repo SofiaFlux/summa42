@@ -284,21 +284,28 @@ func (d *Driver) recordAccepted(ctx context.Context, c workflowcase.Case, decisi
 
 // findAccepted locates the driver's own accepted index for a case. The evidence
 // store has no case column and FindByContentHash needs a hash that is unknown
-// before the record exists, so the lookup is a bounded scan of the kind. The
-// recorded task ID is the case's work ID, which is the task's idempotency key
-// and therefore the identity recordAccepted wrote it under; the task row's own
-// ID is a different value and would never match.
+// before the record exists, so the lookup walks the bounded candidates of the
+// kind and checks the identity in each one: several cases of one mission each
+// write a record of this kind, and only this case's record carries this case's
+// identity, so a lookup that stopped at the first candidate it could decode
+// would report "not found" for every case but one whenever another case wrote
+// its record later. The recorded task ID is the case's work ID, which is the
+// task's idempotency key and therefore the identity recordAccepted wrote it
+// under; the task row's own ID is a different value and would never match.
 func (d *Driver) findAccepted(ctx context.Context, c workflowcase.Case, task domain.Task) ([]byte, bool, error) {
 	if d.evidence == nil {
 		return nil, false, errors.New("evidence store is not configured")
 	}
-	var record acceptedIndex
-	_, raw, found, err := d.evidence.FindLatestByKind(ctx, KindAccepted, &record, acceptedIndexScanLimit)
+	matches := func(_ evidence.EvidenceObject, raw []byte) bool {
+		var record acceptedIndex
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return false
+		}
+		return record.CaseID == c.ID && record.TaskID == domain.ID(task.IdempotencyKey)
+	}
+	_, raw, found, err := d.evidence.FindByKind(ctx, KindAccepted, acceptedIndexScanLimit, matches)
 	if err != nil || !found {
 		return nil, false, err
-	}
-	if record.CaseID != c.ID || record.TaskID != domain.ID(task.IdempotencyKey) {
-		return nil, false, nil
 	}
 	return raw, true, nil
 }
