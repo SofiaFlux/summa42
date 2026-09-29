@@ -57,6 +57,32 @@ func (i Issue) ObjectID() string {
 	return "github:" + i.Repository + "#" + strconv.FormatInt(i.Number, 10)
 }
 
+// ParseObjectID is the inverse of Issue.ObjectID: it recovers the repository and
+// the issue number from an object id of that shape. It is exported because the
+// triage reviewer reads a case's identity out of one, and a parser written on the
+// far side of this package boundary is a second spelling of a format this
+// package owns - which is exactly how a rename here once left every real triage
+// task rejected while both packages stayed green.
+//
+// The source qualifier is optional, because the case row carries the source in
+// its own column: an object id written without one names the same issue. A
+// repository cannot contain a colon, so cutting at the first one is unambiguous.
+func ParseObjectID(objectID string) (string, int64, error) {
+	object := strings.TrimSpace(objectID)
+	if index := strings.Index(object, ":"); index >= 0 {
+		object = strings.TrimSpace(object[index+1:])
+	}
+	repository, number, found := strings.Cut(object, "#")
+	if !found || strings.TrimSpace(repository) == "" {
+		return "", 0, fmt.Errorf("issue object id %q names no repository and issue number", objectID)
+	}
+	issue, err := strconv.ParseInt(strings.TrimSpace(number), 10, 64)
+	if err != nil || issue <= 0 {
+		return "", 0, fmt.Errorf("issue object id %q names no repository and issue number", objectID)
+	}
+	return strings.TrimSpace(repository), issue, nil
+}
+
 // RevisionID is the canonical UTC revision string.
 func (i Issue) RevisionID() string {
 	return i.UpdatedAt.UTC().Format(time.RFC3339Nano)

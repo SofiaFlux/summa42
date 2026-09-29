@@ -14,6 +14,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/execution"
 	"github.com/SofiaFlux/summa42/internal/executors"
+	"github.com/SofiaFlux/summa42/internal/ghissue"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
 	"github.com/SofiaFlux/summa42/internal/purpose"
@@ -209,7 +210,7 @@ func (f *triageDriverFixture) addCaseWithAnUnreplayableTriage(t *testing.T, obje
 		t.Fatal(err)
 	}
 	snapshot, err := f.evidence.Put(ctx, strings.NewReader(string(raw)), evidence.Metadata{
-		MediaType: "application/json", Kind: "github.issue.snapshot",
+		MediaType: "application/json", Kind: ghissue.SnapshotKind,
 	})
 	if err != nil {
 		t.Fatal(err)

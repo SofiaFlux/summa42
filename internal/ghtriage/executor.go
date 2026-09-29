@@ -10,6 +10,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/executors"
+	"github.com/SofiaFlux/summa42/internal/ghissue"
 )
 
 const (
@@ -21,16 +22,13 @@ const (
 	// stage2Attempts bounds the classifier to one retry inside a single lease.
 	// An unbounded retry turns one poisoned issue into an infinite budget burn.
 	stage2Attempts = 2
-
-	// snapshotEvidenceKind is the kind ghissue.observe writes the canonical
-	// issue snapshot under, and the only kind this executor reads. A decision
-	// cites the snapshot it was derived from, so the cited object has to be one.
-	snapshotEvidenceKind = "github.issue.snapshot"
 )
 
 // triagePayload is the subset of the intake payload the executor needs. Its
-// tags are the keys ghissue.taskTemplate writes, not a private spelling of them:
-// intake owns the payload contract, so the repository is read from "repo".
+// tags are the keys ghissue.TriageTaskPayload writes, not a private spelling of
+// them: intake owns the payload contract, so the repository is read from "repo".
+// A ghtriage test decodes a payload intake actually built, which is the only way
+// these two literals are ever compared.
 type triagePayload struct {
 	Repository         string    `json:"repo"`
 	Issue              int64     `json:"issue"`
@@ -133,6 +131,8 @@ func (e *Executor) classify(ctx context.Context, input Stage2Input) (Stage2Outpu
 
 // loadSnapshot reads the one evidence object the payload cites and proves it is
 // that object: the right kind, canonical, and about the issue the task names.
+// The kind is ghissue's own constant, because a decision cites the snapshot it
+// was derived from and the reader has to be reading the kind the writer wrote.
 // The decision's repository and issue are copied from the payload, not from the
 // snapshot, so a snapshot of some other issue would otherwise produce a decision
 // whose own fields contradict the snapshot evidence id it cites.
@@ -142,7 +142,7 @@ func (e *Executor) loadSnapshot(ctx context.Context, payload triagePayload) (Sna
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load issue snapshot %s: %w", id, err)
 	}
-	if object.Kind != snapshotEvidenceKind {
+	if object.Kind != ghissue.SnapshotKind {
 		return Snapshot{}, fmt.Errorf("evidence %s is a %q, not an issue snapshot", id, object.Kind)
 	}
 	var snap Snapshot

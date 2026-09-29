@@ -19,7 +19,13 @@ import (
 )
 
 const readCapability = "github.issue.read"
-const snapshotKind = "github.issue.snapshot"
+
+// SnapshotKind is the evidence kind the canonical issue snapshot is stored
+// under. It is exported because it is not only this package's spelling: the
+// triage executor and the triage reviewer both read that snapshot back, and a
+// private copy of the string in either of them is a second writer of a contract
+// nothing binds.
+const SnapshotKind = "github.issue.snapshot"
 
 // ObserveConfig configures issue intake. Config in client.go is the transport
 // configuration; this is the observer's.
@@ -255,7 +261,7 @@ func materializeHit(ctx context.Context, cases *workflowcase.Service, execSvc *e
 // putSnapshot reuses the evidence row that already holds these exact snapshot
 // bytes: a rolled-back ensure would otherwise leave one orphan row per tick.
 func putSnapshot(ctx context.Context, evidenceStore *evidence.Store, snapshot []byte) (evidence.EvidenceObject, error) {
-	metadata := evidence.Metadata{MediaType: "application/json", Kind: snapshotKind}
+	metadata := evidence.Metadata{MediaType: "application/json", Kind: SnapshotKind}
 	digest := sha256.Sum256(snapshot)
 	existing, found, err := evidenceStore.FindByContentHash(ctx, hex.EncodeToString(digest[:]), metadata.Kind)
 	if err == nil && found {
@@ -264,14 +270,32 @@ func putSnapshot(ctx context.Context, evidenceStore *evidence.Store, snapshot []
 	return evidenceStore.Put(ctx, bytes.NewReader(snapshot), metadata)
 }
 
-func taskTemplate(cfg ObserveConfig, issue Issue, snapshotID string) (execution.TaskRequest, error) {
+// TriageTaskPayload is the payload of the github.issue.triage task intake
+// materializes for one issue. It is the whole of the contract between the two
+// writers of those bytes: intake writes the keys, the triage executor reads four
+// of them, and nothing in either package can see the other's struct tags. So the
+// builder is exported and the executor's decoder is tested against what it
+// returns rather than against a hand-written map that agrees with it only
+// because one person wrote both.
+//
+// The key set is pinned by TestTriageTaskPayloadKeys on this side, so a rename
+// cannot land as a single commit here either.
+func TriageTaskPayload(issue Issue, snapshotID string) ([]byte, error) {
 	payload, err := json.Marshal(map[string]any{
 		"repo": issue.Repository, "issue": issue.Number, "revision": issue.RevisionID(),
 		"title": issue.Title, "url": issue.URL, "author": issue.Author,
 		"labels": nonNil(issue.Labels), "triage": issue.Triage, "issueSnapshot": snapshotID,
 	})
 	if err != nil {
-		return execution.TaskRequest{}, fmt.Errorf("encode task payload: %w", err)
+		return nil, fmt.Errorf("encode task payload: %w", err)
+	}
+	return payload, nil
+}
+
+func taskTemplate(cfg ObserveConfig, issue Issue, snapshotID string) (execution.TaskRequest, error) {
+	payload, err := TriageTaskPayload(issue, snapshotID)
+	if err != nil {
+		return execution.TaskRequest{}, err
 	}
 	return execution.TaskRequest{
 		Objective:          fmt.Sprintf("Triage GitHub issue %s#%d", issue.Repository, issue.Number),

@@ -13,6 +13,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/executors"
+	"github.com/SofiaFlux/summa42/internal/ghissue"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/ghtriage/fakemodel"
 	"github.com/SofiaFlux/summa42/internal/testutil"
@@ -35,7 +36,7 @@ func putObject(t *testing.T, store *evidence.Store, kind string, snap ghtriage.S
 
 func putSnapshot(t *testing.T, store *evidence.Store, snap ghtriage.Snapshot) domain.ID {
 	t.Helper()
-	return putObject(t, store, "github.issue.snapshot", snap)
+	return putObject(t, store, ghissue.SnapshotKind, snap)
 }
 
 // intakePayloadKeys is the key set internal/ghissue.taskTemplate marshals into

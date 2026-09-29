@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
+	"github.com/SofiaFlux/summa42/internal/ghissue"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
 
@@ -333,24 +333,14 @@ func classificationAgrees(c workflowcase.Case, decision Decision, snap Snapshot)
 }
 
 // caseIssue is the issue a case is about, read out of the object id intake
-// writes: "<source>:<repository>#<number>". The reviewer walks GitHub cases only,
-// so the source qualifier is stripped when present and a case registered without
-// one names the same issue - which is what lets a case object id be compared
-// against a decision's repository and issue at all.
+// writes. The format is ghissue's, and so is the parser: the reviewer walks
+// GitHub cases only, and a copy of that parse on this side of the package
+// boundary is the second spelling that once left every real case unreadable
+// while both packages stayed green. A case registered without the source
+// qualifier names the same issue, which is what lets a case object id be
+// compared against a decision's repository and issue at all.
 func caseIssue(c workflowcase.Case) (string, int64, error) {
-	object := strings.TrimSpace(c.ObjectID)
-	if qualifier := strings.TrimSpace(c.Source) + ":"; strings.HasPrefix(object, qualifier) {
-		object = strings.TrimPrefix(object, qualifier)
-	}
-	repository, number, found := strings.Cut(object, "#")
-	if !found {
-		return "", 0, fmt.Errorf("case object id %q names no issue number", c.ObjectID)
-	}
-	issue, err := strconv.ParseInt(number, 10, 64)
-	if err != nil || issue <= 0 {
-		return "", 0, fmt.Errorf("case object id %q names no issue number", c.ObjectID)
-	}
-	return strings.TrimSpace(repository), issue, nil
+	return ghissue.ParseObjectID(c.ObjectID)
 }
 
 // caseSnapshot reads the snapshot intake recorded for this case and proves it is
@@ -381,7 +371,7 @@ func (r *Reviewer) caseSnapshot(ctx context.Context, c workflowcase.Case) (Snaps
 	if err != nil {
 		return Snapshot{}, "", fmt.Errorf("load issue snapshot %s: %w", id, err)
 	}
-	if object.Kind != snapshotEvidenceKind {
+	if object.Kind != ghissue.SnapshotKind {
 		return Snapshot{}, "", fmt.Errorf("evidence %s is a %q, not an issue snapshot", id, object.Kind)
 	}
 	var snap Snapshot

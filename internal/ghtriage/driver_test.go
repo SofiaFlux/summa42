@@ -11,6 +11,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/execution"
+	"github.com/SofiaFlux/summa42/internal/ghissue"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/purpose"
 	"github.com/SofiaFlux/summa42/internal/runmanifest"
@@ -77,11 +78,14 @@ func newDriverFixture(t *testing.T) *driverFixture {
 	}
 }
 
-// issueOf reads the issue number out of a GitHub object ID, the shape the
-// intake writes: one object per issue, named repo#number.
+// issueOf reads the issue number out of the object id intake writes: one object
+// per issue, named github:repository#number. The read goes through intake's own
+// parser, so a fixture can register a case under an object id the reviewer will
+// have to resolve, and a format this package no longer agrees with fails here
+// rather than in the reviewer.
 func issueOf(t *testing.T, object string) int64 {
 	t.Helper()
-	issue, err := strconv.ParseInt(strings.TrimPrefix(object, "o/r#"), 10, 64)
+	_, issue, err := ghissue.ParseObjectID(object)
 	if err != nil {
 		t.Fatalf("object %q carries no issue number: %v", object, err)
 	}
@@ -116,7 +120,7 @@ func (f *driverFixture) registerSnapshotRevision(t *testing.T, object, revision 
 		t.Fatal(err)
 	}
 	snapshotObject, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
-		MediaType: "application/json", Kind: "github.issue.snapshot",
+		MediaType: "application/json", Kind: ghissue.SnapshotKind,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +194,7 @@ func (f *driverFixture) completeTaskWithDecision(t *testing.T, revision string, 
 
 func (f *driverFixture) snapshotEvidenceID(t *testing.T, revision string) string {
 	t.Helper()
-	object, _, found, err := f.evidenceStore.FindByKind(f.ctx, "github.issue.snapshot", 10,
+	object, _, found, err := f.evidenceStore.FindByKind(f.ctx, ghissue.SnapshotKind, 10,
 		func(_ evidence.EvidenceObject, raw []byte) bool {
 			var snapshot struct {
 				UpdatedAt string `json:"updatedAt"`
