@@ -97,11 +97,20 @@ func (f *driverFixture) registerRevision(t *testing.T, revision string) {
 
 func (f *driverFixture) registerIssueRevision(t *testing.T, object, revision string) {
 	t.Helper()
-	issue := issueOf(t, object)
-	snapshot := ghtriage.Snapshot{
-		Repo: "o/r", Issue: issue, Title: "Crash on save", Body: "it crashes",
+	f.registerSnapshotRevision(t, object, revision, ghtriage.Snapshot{
+		Repo: "o/r", Issue: issueOf(t, object), Title: "Crash on save", Body: "it crashes",
 		Author: "maintainer", Labels: []string{"bug"}, Triage: "bug", UpdatedAt: revision,
-	}
+	})
+}
+
+// registerSnapshotRevision is the same registration over a snapshot the caller
+// writes. A stage 1 that resolves the issue decisively needs one: only an
+// explicit well-formed duplicate-of label resolves it, so a fixture that wanted
+// such a decision would otherwise have to assert a resolution no re-derivation
+// from the stored snapshot would produce.
+func (f *driverFixture) registerSnapshotRevision(t *testing.T, object, revision string, snapshot ghtriage.Snapshot) {
+	t.Helper()
+	snapshot.Repo, snapshot.Issue, snapshot.UpdatedAt = "o/r", issueOf(t, object), revision
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -437,6 +446,25 @@ func (f *driverFixture) decisionEvidenceID(t *testing.T) domain.ID {
 	return domain.ID(id)
 }
 
+// decisionEvidenceIDFor is decisionEvidenceID scoped to one revision, for a test
+// with more than one revision triaged, where the newest decision is not the one
+// under assertion.
+func (f *driverFixture) decisionEvidenceIDFor(t *testing.T, revision string) domain.ID {
+	t.Helper()
+	object, _, found, err := f.evidenceStore.FindByKind(f.ctx, ghtriage.KindDecision, 100,
+		func(_ evidence.EvidenceObject, raw []byte) bool {
+			var decision ghtriage.Decision
+			if err := json.Unmarshal(raw, &decision); err != nil {
+				return false
+			}
+			return decision.Revision == revision
+		})
+	if err != nil || !found {
+		t.Fatalf("decision evidence for revision %s: found=%v err=%v", revision, found, err)
+	}
+	return object.ID
+}
+
 // repointAccepted rewrites the driver's accepted index so it names a different
 // decision document, which is how a test injects a corrupted decision. The
 // record is otherwise the one recordAccepted writes, task ID included: the case
@@ -492,6 +520,19 @@ func notActionableDecision(issue int64, revision string) ghtriage.Decision {
 		Stage1: ghtriage.Stage1Result{Triage: ghtriage.TriageBug, Signals: []string{"has-repro"}},
 		Stage2: &ghtriage.Stage2Output{IsActionable: false, Scope: ghtriage.ScopeSmall, Rationale: "no defect described"},
 		Stage3: &ghtriage.Stage3Result{Disposition: ghtriage.DispositionNotActionable, Rule: "not-actionable"},
+	}
+}
+
+// duplicateDecision is a decision stage 1 resolves on its own: it carries no
+// stage 2 and no stage 3, so it exercises the half of the reviewer that
+// re-derives Stage1 rather than Stage3, and a fixture asserting one has to be
+// able to produce a snapshot Stage1 really does resolve.
+func duplicateDecision(issue int64, revision string) ghtriage.Decision {
+	return ghtriage.Decision{
+		Schema: ghtriage.DecisionSchema, Repository: "o/r", Issue: issue, Revision: revision,
+		TriageRulesVersion: ghtriage.TriageRulesVersion, DispositionRulesVersion: ghtriage.DispositionRulesVersion,
+		Stage1: ghtriage.Stage1Result{Triage: ghtriage.TriageDuplicate, Disposition: ghtriage.DispositionDuplicate,
+			Rule: "explicit-duplicate-label", Signals: []string{"duplicate-of:41"}},
 	}
 }
 

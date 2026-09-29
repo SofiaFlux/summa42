@@ -1329,8 +1329,10 @@ func parseGHTriageReviewFlags(args []string) (domain.ID, climodel.Config, error)
 	return domain.ID(strings.TrimSpace(mission)), modelConfig, nil
 }
 
-// runGHTriageReview reviews every GitHub case of the mission exactly once and
-// prints the result as JSON on stdout. A per-case failure is reported inside
+// runGHTriageReview reviews every GitHub case of the mission once per observed
+// state - that is, once per (decision, reviewer version, case state and latest
+// assessment) it has not already recorded - and prints the result as JSON on
+// stdout. A per-case failure is reported inside
 // that JSON and on stderr, and it decides the exit code, because the reviewer
 // records nothing for a case it could not review: an exit 0 over one would be a
 // mission that looks reviewed for ever. The result is encoded before the failure

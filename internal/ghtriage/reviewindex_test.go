@@ -79,6 +79,36 @@ func TestLinkReviewKeepsOneVerdictPerDecisionVersionAndState(t *testing.T) {
 	if got := reviewRowCount(t, ctx, store); got != 2 {
 		t.Fatalf("review index rows = %d, want 2: one per observed state", got)
 	}
+
+	// The third column of the key, and the only thing that lets a changed
+	// reviewer look at a decision again. Without it in the key this link lands on
+	// the first row and reports false for ever, and the failure is a permanent
+	// silent skip rather than an error: the tick pays for the model call, writes
+	// the verdict document, is told it stored nothing, and counts the case as
+	// skipped on every tick until the end of the mission.
+	clk.Advance(time.Second)
+	const nextVersion = ghtriage.ReviewerVersion + "-next"
+	linked, err = index.LinkReview(ctx, decision, nextVersion, "ACTIVE|none", second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !linked {
+		t.Fatal("a link under a new reviewer version reported that it stored nothing: " +
+			"every later reviewer would skip this decision for ever")
+	}
+	if got := reviewRowCount(t, ctx, store); got != 3 {
+		t.Fatalf("review index rows = %d, want 3: one per decision, version and state", got)
+	}
+	if linked, err := index.ReviewLinked(ctx, decision, nextVersion, "ACTIVE|none"); err != nil {
+		t.Fatal(err)
+	} else if !linked {
+		t.Fatal("the new version's link is not visible to its own lookup")
+	}
+	// And the old version's row is still its own: the two versions are separate
+	// keys, so a new reviewer does not evict what the previous one recorded.
+	if got := verdictOf(t, ctx, store, decision, ghtriage.ReviewerVersion, "ACTIVE|none"); got != string(first) {
+		t.Fatalf("linked verdict under the original version = %s, want %s", got, first)
+	}
 }
 
 func putIndexEvidence(t *testing.T, ctx context.Context, store *evidence.Store, kind, body string) domain.ID {

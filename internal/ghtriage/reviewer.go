@@ -35,10 +35,20 @@ type ReviewVerdict struct {
 	Plausible          bool       `json:"plausible"`
 }
 
+// ReviewResult is what one tick did to one mission's cases. Skipped is the
+// total of the three reasons below it, because all three mean the same thing to
+// the caller - this tick reviewed nothing about this case - and only an operator
+// reading the numbers needs to tell them apart: a mission in steady state
+// reports nothing but AlreadyReviewed, a mission whose cases never produced a
+// decision reports them all under NoDecision, and a LostRace is a tick that lost
+// a race it had already paid for.
 type ReviewResult struct {
-	Reviewed int
-	Skipped  int
-	Failed   int
+	Reviewed        int
+	Skipped         int
+	AlreadyReviewed int
+	NoDecision      int
+	LostRace        int
+	Failed          int
 }
 
 type Reviewer struct {
@@ -58,8 +68,10 @@ func NewReviewer(cases *workflowcase.Service, store *evidence.Store, index Revie
 	return &Reviewer{cases: cases, evidence: store, index: index, model: model}
 }
 
-// Tick reviews every decision whose case state it has not already observed. It
-// changes nothing, gates nothing and blocks nothing.
+// Tick reviews every decision whose case state it has not already observed, so
+// each (decision, reviewer version, state, latest assessment) is reviewed once
+// and a case that later moves is reviewed again. It changes nothing, gates
+// nothing and blocks nothing.
 func (r *Reviewer) Tick(ctx context.Context, missionID domain.ID) (ReviewResult, error) {
 	if r == nil || r.cases == nil || r.evidence == nil || r.index == nil || r.model == nil {
 		return ReviewResult{}, errors.New("triage reviewer is not configured")
@@ -76,44 +88,69 @@ func (r *Reviewer) Tick(ctx context.Context, missionID domain.ID) (ReviewResult,
 			fmt.Fprintf(os.Stderr, "triage review of case %s failed: %v\n", c.ID, err)
 			continue
 		}
-		if outcome {
+		switch outcome {
+		case reviewed:
 			result.Reviewed++
-			continue
+		case alreadyReviewed:
+			result.Skipped++
+			result.AlreadyReviewed++
+		case noDecision:
+			result.Skipped++
+			result.NoDecision++
+		case lostRace:
+			result.Skipped++
+			result.LostRace++
 		}
-		result.Skipped++
 	}
 	return result, nil
 }
 
-func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (bool, error) {
+// outcome is what a case contributed to the tick. All three non-review outcomes
+// are counted as Skipped, because none of them is work this tick did, and
+// separated because they are three different things an operator looking at the
+// counters has to be able to tell: a case whose decision is already reviewed for
+// this state, a case that never produced a decision of its own, and a case whose
+// verdict another tick linked first. An error return carries no outcome at all -
+// the caller counts a failure instead - so the error paths below return a fixed
+// placeholder rather than a claim about a case the tick never judged.
+type outcome int
+
+const (
+	reviewed outcome = iota
+	alreadyReviewed
+	noDecision
+	lostRace
+)
+
+func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (outcome, error) {
 	records, err := r.cases.ListAssessments(ctx, c.ID)
 	if err != nil {
-		return false, err
+		return noDecision, err
 	}
 	fingerprint, latest := stateFingerprint(c, records)
 
 	decision, decisionID, err := r.findDecision(ctx, c, records)
 	if err != nil {
-		return false, err
+		return noDecision, err
 	}
 	if decision == nil {
 		// A case that produced no decision of its own has nothing to review. A
 		// task that exhausted its retries lands here too, the driver having
 		// already reported it, so there is no separate triage-failed case to
 		// make: a case either decided something of its own or it is skipped.
-		return false, nil
+		return noDecision, nil
 	}
 	linked, err := r.index.ReviewLinked(ctx, decisionID, ReviewerVersion, fingerprint)
 	if err != nil {
-		return false, err
+		return noDecision, err
 	}
 	if linked {
-		return false, nil
+		return alreadyReviewed, nil
 	}
 
-	snap, err := r.snapshot(ctx, *decision)
+	snap, err := r.caseSnapshot(ctx, c)
 	if err != nil {
-		return false, err
+		return noDecision, err
 	}
 	plausible, err := r.model.Review(ctx, ReviewInput{
 		Schema:   ReviewSchema,
@@ -124,7 +161,7 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (bool, e
 	})
 	if err != nil {
 		// No verdict document and no index row, so the next tick retries.
-		return false, fmt.Errorf("reviewer model call: %w", err)
+		return noDecision, fmt.Errorf("reviewer model call: %w", err)
 	}
 
 	verdict := ReviewVerdict{
@@ -136,23 +173,23 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (bool, e
 		Revision:           decision.Revision,
 		CaseState:          string(c.State),
 		LatestAssessmentID: latest,
-		Structural:         r.structural(ctx, c, records, latest, *decision),
+		Structural:         r.structural(ctx, c, records, latest, *decision, snap),
 		Plausible:          plausible,
 	}
 	raw, err := json.Marshal(verdict)
 	if err != nil {
-		return false, err
+		return noDecision, err
 	}
 	object, err := r.evidence.Put(ctx, strings.NewReader(string(raw)), evidence.Metadata{
 		MediaType: DecisionMediaType,
 		Kind:      KindReview,
 	})
 	if err != nil {
-		return false, err
+		return noDecision, err
 	}
 	stored, err := r.index.LinkReview(ctx, decisionID, ReviewerVersion, fingerprint, object.ID)
 	if err != nil {
-		return false, err
+		return noDecision, err
 	}
 	if !stored {
 		// A concurrent tick got there first, so this document is not the one the
@@ -161,20 +198,24 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (bool, e
 		// review this tick did not record. The document itself stays: it is
 		// content-addressed and unreferenced, which costs one blob and keeps the
 		// loser's work out of the loop's own account of itself.
-		return false, nil
+		return lostRace, nil
 	}
 	fmt.Fprintf(os.Stderr,
 		"triage review %s#%d at %s: plausible=%v structural=%+v verdict=%s\n",
 		decision.Repository, decision.Issue, decision.Revision, plausible, verdict.Structural, object.ID)
-	return true, nil
+	return reviewed, nil
 }
 
 // structural re-derives what can be re-derived from stored inputs. It never
 // re-runs the classifier.
 //
+// Every check reads the snapshot this case was observed from - never the one the
+// decision names, which a tampered record can point at another issue's - and the
+// other stored documents, so a decision citing someone else's snapshot is
+// reported rather than agreed with by construction.
+//
 // The limit of that is worth stating here rather than leaving to a reader of
-// the verdict, because it is why the model is asked anything at all. Every check
-// in the block reads the stored documents and nothing else, so a stage 2
+// the verdict, because it is why the model is asked anything at all. A stage 2
 // fabricated so that Stage3 of it yields exactly the recorded stage 3 rule is a
 // match by construction: the record agrees with itself and no re-derivation of
 // it can say otherwise. What the block does catch is a record that disagrees
@@ -183,27 +224,24 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (bool, e
 // resolved the issue and carries stage 2 anyway, a case state that does not
 // match the disposition, a schema that does not validate. The plausibility
 // question beside it is the one check a re-derivation cannot be.
-func (r *Reviewer) structural(ctx context.Context, c workflowcase.Case, records []workflowcase.AssessmentRecord, latest *string, decision Decision) Structural {
+func (r *Reviewer) structural(ctx context.Context, c workflowcase.Case, records []workflowcase.AssessmentRecord, latest *string, decision Decision, snap Snapshot) Structural {
 	return Structural{
 		Stage2OnlyIfUnresolved:         decision.Stage1.Resolved() == (decision.Stage2 == nil),
 		SchemaConformant:               decision.Validate() == nil,
-		RuleMatchesRecomputation:       r.recompute(ctx, decision),
+		RuleMatchesRecomputation:       r.recompute(decision, snap),
 		StateMatchesDisposition:        r.stateMatches(c, records, latest, decision),
-		ClassificationAgreesWithIntake: r.classificationAgrees(ctx, decision),
+		ClassificationAgreesWithIntake: classificationAgrees(c, decision, snap),
 	}
 }
 
-// recompute re-derives the outcome. A record written by a newer rules version
-// is reported as not-applicable, not as a mismatch: the reviewer simply does
-// not implement those rules, and calling history violating would be wrong.
-func (r *Reviewer) recompute(ctx context.Context, decision Decision) string {
+// recompute re-derives the outcome from the snapshot the case itself was
+// observed from. A record written by a newer rules version is reported as
+// not-applicable, not as a mismatch: the reviewer simply does not implement
+// those rules, and calling history violating would be wrong.
+func (r *Reviewer) recompute(decision Decision, snap Snapshot) string {
 	if decision.Stage1.Resolved() {
 		if decision.TriageRulesVersion != TriageRulesVersion {
 			return "not-applicable"
-		}
-		snap, err := r.snapshot(ctx, decision)
-		if err != nil {
-			return "mismatch"
 		}
 		recomputed := Stage1(snap)
 		if recomputed.Disposition == decision.Stage1.Disposition && recomputed.Rule == decision.Stage1.Rule {
@@ -240,24 +278,40 @@ func (r *Reviewer) stateMatches(c workflowcase.Case, records []workflowcase.Asse
 }
 
 // classificationAgrees recomputes ClassifyTriage and the exact stage 1 widening
-// rule from the snapshot, rather than accepting any difference merely because
-// the recorded value is question or duplicate.
-func (r *Reviewer) classificationAgrees(ctx context.Context, decision Decision) bool {
-	snap, err := r.snapshot(ctx, decision)
-	if err != nil {
+// rule from the snapshot this case was observed from, rather than accepting any
+// difference merely because the recorded value is question or duplicate.
+//
+// The snapshot it re-derives from is the case's own observation, never the one
+// the decision names. A decision may cite some other issue's snapshot, and every
+// other check would read that one too - the plausibility question would be asked
+// about the other issue's title and body - so comparing against it would compare
+// a decision with itself and agree with it by construction. So the citation is
+// itself part of what this check says: a decision derived from anything other
+// than this case's observation has not been shown to agree with intake, and the
+// recorded triage is not compared at all.
+func classificationAgrees(c workflowcase.Case, decision Decision, snap Snapshot) bool {
+	if strings.TrimSpace(decision.SnapshotEvidenceID) != strings.TrimSpace(c.ObservationEvidenceID) {
 		return false
 	}
 	return Stage1(snap).Triage == decision.Stage1.Triage
 }
 
-func (r *Reviewer) snapshot(ctx context.Context, decision Decision) (Snapshot, error) {
-	_, raw, err := r.evidence.Get(ctx, domain.ID(decision.SnapshotEvidenceID))
+// caseSnapshot reads the snapshot intake recorded for this case. It is the only
+// snapshot the reviewer derives anything from, and the one the plausibility
+// question is asked about, so a decision citing another issue's snapshot cannot
+// borrow another issue's content here.
+func (r *Reviewer) caseSnapshot(ctx context.Context, c workflowcase.Case) (Snapshot, error) {
+	id := strings.TrimSpace(c.ObservationEvidenceID)
+	if id == "" {
+		return Snapshot{}, errors.New("the case carries no observation evidence to review against")
+	}
+	_, raw, err := r.evidence.Get(ctx, domain.ID(id))
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("load snapshot %s: %w", decision.SnapshotEvidenceID, err)
+		return Snapshot{}, fmt.Errorf("load issue snapshot %s: %w", id, err)
 	}
 	var snap Snapshot
 	if err := json.Unmarshal(raw, &snap); err != nil {
-		return Snapshot{}, fmt.Errorf("decode snapshot %s: %w", decision.SnapshotEvidenceID, err)
+		return Snapshot{}, fmt.Errorf("decode issue snapshot %s: %w", id, err)
 	}
 	return snap, nil
 }

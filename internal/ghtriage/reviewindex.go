@@ -13,8 +13,17 @@ import (
 )
 
 // ReviewIndexStore schedules reviews by (decision, reviewer version, observed
-// case state). Two concurrent ticks may both pay for a model call, but only one
-// verdict is linked and reported.
+// case state).
+//
+// The store answers the second of two ticks that reach the same decision in the
+// same state with false for LinkReview and true for ReviewLinked, so the first
+// verdict linked is the one both a reader and every later tick find; a loser
+// that asks anyway is told nothing was stored and reports no verdict. That is
+// what the schema guarantees: the primary key makes the second row impossible.
+// Whether two ticks really do reach the link together is not exercised here - the
+// reviewer's test drives it through an index that answers as the losing tick
+// finds it - so this is a statement about the store's answers, not a measurement
+// of the race.
 type ReviewIndexStore interface {
 	ReviewLinked(ctx context.Context, decisionID domain.ID, reviewerVersion, fingerprint string) (bool, error)
 	LinkReview(ctx context.Context, decisionID domain.ID, reviewerVersion, fingerprint string, verdictID domain.ID) (bool, error)

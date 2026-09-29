@@ -85,6 +85,59 @@ func (rf *reviewerFixture) verdictCount(t *testing.T) int {
 	return n
 }
 
+// verdicts reads every verdict the index points at, keyed by the revision the
+// verdict names, so a test over two revisions can say which one it is looking
+// at instead of trusting an ordering.
+func (rf *reviewerFixture) verdicts(t *testing.T) map[string]ghtriage.ReviewVerdict {
+	t.Helper()
+	// The ids are collected before any document is read: the store's pool is
+	// small and a verdict read while this cursor is open would wait on it.
+	rows, err := rf.driver.store.DB().QueryContext(rf.driver.ctx,
+		`SELECT verdict_evidence_id FROM github_issue_triage_reviews`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []domain.ID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		ids = append(ids, domain.ID(id))
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byRevision := map[string]ghtriage.ReviewVerdict{}
+	for _, id := range ids {
+		_, raw, err := rf.driver.evidenceStore.Get(rf.driver.ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var verdict ghtriage.ReviewVerdict
+		if err := json.Unmarshal(raw, &verdict); err != nil {
+			t.Fatal(err)
+		}
+		if _, seen := byRevision[verdict.Revision]; seen {
+			t.Fatalf("revision %s has more than one linked verdict", verdict.Revision)
+		}
+		byRevision[verdict.Revision] = verdict
+	}
+	return byRevision
+}
+
+// rewriteSnapshotCitation stores the decision again with snapshot_evidence_id
+// pointing at evidence the case was never observed from, which is the shape of a
+// decision that was derived from some other issue.
+func (rf *reviewerFixture) rewriteSnapshotCitation(t *testing.T, snapshotEvidenceID string) {
+	t.Helper()
+	rf.rewriteDecision(t, func(d *ghtriage.Decision) { d.SnapshotEvidenceID = snapshotEvidenceID })
+}
+
 func (rf *reviewerFixture) reviewLinkCount(t *testing.T) int {
 	t.Helper()
 	var n int
@@ -195,6 +248,109 @@ func (rf *reviewerFixture) supersedeCase(t *testing.T) {
 	}
 }
 
+// The accepting direction of the whole structural block, which nothing pinned
+// before: four of the five checks had only tests that they flag a violation, and
+// a check hardcoded to false passes every one of those. A block that reported
+// every decision as a violation would have stayed green, so the fixture here is
+// a correct, untampered decision on a case behaving as that decision says, and
+// the assertion is that all five fields agree with it and the plausibility
+// question still ran.
+func TestReviewerAcceptsACleanDecisionWhoseCaseStateMatchesIt(t *testing.T) {
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	verdict := rf.lastVerdict(t)
+	// The precondition, stated rather than assumed: nothing was tampered with,
+	// the case is the state the disposition leaves behind, and the decision is
+	// the one the case itself made.
+	if verdict.DecisionEvidenceID != string(rf.driver.decisionEvidenceID(t)) {
+		t.Fatalf("verdict decision = %s, want the case's own %s",
+			verdict.DecisionEvidenceID, rf.driver.decisionEvidenceID(t))
+	}
+	if got := rf.driver.decisionFor(t, fixtureRevision); got.Stage3.Rule != "actionable-without-repro-small-or-medium" {
+		t.Fatalf("fixture decision stage 3 rule = %q, want the one Stage3 derives", got.Stage3.Rule)
+	}
+	if verdict.CaseState != string(workflowcase.Active) {
+		t.Fatalf("case state = %q, want ACTIVE", verdict.CaseState)
+	}
+	if !verdict.Plausible {
+		t.Fatal("the scripted plausible verdict was not carried into the document")
+	}
+
+	want := ghtriage.Structural{
+		Stage2OnlyIfUnresolved:         true,
+		SchemaConformant:               true,
+		RuleMatchesRecomputation:       "match",
+		StateMatchesDisposition:        true,
+		ClassificationAgreesWithIntake: true,
+	}
+	if verdict.Structural != want {
+		t.Fatalf("a correct decision on a matching case was reported as %+v, want %+v",
+			verdict.Structural, want)
+	}
+	// The model question is not one of the five, and it is the check the block
+	// cannot stand in for: it ran, and the answer is in the document beside them.
+	if got := len(rf.model.ReviewInputs); got != 1 {
+		t.Fatalf("model calls = %d, want exactly the reviewer's own question", got)
+	}
+}
+
+// The same accepting direction on the other branch of the re-derivation. A
+// decision stage 1 resolved is re-derived by re-running Stage1 over the
+// snapshot, and that branch's "match" site had no accepting test at all - a
+// mutation there returns "mismatch" for every record and stays green. The
+// snapshot has to carry a real duplicate-of label, because a fixture that
+// asserted a resolution Stage1 would not derive would prove nothing.
+func TestReviewerAcceptsADecisionStageOneResolvedAndAgreesWithTheSnapshot(t *testing.T) {
+	f := newDriverFixture(t)
+	f.registerSnapshotRevision(t, fixtureIssue, fixtureRevision, ghtriage.Snapshot{
+		Title: "Crash on save", Body: "it crashes", Triage: "bug", Labels: []string{"duplicate-of:41"},
+	})
+	f.completeTaskWithDecision(t, fixtureRevision, duplicateDecision(42, fixtureRevision))
+	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.latestAssessmentReason(t, fixtureRevision); got != string(ghtriage.DispositionDuplicate) {
+		t.Fatalf("assessment reason = %q, want %q: the driver closed the case as duplicate", got, ghtriage.DispositionDuplicate)
+	}
+	model := fakemodel.New()
+	rf := &reviewerFixture{driver: f, model: model}
+	rf.review = ghtriage.NewReviewer(f.cases, f.evidenceStore,
+		ghtriage.NewReviewIndex(f.store, f.clock), model, f.clock)
+	model.ScriptedReview = []bool{true}
+
+	if _, err := rf.review.Tick(context.Background(), f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	verdict := rf.lastVerdict(t)
+	// The precondition the branch depends on: stage 1 resolved, so there is no
+	// stage 2 or stage 3 to re-derive and no model to ask for one.
+	if got := rf.driver.decisionFor(t, fixtureRevision); got.Stage1.Resolved() != true ||
+		got.Stage2 != nil || got.Stage3 != nil {
+		t.Fatalf("fixture decision = %+v, want a stage 1 that resolved the issue", got)
+	}
+	if verdict.Structural.RuleMatchesRecomputation != "match" {
+		t.Fatalf("a stage 1 Stage1 re-derives to the same rule and was reported %q, want match",
+			verdict.Structural.RuleMatchesRecomputation)
+	}
+	want := ghtriage.Structural{
+		Stage2OnlyIfUnresolved:         true,
+		SchemaConformant:               true,
+		RuleMatchesRecomputation:       "match",
+		StateMatchesDisposition:        true,
+		ClassificationAgreesWithIntake: true,
+	}
+	if verdict.Structural != want {
+		t.Fatalf("a correct stage 1 decision was reported as %+v, want %+v", verdict.Structural, want)
+	}
+	if got := len(rf.model.ReviewInputs); got != 1 {
+		t.Fatalf("model calls = %d, want only the reviewer's own question", got)
+	}
+}
+
 func TestReviewerMakesNoSecondModelCallWhileTheCaseStateIsUnchanged(t *testing.T) {
 	rf := newReviewerFixture(t)
 	rf.model.ScriptedReview = []bool{true, true}
@@ -218,6 +374,17 @@ func TestReviewerMakesNoSecondModelCallWhileTheCaseStateIsUnchanged(t *testing.T
 	}
 	if got := rf.verdictCount(t); got != 1 {
 		t.Fatalf("verdict documents = %d, want exactly 1", got)
+	}
+	// The steady state, named as such: a mission whose cases are all reviewed
+	// reports these counters and nothing else, which is what makes a mission of
+	// undecided cases - the same three integers, one number different - readable.
+	steady, err := rf.review.Tick(context.Background(), rf.driver.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steady.Reviewed != 0 || steady.Skipped != 1 || steady.Failed != 0 ||
+		steady.AlreadyReviewed != 1 || steady.NoDecision != 0 || steady.LostRace != 0 {
+		t.Fatalf("steady-state tick = %+v, want one already-reviewed case and nothing else", steady)
 	}
 }
 
@@ -279,6 +446,9 @@ func TestReviewerReviewsOnlyTheDecisionTheCaseItselfMade(t *testing.T) {
 	if result.Reviewed != 1 || result.Skipped != 1 || result.Failed != 0 {
 		t.Fatalf("result = %+v, want one review and one skip over two cases", result)
 	}
+	if result.NoDecision != 1 || result.AlreadyReviewed != 0 || result.LostRace != 0 {
+		t.Fatalf("result = %+v, want the skip attributed to the case that made no decision", result)
+	}
 	if got := len(rf.model.ReviewInputs); got != 1 {
 		t.Fatalf("model calls = %d, want exactly one: the newer decision, reviewed once", got)
 	}
@@ -295,6 +465,101 @@ func TestReviewerReviewsOnlyTheDecisionTheCaseItselfMade(t *testing.T) {
 	if verdict.LatestAssessmentID != nil {
 		t.Fatalf("verdict latest assessment = %q, want none: the newer case has none", *verdict.LatestAssessmentID)
 	}
+}
+
+// The accepted-index fall-through, on the case that makes it necessary. A case
+// whose newest assessment cites a newer revision's decision has, by that fact, no
+// decision of its own *on the assessment path* - but it may well have one: a
+// revision whose triage completed was accepted on its own decision before
+// anything superseded it, and the driver's accepted index is the record of that.
+// So the walk past the foreign decision has to end at the case's own index
+// rather than at "nothing to review", and the older case has to come back clean
+// through the superseded branch rather than skipped or flagged.
+func TestReviewerReviewsASupersededCaseThatHadItsOwnDecision(t *testing.T) {
+	const older = "2026-09-28T09:00:00Z"
+	f := newDriverFixture(t)
+	// Both revisions triaged, so both cases carry a decision of their own, and
+	// the older one stays ACTIVE (ready-to-plan) until the supersession closes
+	// it - Assess refuses a case that is not active.
+	f.completeTaskWithDecision(t, older, readyToPlanDecision(42, older))
+	f.completeTaskWithDecision(t, fixtureRevision, readyToPlanDecision(42, fixtureRevision))
+	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.caseState(t, older); got != string(workflowcase.Blocked) {
+		t.Fatalf("older case state = %q, want BLOCKED: the driver superseded it", got)
+	}
+	if got := f.latestAssessmentReason(t, older); got != "superseded-by:"+fixtureRevision {
+		t.Fatalf("older assessment reason = %q, want superseded-by:%s", got, fixtureRevision)
+	}
+	// Its own decision is still on the store and still named by its own accepted
+	// index, so there is something of its own to review.
+	if got := f.decisionFor(t, older).Stage3.Rule; got != "actionable-without-repro-small-or-medium" {
+		t.Fatalf("older decision stage 3 rule = %q, want the one the fixture stored", got)
+	}
+	model := fakemodel.New()
+	review := ghtriage.NewReviewer(f.cases, f.evidenceStore,
+		ghtriage.NewReviewIndex(f.store, f.clock), model, f.clock)
+	model.ScriptedReview = []bool{true, true}
+	rf := &reviewerFixture{driver: f, model: model, review: review}
+
+	result, err := rf.review.Tick(context.Background(), rf.driver.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reviewed != 2 || result.Skipped != 0 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want both revisions reviewed: the older one has a decision of its own", result)
+	}
+	if got := len(model.ReviewInputs); got != 2 {
+		t.Fatalf("model calls = %d, want one per revision", got)
+	}
+	if got := rf.reviewLinkCount(t); got != 2 {
+		t.Fatalf("review index rows = %d, want one per revision", got)
+	}
+
+	byRevision := rf.verdicts(t)
+	if len(byRevision) != 2 {
+		t.Fatalf("linked verdicts = %d, want one per revision", len(byRevision))
+	}
+	older2, found := byRevision[older]
+	if !found {
+		t.Fatalf("no verdict for the superseded revision %s, only %v", older, keysOf(byRevision))
+	}
+	// The older verdict is about the older decision, under the older case's state.
+	if older2.Revision != older || older2.Issue != 42 {
+		t.Fatalf("older verdict = revision %q issue %d, want %s/42", older2.Revision, older2.Issue, older)
+	}
+	if older2.DecisionEvidenceID != string(f.decisionEvidenceIDFor(t, older)) {
+		t.Fatalf("older verdict names decision %s, want its own %s",
+			older2.DecisionEvidenceID, f.decisionEvidenceIDFor(t, older))
+	}
+	if older2.CaseState != string(workflowcase.Blocked) {
+		t.Fatalf("older verdict case state = %q, want BLOCKED", older2.CaseState)
+	}
+	// Clean through the superseded branch: the reason prefix is what allows it,
+	// and the disposition itself (ready-to-plan) never closed this case.
+	if !older2.Structural.StateMatchesDisposition {
+		t.Fatalf("a superseded case with its own decision was reported as a violation: %+v", older2.Structural)
+	}
+	if older2.LatestAssessmentID == nil {
+		t.Fatal("older verdict names no assessment: it was assessed as superseded")
+	}
+	newer, found := byRevision[fixtureRevision]
+	if !found {
+		t.Fatalf("no verdict for %s, only %v", fixtureRevision, keysOf(byRevision))
+	}
+	if newer.CaseState != string(workflowcase.Active) || newer.LatestAssessmentID != nil {
+		t.Fatalf("newer verdict = state %q assessment %v, want ACTIVE and no assessment",
+			newer.CaseState, newer.LatestAssessmentID)
+	}
+}
+
+func keysOf(byRevision map[string]ghtriage.ReviewVerdict) []string {
+	out := make([]string, 0, len(byRevision))
+	for revision := range byRevision {
+		out = append(out, revision)
+	}
+	return out
 }
 
 func TestReviewerWritesNoVerdictAndNoIndexRowWhenTheModelFails(t *testing.T) {
@@ -379,6 +644,59 @@ func TestReviewerReviewsTheOtherCasesAfterOneFails(t *testing.T) {
 	}
 	if got := rf.verdictCount(t); got != 1 {
 		t.Fatalf("verdict documents = %d, want one, for the case that could be read", got)
+	}
+}
+
+// A decision may cite any snapshot it likes: the field is a string, and nothing
+// rewrites it after the fact. So the reviewer has to derive from the case's own
+// observation, not from the citation, and a citation pointing at another issue's
+// snapshot is itself the violation - because every check that read the citation
+// would be comparing the decision with whatever the record points at and agreeing
+// with it by construction, and the model would be asked the other issue's
+// question.
+func TestReviewerReportsADecisionThatCitesAnotherIssuesSnapshot(t *testing.T) {
+	const other = "2026-09-28T11:00:00Z"
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true, true}
+	// A second issue of the same mission, so the store holds a real snapshot
+	// that is not this case's. Its own triage is left unfinished, so it
+	// contributes nothing but the evidence this case wrongly cites.
+	rf.driver.registerSnapshotRevision(t, "o/r#43", other, ghtriage.Snapshot{
+		Title: "Crash on export", Body: "it crashes on export", Triage: "bug", Labels: []string{"bug"},
+	})
+	foreign := rf.driver.snapshotEvidenceID(t, other)
+	rf.rewriteSnapshotCitation(t, foreign)
+
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	verdict := rf.lastVerdict(t)
+	// The question was asked about this case's issue, which is the whole point
+	// of deriving from the case's own observation: the two snapshots have
+	// different titles, so the one the model was handed names the other issue.
+	if len(rf.model.ReviewInputs) != 1 {
+		t.Fatalf("model calls = %d, want one", len(rf.model.ReviewInputs))
+	}
+	if own := rf.driver.casesByRev[fixtureRevision].ObservationEvidenceID; own == foreign {
+		t.Fatal("the fixture pointed the decision at its own observation")
+	}
+	if got := rf.model.ReviewInputs[0].Title; got != "Crash on save" {
+		t.Fatalf("question title = %q, want this case's own title", got)
+	}
+	// The citation is what disagrees, and it is the classification check that
+	// says so: nothing else in the block reads it.
+	if verdict.Structural.ClassificationAgreesWithIntake {
+		t.Fatalf("a decision citing another issue's snapshot was reported as agreeing with intake: %+v",
+			verdict.Structural)
+	}
+	// Every other field still re-derives against this case's snapshot, so the
+	// verdict is not simply all-false: it says which part of the record is wrong.
+	if verdict.Structural.RuleMatchesRecomputation != "match" {
+		t.Fatalf("recomputation = %q, want match: the decision agrees with this case's snapshot on the rule",
+			verdict.Structural.RuleMatchesRecomputation)
+	}
+	if verdict.Issue != 42 {
+		t.Fatalf("verdict issue = %d, want 42: the decision is still reviewed under its own case", verdict.Issue)
 	}
 }
 
@@ -582,6 +900,13 @@ func TestReviewerSkipsACaseWhoseTriageFailed(t *testing.T) {
 // reader finds. The loser has already written its document by then, so the only
 // thing the bool it gets back buys is that it does not report or count a verdict
 // no reader can reach.
+//
+// Two real goroutines are not run here: the reviewer prints to the process's
+// stderr and writes to one store, so a concurrent test would be testing the
+// driver's serialisation at least as much as the reviewer's handling, and the
+// property under test is the store's answers, which the index test proves
+// directly. What this pins is that a losing link is counted as a lost race and
+// not folded into either of the other two skip reasons.
 func TestReviewerSaysNothingWhenTheIndexKeptTheOtherTicksVerdict(t *testing.T) {
 	rf := newReviewerFixture(t)
 	rf.model.ScriptedReview = []bool{true}
@@ -594,6 +919,9 @@ func TestReviewerSaysNothingWhenTheIndexKeptTheOtherTicksVerdict(t *testing.T) {
 	}
 	if result.Reviewed != 0 || result.Skipped != 1 || result.Failed != 0 {
 		t.Fatalf("result = %+v, want the case skipped: this tick stored no verdict", result)
+	}
+	if result.LostRace != 1 || result.AlreadyReviewed != 0 || result.NoDecision != 0 {
+		t.Fatalf("result = %+v, want the skip attributed to the lost race alone", result)
 	}
 	if printed := readStderr(); strings.TrimSpace(printed) != "" {
 		t.Fatalf("stderr = %q, want nothing: the verdict this tick did not store was reported", printed)
