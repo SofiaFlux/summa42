@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -162,6 +163,59 @@ func (s *Store) FindByContentHash(ctx context.Context, contentHash, kind string)
 		return EvidenceObject{}, false, err
 	}
 	return object, true, nil
+}
+
+// FindLatestByKind returns the most recently created evidence object of a kind
+// whose bytes decode into target, together with those bytes. The evidence store
+// has no case or revision column, so a caller that must find a document by a
+// business key decodes the most recent candidates and checks the key itself.
+// The bound keeps a tick's cost predictable on a long-lived store.
+func (s *Store) FindLatestByKind(ctx context.Context, kind string, target any, limit int) (EvidenceObject, []byte, bool, error) {
+	if s == nil || s.state == nil {
+		return EvidenceObject{}, nil, false, errors.New("evidence store is not configured")
+	}
+	if strings.TrimSpace(kind) == "" {
+		return EvidenceObject{}, nil, false, errors.New("evidence kind is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.state.DB().QueryContext(ctx,
+		`SELECT evidence_id, content_hash, media_type, kind, size_bytes, created_at
+		 FROM evidence_objects WHERE kind = ?
+		 ORDER BY created_at DESC, evidence_id DESC LIMIT ?`, kind, limit)
+	if err != nil {
+		return EvidenceObject{}, nil, false, fmt.Errorf("list evidence of kind %s: %w", kind, err)
+	}
+	defer rows.Close()
+	candidates := make([]EvidenceObject, 0)
+	for rows.Next() {
+		var object EvidenceObject
+		var createdAt string
+		if err := rows.Scan(&object.ID, &object.ContentHash, &object.MediaType,
+			&object.Kind, &object.SizeBytes, &createdAt); err != nil {
+			return EvidenceObject{}, nil, false, fmt.Errorf("scan evidence of kind %s: %w", kind, err)
+		}
+		object.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return EvidenceObject{}, nil, false, fmt.Errorf("parse evidence created_at %q: %w", createdAt, err)
+		}
+		candidates = append(candidates, object)
+	}
+	if err := rows.Err(); err != nil {
+		return EvidenceObject{}, nil, false, err
+	}
+	for _, candidate := range candidates {
+		_, raw, err := s.Get(ctx, candidate.ID)
+		if err != nil {
+			return EvidenceObject{}, nil, false, err
+		}
+		if err := json.Unmarshal(raw, target); err != nil {
+			continue
+		}
+		return candidate, raw, true, nil
+	}
+	return EvidenceObject{}, nil, false, nil
 }
 
 func (s *Store) Get(ctx context.Context, id domain.ID) (EvidenceObject, []byte, error) {

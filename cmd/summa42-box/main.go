@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -463,6 +464,13 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "run-driver" {
 		if err := runDriver(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "run-gh-triage-driver" {
+		if err := runGHTriageDriver(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -1189,6 +1197,86 @@ func runDriver(ctx context.Context, args []string) error {
 		return fmt.Errorf("construct ADO workflow driver: %w", err)
 	}
 	return driver.Run(ctx, pollInterval)
+}
+
+// parseGHTriageDriverFlags reads the only identity the triage driver needs. The
+// driver takes no model configuration: it never calls the model, it only applies
+// a decision the worker already produced.
+func parseGHTriageDriverFlags(args []string) (domain.ID, error) {
+	var mission string
+	flags := flag.NewFlagSet("run-gh-triage-driver", flag.ContinueOnError)
+	flags.StringVar(&mission, "mission", "", "mission ID whose GitHub cases are advanced")
+	if err := flags.Parse(args); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(mission) == "" {
+		return "", errors.New("run-gh-triage-driver requires --mission")
+	}
+	return domain.ID(strings.TrimSpace(mission)), nil
+}
+
+// openGHTriageDriverBox opens the runtime with every component the driver never
+// reaches removed. The driver applies a recorded decision: it calls no executor,
+// no capability provider, and no operation provider, so none may exist in this
+// composition. The writable services it does need - state, execution,
+// verification, evidence and run manifests - stay.
+func openGHTriageDriverBox(ctx context.Context, cfg summa42runtime.Config) (*summa42runtime.Box, error) {
+	if ctx == nil {
+		return nil, errors.New("Box context is required")
+	}
+	cfg.FieldFeedback = localconfig.FieldFeedbackConfig{Enabled: false, Mode: localconfig.FeedbackModeLocalOnly}
+	cfg.FeedbackSink = nil
+	cfg.OperationProviders = nil
+	cfg.CapabilityProviders = nil
+	cfg.Executors = nil
+	return summa42runtime.Open(ctx, cfg)
+}
+
+// runGHTriageDriver advances every GitHub case of the mission exactly once and
+// prints the result as JSON on stdout. A per-object failure is reported inside
+// that JSON rather than on stderr, so a caller sees the partial work the tick
+// did complete; only a tick that could not start is an error.
+func runGHTriageDriver(ctx context.Context, args []string) error {
+	if ctx == nil {
+		return errors.New("Box context is required")
+	}
+	missionID, err := parseGHTriageDriverFlags(args)
+	if err != nil {
+		return err
+	}
+	home, err := localconfig.ResolveHome("")
+	if err != nil {
+		return err
+	}
+	cfg, err := localconfig.Load(home)
+	if err != nil {
+		return fmt.Errorf("load initialized Collective: %w", err)
+	}
+	material, err := loadStartupMaterial(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	box, err := openGHTriageDriverBox(ctx, summa42runtime.Config{
+		StatePath:        cfg.DatabasePath,
+		EvidencePath:     cfg.EvidencePath,
+		CollectiveID:     cfg.CollectiveID,
+		OwnerPrincipalID: cfg.OwnerPrincipalID,
+		PolicyEngine:     material.policyEngine,
+	})
+	if err != nil {
+		return fmt.Errorf("open Box runtime: %w", err)
+	}
+	defer box.Close()
+	driver := ghtriage.NewDriver(workflowcase.New(box.Store, box.Clock, box.Purpose),
+		box.Execution, box.Verification, box.RunManifests, box.Evidence, box.Clock)
+	result, err := driver.Tick(ctx, missionID)
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		return fmt.Errorf("encode triage driver result: %w", err)
+	}
+	return nil
 }
 
 const (
