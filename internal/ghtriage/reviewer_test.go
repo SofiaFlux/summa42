@@ -192,6 +192,72 @@ func TestReviewerWritesNoVerdictAndNoIndexRowWhenTheModelFails(t *testing.T) {
 	}
 }
 
+// The consequence of writing no index row, asserted rather than inferred: a
+// reviewer that had recorded the failure as done would skip the case for ever,
+// and the retry is the whole reason the model call is not allowed to leave a
+// verdict behind. The second call is the one that was suppressed by the first
+// tick's silence, so a count of two says the case came back.
+func TestReviewerRetriesTheCaseAFailedModelCallLeftUnreviewed(t *testing.T) {
+	rf := newReviewerFixture(t)
+	rf.model.Err = errors.New("model unavailable")
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	rf.model.Err = nil
+	rf.model.ScriptedReview = []bool{true}
+
+	result, err := rf.review.Tick(context.Background(), rf.driver.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reviewed != 1 || result.Skipped != 0 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want the case reviewed on the retry", result)
+	}
+	if got := len(rf.model.ReviewInputs); got != 2 {
+		t.Fatalf("model calls = %d, want the failed one and the retry", got)
+	}
+	if got := rf.verdictCount(t); got != 1 {
+		t.Fatalf("verdict documents = %d, want 1: only the retry wrote one", got)
+	}
+	if got := rf.reviewLinkCount(t); got != 1 {
+		t.Fatalf("review index rows = %d, want 1: only the retry linked one", got)
+	}
+}
+
+// One case that cannot be read is not a reason to stop reviewing the others. The
+// loop reports the failure and carries on, so a mission whose snapshot for one
+// issue went missing still gets a verdict for every other issue rather than a
+// single failure that hides them.
+func TestReviewerReviewsTheOtherCasesAfterOneFails(t *testing.T) {
+	rf := newReviewerFixture(t)
+	broken := "2026-09-29T10:00:00Z"
+	rf.driver.registerIssueRevision(t, "o/r#43", broken)
+	rf.driver.completeTaskWithDecision(t, broken, readyToPlanDecision(43, broken))
+	if _, err := rf.driver.driver.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	// The snapshot of one revision is what its decision is re-derived from, so
+	// taking it away is a case the reviewer cannot read rather than one it judges
+	// wrong.
+	if _, err := rf.driver.store.DB().ExecContext(rf.driver.ctx,
+		`DELETE FROM evidence_objects WHERE evidence_id = ?`,
+		rf.driver.snapshotEvidenceID(t, broken)); err != nil {
+		t.Fatal(err)
+	}
+	rf.model.ScriptedReview = []bool{true, true}
+
+	result, err := rf.review.Tick(context.Background(), rf.driver.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reviewed != 1 || result.Failed != 1 || result.Skipped != 0 {
+		t.Fatalf("result = %+v, want one review and one failure over two cases", result)
+	}
+	if got := rf.verdictCount(t); got != 1 {
+		t.Fatalf("verdict documents = %d, want one, for the case that could be read", got)
+	}
+}
+
 func TestReviewerReportsAnInjectedStage3Mismatch(t *testing.T) {
 	rf := newReviewerFixture(t)
 	rf.model.ScriptedReview = []bool{true}
@@ -227,6 +293,37 @@ func TestReviewerReportsNotApplicableForAFutureRulesVersion(t *testing.T) {
 	}
 	if got := rf.lastVerdict(t).Structural.RuleMatchesRecomputation; got != "not-applicable" {
 		t.Fatalf("recomputation = %q, want not-applicable", got)
+	}
+}
+
+// The same question asked of the other half of the pipeline. A stage 1 the newer
+// triage rules resolved is the one record the reviewer would otherwise re-derive
+// with rules it does not have, and it is the branch the disposition-rules test
+// above cannot reach.
+func TestReviewerReportsNotApplicableForAFutureTriageRulesVersion(t *testing.T) {
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+	rf.rewriteDecision(t, func(d *ghtriage.Decision) {
+		d.TriageRulesVersion = "ghtriage.rules.v99"
+		d.Stage1.Disposition = ghtriage.DispositionNotActionable
+		d.Stage1.Rule = "a-future-rule"
+		d.Stage2 = nil
+		d.Stage3 = nil
+	})
+
+	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	verdict := rf.lastVerdict(t)
+	if got := verdict.Structural.RuleMatchesRecomputation; got != "not-applicable" {
+		t.Fatalf("recomputation = %q, want not-applicable", got)
+	}
+	// The snapshot carries no duplicate label, so a reviewer implementing the
+	// current rules would derive no disposition at all here. Reporting
+	// not-applicable rather than a mismatch is what keeps the record honest
+	// about why it did not check.
+	if rf.model.ReviewCallCount() != 1 {
+		t.Fatalf("model calls = %d, want only the reviewer's own question", rf.model.ReviewCallCount())
 	}
 }
 
