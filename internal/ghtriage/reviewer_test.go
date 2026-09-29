@@ -961,6 +961,11 @@ func TestReviewerReportsNotApplicableForAFutureRulesVersion(t *testing.T) {
 // triage rules resolved is the one record the reviewer would otherwise re-derive
 // with rules it does not have, and it is the branch the disposition-rules test
 // above cannot reach.
+//
+// The future rule resolves this issue as not-actionable, and not-actionable
+// closes its case, so the driver is given a tick to close it: a case the decision
+// has not been reconciled against is one the reviewer declines (see reconciled),
+// and what this test is about is the rules version, not the state.
 func TestReviewerReportsNotApplicableForAFutureTriageRulesVersion(t *testing.T) {
 	rf := newReviewerFixture(t)
 	rf.model.ScriptedReview = []bool{true}
@@ -971,6 +976,12 @@ func TestReviewerReportsNotApplicableForAFutureTriageRulesVersion(t *testing.T) 
 		d.Stage2 = nil
 		d.Stage3 = nil
 	})
+	if _, err := rf.driver.driver.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := rf.driver.caseState(t, fixtureRevision); got != string(workflowcase.Blocked) {
+		t.Fatalf("case state = %q, want BLOCKED: the driver closed the case as the record now says", got)
+	}
 
 	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
@@ -1179,6 +1190,12 @@ func TestReviewerReportsAClassificationThatDisagreesWithIntake(t *testing.T) {
 // the schema says a stage 1 decision carries neither, and the model must not have
 // been consulted at all. Neither field is reached by the tests above, so both are
 // pinned here against a decision that is wrong in both ways at once.
+//
+// The fixture's decision says duplicate, and a duplicate closes its case, so the
+// driver is given a tick to close it: a case the decision has not been reconciled
+// against is one the reviewer declines (see reconciled), and what this test is
+// about is a decision that disagrees with itself, not a case caught between two
+// steps. The state check is not the subject here and is not asserted.
 func TestReviewerReportsAStage1DecisionThatStillCarriesStage2(t *testing.T) {
 	rf := newReviewerFixture(t)
 	rf.model.ScriptedReview = []bool{true}
@@ -1186,6 +1203,12 @@ func TestReviewerReportsAStage1DecisionThatStillCarriesStage2(t *testing.T) {
 		d.Stage1.Disposition = ghtriage.DispositionDuplicate
 		d.Stage1.Rule = "explicit-duplicate-label"
 	})
+	if _, err := rf.driver.driver.Tick(context.Background(), rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := rf.driver.caseState(t, fixtureRevision); got != string(workflowcase.Blocked) {
+		t.Fatalf("case state = %q, want BLOCKED: the driver closed the case as the record now says", got)
+	}
 
 	if _, err := rf.review.Tick(context.Background(), rf.driver.missionID); err != nil {
 		t.Fatal(err)
@@ -1253,6 +1276,177 @@ func TestReviewerPrintsTheVerdictItLinked(t *testing.T) {
 		if !strings.Contains(printed, want) {
 			t.Fatalf("stderr %q does not mention %q", printed, want)
 		}
+	}
+}
+
+// The reviewer is designed to read a decision before the case has moved:
+// findDecision falls back to the driver's accepted index precisely to cover the
+// windows between the worker completing a triage and the driver closing the case
+// on it. In both of those windows the case is still ACTIVE with no assessment,
+// which is the state stateMatches calls a violation for every disposition that
+// closes a case - so a reviewer running in that window linked a durable verdict
+// reporting state_matches_disposition: false against a decision that was correct.
+// The verdict is the reviewer's only product and exists to be scored against
+// human labels, so a false violation there is a mislabel in a corpus meant to be
+// ground truth.
+//
+// Both windows are pinned here, on the disposition that closes a case, and both
+// assert the same three things the false violation needed: no verdict, no index
+// row and no question asked. The follow-up is asserted in each, because a case
+// that is never reviewed would be the other half of the same wrong answer.
+
+// crashBeforeAccept is the window before AcceptTask: the driver's accepted index
+// is written, the task is still AWAITING_VERIFICATION and the case is ACTIVE
+// with nothing assessed.
+func crashBeforeAccept(t *testing.T) *driverFixture {
+	t.Helper()
+	f := newDriverFixture(t)
+	f.completeTaskWithDecision(t, fixtureRevision, notActionableDecision(42, fixtureRevision))
+	f.repointAccepted(t, fixtureRevision, f.decisionEvidenceIDFor(t, fixtureRevision))
+	return f
+}
+
+func TestReviewerDoesNotReviewACaseTheDriverHasDecidedButNotAccepted(t *testing.T) {
+	f := crashBeforeAccept(t)
+	// The precondition, stated rather than assumed: the window is reachable only
+	// because the decision is found through the accepted index, because the case
+	// has not been assessed, and because the disposition closes a case.
+	if got := f.taskState(t, fixtureRevision); got != string(domain.TaskAwaitingVerification) {
+		t.Fatalf("task state = %q, want AWAITING_VERIFICATION: the accept has not happened", got)
+	}
+	if got := f.caseState(t, fixtureRevision); got != string(workflowcase.Active) {
+		t.Fatalf("case state = %q, want ACTIVE", got)
+	}
+	if got := f.latestAssessmentReason(t, fixtureRevision); got != "" {
+		t.Fatalf("assessment reason = %q, want none", got)
+	}
+	rf := reviewWith(t, f)
+
+	result, err := rf.review.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Unreconciled != 1 || result.Reviewed != 0 || result.NoDecision != 0 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want the case skipped as unreconciled and nothing else", result)
+	}
+	if result.Skipped != 1 {
+		t.Fatalf("result = %+v, want the skip counted", result)
+	}
+	if got := rf.verdictCount(t); got != 0 {
+		t.Fatalf("verdict documents = %d, want 0: there is no case state to compare the disposition against", got)
+	}
+	if got := rf.reviewLinkCount(t); got != 0 {
+		t.Fatalf("review index rows = %d, want 0, so the case is reviewed once it is closed", got)
+	}
+	if got := len(rf.model.ReviewInputs); got != 0 {
+		t.Fatalf("model calls = %d, want none", got)
+	}
+
+	// Once the driver has moved the case, the next tick reviews it, and the state
+	// it was in all along is reported as what it is.
+	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.caseState(t, fixtureRevision); got != string(workflowcase.Blocked) {
+		t.Fatalf("case state after the driver tick = %q, want BLOCKED", got)
+	}
+	after, err := rf.review.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Reviewed != 1 || after.Skipped != 0 {
+		t.Fatalf("result = %+v, want the case reviewed once the driver closed it", after)
+	}
+	if !rf.lastVerdict(t).Structural.StateMatchesDisposition {
+		t.Fatalf("a correctly closed case was reported as %+v", rf.lastVerdict(t).Structural)
+	}
+}
+
+func TestReviewerDoesNotReviewACaseTheDriverHasAcceptedButNotClosed(t *testing.T) {
+	f := newDriverFixture(t)
+	// The window after AcceptTask and before Assess: the task is accepted, the
+	// index it was replayed from is written, and the case is still ACTIVE.
+	f.simulateRestartAfterAcceptance(t, fixtureIssue, fixtureRevision)
+	if got := f.taskState(t, fixtureRevision); got != string(domain.TaskSucceeded) {
+		t.Fatalf("task state = %q, want SUCCEEDED: the accept has happened", got)
+	}
+	if got := f.caseState(t, fixtureRevision); got != string(workflowcase.Active) {
+		t.Fatalf("case state = %q, want ACTIVE", got)
+	}
+	if got := f.latestAssessmentReason(t, fixtureRevision); got != "" {
+		t.Fatalf("assessment reason = %q, want none: the assess has not happened", got)
+	}
+	rf := reviewWith(t, f)
+
+	result, err := rf.review.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Unreconciled != 1 || result.Reviewed != 0 || result.NoDecision != 0 || result.Failed != 0 {
+		t.Fatalf("result = %+v, want the case skipped as unreconciled and nothing else", result)
+	}
+	if got := rf.verdictCount(t); got != 0 {
+		t.Fatalf("verdict documents = %d, want 0: there is no case state to compare the disposition against", got)
+	}
+	if got := rf.reviewLinkCount(t); got != 0 {
+		t.Fatalf("review index rows = %d, want 0, so the case is reviewed once it is closed", got)
+	}
+	if got := len(rf.model.ReviewInputs); got != 0 {
+		t.Fatalf("model calls = %d, want none", got)
+	}
+
+	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.caseState(t, fixtureRevision); got != string(workflowcase.Blocked) {
+		t.Fatalf("case state after the driver tick = %q, want BLOCKED", got)
+	}
+	after, err := rf.review.Tick(context.Background(), f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Reviewed != 1 || after.Skipped != 0 {
+		t.Fatalf("result = %+v, want the case reviewed once the driver closed it", after)
+	}
+	if !rf.lastVerdict(t).Structural.StateMatchesDisposition {
+		t.Fatalf("a correctly closed case was reported as %+v", rf.lastVerdict(t).Structural)
+	}
+}
+
+// A ready-to-plan case is ACTIVE with nothing assessed too, and that is its
+// settled state rather than a window: the disposition closes nothing, so the
+// case waits for the planner. Declining that one as unreconciled would leave a
+// triaged issue unreviewed for as long as the planner takes, and every
+// ready-to-plan case on the branch would stop being reviewed at all.
+func TestReviewerStillReviewsAnActiveCaseWhoseDecisionClosesNothing(t *testing.T) {
+	rf := newReviewerFixture(t)
+	rf.model.ScriptedReview = []bool{true}
+	if got := rf.driver.caseState(t, fixtureRevision); got != string(workflowcase.Active) {
+		t.Fatalf("case state = %q, want ACTIVE", got)
+	}
+	if got := rf.driver.latestAssessmentReason(t, fixtureRevision); got != "" {
+		t.Fatalf("assessment reason = %q, want none: ready-to-plan closes nothing", got)
+	}
+
+	result, err := rf.review.Tick(context.Background(), rf.driver.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reviewed != 1 || result.Unreconciled != 0 || result.Skipped != 0 {
+		t.Fatalf("result = %+v, want the case reviewed: its state is settled, not a window", result)
+	}
+}
+
+// reviewWith builds the reviewer over a driver fixture the way the review tests
+// do, for a fixture that had to be shaped by hand.
+func reviewWith(t *testing.T, f *driverFixture) *reviewerFixture {
+	t.Helper()
+	model := fakemodel.New()
+	model.ScriptedReview = []bool{true}
+	return &reviewerFixture{
+		driver: f, model: model,
+		review: ghtriage.NewReviewer(f.cases, f.evidenceStore,
+			ghtriage.NewReviewIndex(f.store, f.clock), model, f.clock),
 	}
 }
 

@@ -46,17 +46,19 @@ type ReviewVerdict struct {
 }
 
 // ReviewResult is what one tick did to one mission's cases. Skipped is the
-// total of the three reasons below it, because all three mean the same thing to
+// total of the reasons below it, because all of them mean the same thing to
 // the caller - this tick reviewed nothing about this case - and only an operator
 // reading the numbers needs to tell them apart: a mission in steady state
 // reports nothing but AlreadyReviewed, a mission whose cases never produced a
-// decision reports them all under NoDecision, and a LostRace is a tick that lost
-// a race it had already paid for.
+// decision reports them all under NoDecision, a case the driver has not closed
+// yet reports under Unreconciled, and a LostRace is a tick that lost a race it
+// had already paid for.
 type ReviewResult struct {
 	Reviewed        int
 	Skipped         int
 	AlreadyReviewed int
 	NoDecision      int
+	Unreconciled    int
 	LostRace        int
 	Failed          int
 }
@@ -107,6 +109,9 @@ func (r *Reviewer) Tick(ctx context.Context, missionID domain.ID) (ReviewResult,
 		case noDecision:
 			result.Skipped++
 			result.NoDecision++
+		case unreconciled:
+			result.Skipped++
+			result.Unreconciled++
 		case lostRace:
 			result.Skipped++
 			result.LostRace++
@@ -115,20 +120,22 @@ func (r *Reviewer) Tick(ctx context.Context, missionID domain.ID) (ReviewResult,
 	return result, nil
 }
 
-// outcome is what a case contributed to the tick. All three non-review outcomes
+// outcome is what a case contributed to the tick. All four non-review outcomes
 // are counted as Skipped, because none of them is work this tick did, and
-// separated because they are three different things an operator looking at the
+// separated because they are four different things an operator looking at the
 // counters has to be able to tell: a case whose decision is already reviewed for
-// this state, a case that never produced a decision of its own, and a case whose
-// verdict another tick linked first. An error return carries no outcome at all -
-// the caller counts a failure instead - so the error paths below return a fixed
-// placeholder rather than a claim about a case the tick never judged.
+// this state, a case that never produced a decision of its own, a case the
+// driver has decided but not yet closed, and a case whose verdict another tick
+// linked first. An error return carries no outcome at all - the caller counts a
+// failure instead - so the error paths below return a fixed placeholder rather
+// than a claim about a case the tick never judged.
 type outcome int
 
 const (
 	reviewed outcome = iota
 	alreadyReviewed
 	noDecision
+	unreconciled
 	lostRace
 )
 
@@ -149,6 +156,9 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (outcome
 		// already reported it, so there is no separate triage-failed case to
 		// make: a case either decided something of its own or it is skipped.
 		return noDecision, nil
+	}
+	if !reconciled(c, records, *decision) {
+		return unreconciled, nil
 	}
 	linked, err := r.index.ReviewLinked(ctx, decisionID, ReviewerVersion, fingerprint)
 	if err != nil {
@@ -280,6 +290,38 @@ func (r *Reviewer) recompute(decision Decision, snap Snapshot) string {
 		return "match"
 	}
 	return "mismatch"
+}
+
+// reconciled reports whether the case has a state for the decision's disposition
+// to be compared against. Every disposition except ready-to-plan is closed by an
+// assessment, so an ACTIVE case carrying one of those decisions and no
+// assessment is a case the driver has decided but not yet closed: the two
+// windows between AcceptTask and Assess, either side of the accept.
+//
+// Such a case is not reviewed, and that is the deliberate choice over accepting
+// the intermediate state in stateMatches. Accepting it would publish
+// state_matches_disposition: true for a comparison the reviewer had not made -
+// the decision has been reconciled with no case state at all - and a verdict is
+// the reviewer's only product, written to be scored later against human labels.
+// A label asserting a check that did not run is the same class of error as a
+// false violation, in the corpus meant to be ground truth, and declining says
+// nothing rather than saying something untrue. The next tick reviews the case
+// once the driver has moved it, because the fingerprint covers the case state
+// and its latest assessment.
+//
+// The check runs before the index is consulted. A verdict is only ever written
+// for a case that passed it, and the decision is content-addressed while the case
+// state and the assessment are both in the fingerprint, so a row can only exist
+// for a case that passes it again - and declining first means a case in the
+// window costs no model call and no evidence read.
+func reconciled(c workflowcase.Case, records []workflowcase.AssessmentRecord, decision Decision) bool {
+	if decision.FinalDisposition() == DispositionReadyToPlan {
+		// ready-to-plan closes nothing: the case is left ACTIVE for the planner,
+		// so an unassessed ACTIVE case is this disposition's settled state and
+		// not a window between two steps.
+		return true
+	}
+	return len(records) > 0 || c.State != workflowcase.Active
 }
 
 // stateMatches treats a superseded case as an allowed terminal state, so a
