@@ -458,6 +458,12 @@ func TestDriverBlocksAnExhaustedTaskWithFailureEvidence(t *testing.T) {
 	if result.Blocked != 1 {
 		t.Fatalf("result = %+v, want one blocked case", result)
 	}
+	// A blocked case is an outcome the tick performed, not something that
+	// failed: Failures is what the command turns into a non-zero exit, and a
+	// mission with one exhausted triage task is a mission that worked.
+	if len(result.Failures) != 0 {
+		t.Fatalf("failures = %v, want none", result.Failures)
+	}
 	if got := f.caseState(t, fixtureRevision); got != "BLOCKED" {
 		t.Fatalf("case state = %q, want BLOCKED", got)
 	}
