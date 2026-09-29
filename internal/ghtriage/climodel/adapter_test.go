@@ -117,6 +117,24 @@ func TestReviewReturnsOnlyABoolean(t *testing.T) {
 	}
 }
 
+func TestPlanUsesStrictPlanOutput(t *testing.T) {
+	adapter, err := New(Config{Binary: writeScript(t, `{"summary":"Fix the crash","steps":[{"objective":"Add a regression test","done_when":"It fails before the fix"}]}`), Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := adapter.Plan(context.Background(), ghtriage.PlanInput{Schema: ghtriage.PlanSchema, Question: ghtriage.PlanQuestion})
+	if err != nil || len(plan.Steps) != 1 {
+		t.Fatalf("plan = %+v, %v", plan, err)
+	}
+	bad, err := New(Config{Binary: writeScript(t, `{"summary":"Fix the crash","steps":[],"extra":true}`), Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bad.Plan(context.Background(), ghtriage.PlanInput{}); err == nil {
+		t.Fatal("accepted malformed plan output")
+	}
+}
+
 // The model prints a fully conforming response, writes to stderr and *then*
 // exits non-zero, so the exit status is the only thing that can produce an
 // error. A script that failed silently instead would not pin this: an empty

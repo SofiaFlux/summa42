@@ -1302,6 +1302,23 @@ func TestDriverRecoversEveryCaseWhoseAcceptedIndexIsNotTheNewest(t *testing.T) {
 	}
 }
 
+func TestDriverBackfillsCaseScopedLinkForLegacyAcceptedIndex(t *testing.T) {
+	f := newDriverFixture(t)
+	f.simulateRestartAfterAcceptance(t, fixtureIssue, fixtureRevision)
+	c := f.casesByRev[fixtureRevision]
+	if _, _, found, err := f.evidenceStore.FindBySubject(f.ctx, ghtriage.KindAccepted, string(c.ID)); err != nil || found {
+		t.Fatalf("legacy index unexpectedly linked: found=%v err=%v", found, err)
+	}
+	result, err := f.driver.Tick(f.ctx, f.missionID)
+	if err != nil || len(result.Failures) != 0 {
+		t.Fatalf("legacy recovery: result=%+v err=%v", result, err)
+	}
+	_, raw, found, err := f.evidenceStore.FindBySubject(f.ctx, ghtriage.KindAccepted, string(c.ID))
+	if err != nil || !found || !strings.Contains(string(raw), string(c.ID)) {
+		t.Fatalf("case-scoped link after recovery: found=%v err=%v raw=%q", found, err, raw)
+	}
+}
+
 // The accepted index is per case and the store has no case column, so finding
 // one is a walk over the records of its kind. The ceiling that walk used to
 // carry bounded nothing real: the kind is never pruned, and every acceptance

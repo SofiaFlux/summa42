@@ -484,6 +484,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "run-gh-plan" {
+		if err := runGHPlan(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "run-final-verifier" {
 		if err := runFinalVerifier(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -1417,6 +1424,64 @@ func parseGHTriageReviewFlags(args []string) (domain.ID, climodel.Config, error)
 // them. It is not the worker's: the model is handed to the reviewer directly
 // rather than registered as an executor, so a missing model is this command's
 // error and not a box that starts without a triage kind.
+func runGHPlan(ctx context.Context, args []string) error {
+	if ctx == nil {
+		return errors.New("Box context is required")
+	}
+	var mission string
+	flags := flag.NewFlagSet("run-gh-plan", flag.ContinueOnError)
+	flags.StringVar(&mission, "mission", "", "mission ID whose ready GitHub issues are planned")
+	registerTriageModelFlags(flags, "model binary writing an issue plan")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(mission) == "" || flags.NArg() != 0 {
+		return errors.New("run-gh-plan requires --mission and no positional arguments")
+	}
+	modelConfig, err := triageModelConfig(flags)
+	if err != nil {
+		return err
+	}
+	adapter, ok := triageModelAdapter(modelConfig, os.Stderr)
+	if !ok {
+		return fmt.Errorf("run-gh-plan needs a model: --model-binary %q is not usable", modelConfig.Binary)
+	}
+	home, err := localconfig.ResolveHome("")
+	if err != nil {
+		return err
+	}
+	cfg, err := localconfig.Load(home)
+	if err != nil {
+		return fmt.Errorf("load initialized Collective: %w", err)
+	}
+	material, err := loadStartupMaterial(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	box, err := openGHTriageDriverBox(ctx, summa42runtime.Config{
+		StatePath: cfg.DatabasePath, EvidencePath: cfg.EvidencePath,
+		CollectiveID: cfg.CollectiveID, OwnerPrincipalID: cfg.OwnerPrincipalID,
+		PolicyEngine: material.policyEngine,
+	})
+	if err != nil {
+		return fmt.Errorf("open Box runtime: %w", err)
+	}
+	defer box.Close()
+	planner := ghtriage.NewPlanner(workflowcase.New(box.Store, box.Clock, box.Purpose),
+		box.Execution, box.Verification, box.Evidence, adapter)
+	result, err := planner.Tick(ctx, domain.ID(strings.TrimSpace(mission)))
+	if err != nil {
+		return err
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		return fmt.Errorf("encode planning result: %w", err)
+	}
+	if len(result.Failures) > 0 {
+		return fmt.Errorf("planning failed for %d case(s)", len(result.Failures))
+	}
+	return nil
+}
+
 func runGHTriageReview(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")

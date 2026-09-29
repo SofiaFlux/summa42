@@ -12,6 +12,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/ghissue"
+	"github.com/SofiaFlux/summa42/internal/workflow"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
 
@@ -200,7 +201,7 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (outcome
 		Revision:              decision.Revision,
 		CaseState:             string(c.State),
 		LatestAssessmentID:    latest,
-		Structural:            r.structural(ctx, c, records, latest, *decision, snap),
+		Structural:            r.structural(ctx, c, records, latest, *decision, decisionID, snap),
 		Plausible:             plausible,
 	}
 	raw, err := json.Marshal(verdict)
@@ -254,12 +255,12 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (outcome
 // resolved the issue and carries stage 2 anyway, a case state that does not
 // match the disposition, a schema that does not validate. The plausibility
 // question beside it is the one check a re-derivation cannot be.
-func (r *Reviewer) structural(ctx context.Context, c workflowcase.Case, records []workflowcase.AssessmentRecord, latest *string, decision Decision, snap Snapshot) Structural {
+func (r *Reviewer) structural(ctx context.Context, c workflowcase.Case, records []workflowcase.AssessmentRecord, latest *string, decision Decision, decisionID domain.ID, snap Snapshot) Structural {
 	return Structural{
 		Stage2OnlyIfUnresolved:         decision.Stage1.Resolved() == (decision.Stage2 == nil),
 		SchemaConformant:               decision.Validate() == nil,
 		RuleMatchesRecomputation:       r.recompute(decision, snap),
-		StateMatchesDisposition:        r.stateMatches(c, records, latest, decision),
+		StateMatchesDisposition:        r.stateMatches(ctx, c, records, latest, decision, decisionID),
 		ClassificationAgreesWithIntake: classificationAgrees(c, decision, snap),
 	}
 }
@@ -326,14 +327,40 @@ func reconciled(c workflowcase.Case, records []workflowcase.AssessmentRecord, de
 
 // stateMatches treats a superseded case as an allowed terminal state, so a
 // correctly superseded revision is never reported as a violation.
-func (r *Reviewer) stateMatches(c workflowcase.Case, records []workflowcase.AssessmentRecord, latest *string, decision Decision) bool {
+func (r *Reviewer) stateMatches(ctx context.Context, c workflowcase.Case, records []workflowcase.AssessmentRecord, latest *string, decision Decision, decisionID domain.ID) bool {
 	reason := latestReason(records, latest)
 	if strings.HasPrefix(reason, supersededReasonHead) {
 		return c.State == workflowcase.Blocked
 	}
 	switch decision.FinalDisposition() {
 	case DispositionReadyToPlan:
-		return c.State == workflowcase.Active && reason == ""
+		if c.State != workflowcase.Active {
+			return false
+		}
+		if reason == "" {
+			return len(records) == 0
+		}
+		if reason != PlanningAssessmentReason || c.NextWork.Kind != PlanReviewWorkKind || len(records) != 1 {
+			return false
+		}
+		var request workflowcase.AssessmentRequest
+		if err := json.Unmarshal([]byte(records[0].RequestJSON), &request); err != nil ||
+			request.CaseID != c.ID || request.Assessment.Verdict != workflow.Continue ||
+			!request.RequireLatestRevision || len(request.Assessment.EvidenceIDs) != 1 {
+			return false
+		}
+		object, raw, err := r.evidence.Get(ctx, domain.ID(request.Assessment.EvidenceIDs[0]))
+		if err != nil || object.Kind != KindPlan {
+			return false
+		}
+		var plan Plan
+		if err := json.Unmarshal(raw, &plan); err != nil || plan.CaseID != c.ID ||
+			plan.DecisionEvidenceID != decisionID || plan.SnapshotEvidenceID != domain.ID(c.ObservationEvidenceID) ||
+			plan.Repository != decision.Repository || plan.Issue != decision.Issue || plan.Revision != c.RevisionID {
+			return false
+		}
+		_, err = plan.Canonical()
+		return err == nil
 	default:
 		return c.State == workflowcase.Blocked && reason == string(decision.FinalDisposition())
 	}
@@ -494,16 +521,16 @@ func (r *Reviewer) loadDecision(ctx context.Context, revision, evidenceID string
 	return &decision, domain.ID(evidenceID), true, nil
 }
 
-// findAcceptedIndex returns the driver's accepted index for a case, using the
-// bounded candidate scan because the evidence store carries no case column. The
-// walk matches the case in each candidate and passes over the rest, for the
-// reason Driver.findAccepted gives: several cases of one mission each write a
-// record of this kind, and only this case's record carries this case's identity.
-// The reviewer has no task to match on - the task is gone once the case has been
-// assessed - so the case ID is the whole of the identity it can check.
+// findAcceptedIndex uses the case-scoped subject index and links legacy records
+// after finding them. The reviewer has no task to match once the case has been
+// assessed, so the case ID is the identity it can check.
 func findAcceptedIndex(ctx context.Context, store *evidence.Store, c workflowcase.Case) ([]byte, bool, error) {
 	if store == nil {
 		return nil, false, errors.New("evidence store is not configured")
+	}
+	_, linkedRaw, linked, err := store.FindBySubject(ctx, KindAccepted, string(c.ID))
+	if err != nil {
+		return nil, false, err
 	}
 	matches := func(_ evidence.EvidenceObject, raw []byte) bool {
 		var record acceptedIndex
@@ -512,8 +539,17 @@ func findAcceptedIndex(ctx context.Context, store *evidence.Store, c workflowcas
 		}
 		return record.CaseID == c.ID
 	}
-	_, raw, found, err := store.FindByKind(ctx, KindAccepted, acceptedIndexScanLimit, matches)
+	if linked {
+		if !matches(evidence.EvidenceObject{}, linkedRaw) {
+			return nil, false, fmt.Errorf("accepted index for case %s has a different case ID", c.ID)
+		}
+		return linkedRaw, true, nil
+	}
+	object, raw, found, err := store.FindByKind(ctx, KindAccepted, acceptedIndexScanLimit, matches)
 	if err != nil || !found {
+		return nil, false, err
+	}
+	if err := store.LinkSubject(ctx, KindAccepted, string(c.ID), object.ID); err != nil {
 		return nil, false, err
 	}
 	return raw, true, nil

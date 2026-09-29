@@ -164,6 +164,63 @@ func (s *Store) FindByContentHash(ctx context.Context, contentHash, kind string)
 	return object, true, nil
 }
 
+// LinkSubject gives an immutable business key to an evidence object. The
+// subject key is indexed, so readers do not need to walk unrelated blobs.
+func (s *Store) LinkSubject(ctx context.Context, kind, subject string, id domain.ID) error {
+	if s == nil || s.state == nil {
+		return errors.New("evidence store is not configured")
+	}
+	if strings.TrimSpace(kind) == "" || strings.TrimSpace(subject) == "" || strings.TrimSpace(string(id)) == "" {
+		return errors.New("evidence kind, subject, and ID are required")
+	}
+	var actualKind string
+	if err := s.state.DB().QueryRowContext(ctx, `SELECT kind FROM evidence_objects WHERE evidence_id = ?`, id).Scan(&actualKind); err != nil {
+		return fmt.Errorf("read subject evidence: %w", err)
+	}
+	if actualKind != kind {
+		return fmt.Errorf("evidence %s has kind %q, want %q", id, actualKind, kind)
+	}
+	if _, err := s.state.DB().ExecContext(ctx,
+		`INSERT OR IGNORE INTO evidence_subjects(kind, subject_id, evidence_id) VALUES (?, ?, ?)`, kind, subject, id); err != nil {
+		return fmt.Errorf("link evidence subject: %w", err)
+	}
+	var linked domain.ID
+	if err := s.state.DB().QueryRowContext(ctx,
+		`SELECT evidence_id FROM evidence_subjects WHERE kind = ? AND subject_id = ?`, kind, subject).Scan(&linked); err != nil {
+		return fmt.Errorf("read evidence subject link: %w", err)
+	}
+	if linked != id {
+		return fmt.Errorf("evidence subject %q of kind %q already points at %s", subject, kind, linked)
+	}
+	return nil
+}
+
+// FindBySubject reads one object through its indexed business key.
+func (s *Store) FindBySubject(ctx context.Context, kind, subject string) (EvidenceObject, []byte, bool, error) {
+	if s == nil || s.state == nil {
+		return EvidenceObject{}, nil, false, errors.New("evidence store is not configured")
+	}
+	if strings.TrimSpace(kind) == "" || strings.TrimSpace(subject) == "" {
+		return EvidenceObject{}, nil, false, errors.New("evidence kind and subject are required")
+	}
+	var id domain.ID
+	if err := s.state.DB().QueryRowContext(ctx,
+		`SELECT evidence_id FROM evidence_subjects WHERE kind = ? AND subject_id = ?`, kind, subject).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return EvidenceObject{}, nil, false, nil
+		}
+		return EvidenceObject{}, nil, false, fmt.Errorf("find evidence subject: %w", err)
+	}
+	object, raw, err := s.Get(ctx, id)
+	if err != nil {
+		return EvidenceObject{}, nil, false, err
+	}
+	if object.Kind != kind {
+		return EvidenceObject{}, nil, false, fmt.Errorf("evidence subject %q points at kind %q", subject, object.Kind)
+	}
+	return object, raw, true, nil
+}
+
 // FindByKindPredicate and FindByKindOrderBy are the two halves of FindByKind's
 // statement that decide how it is served: the equality the kind index leads
 // with, and the order the index already delivers. FindByKindQuery is the

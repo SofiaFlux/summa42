@@ -14,10 +14,11 @@ import (
 )
 
 type AssessmentRequest struct {
-	CaseID, WorkID    domain.ID
-	Assessment        workflow.Assessment
-	RemainingBudget   int64
-	ProgressSignature string
+	CaseID, WorkID        domain.ID
+	Assessment            workflow.Assessment
+	RemainingBudget       int64
+	ProgressSignature     string
+	RequireLatestRevision bool `json:"RequireLatestRevision,omitempty"`
 }
 
 type AssessmentResult struct {
@@ -60,6 +61,11 @@ func (s *Service) Assess(ctx context.Context, request AssessmentRequest) (Assess
 		}
 		if current.State != Active || current.CurrentWorkID != request.WorkID {
 			return errors.New("work is not the active work for this case")
+		}
+		if request.RequireLatestRevision {
+			if err := requireLatestRevisionTx(ctx, tx, current); err != nil {
+				return err
+			}
 		}
 		if err := s.purposes.ValidatePurposeTx(ctx, tx, domain.PurposeRef{Kind: domain.PurposeMission, ID: current.MissionID}); err != nil {
 			return err

@@ -30,30 +30,12 @@ const (
 	ReasonTriageFailed   = "triage-failed"
 	supersededReasonHead = "superseded-by:"
 
-	// acceptedIndexScanLimit is the ceiling on the walk findAccepted makes over
-	// the records of KindAccepted, and it is set so that the walk covers every
-	// record of the kind rather than a working number of them.
+	// acceptedIndexScanLimit applies only to accepted records written before
+	// the case-scoped subject index existed. A successful legacy lookup links
+	// the record to its case, so subsequent reads use the indexed path.
 	//
-	// The store has no case column, so a case's own record can only be told
-	// from another case's by decoding it, and the walk has to reach the record
-	// to do that. The kind is never pruned and every acceptance writes a record
-	// carrying a fresh decision_evidence_id, so no two records are alike and the
-	// count grows by one per accepted triage for the life of the store. A
-	// ceiling below that count does not bound the walk, it decides which cases
-	// can be recovered at all: a case whose record fell outside it was skipped
-	// silently, leaving a SUCCEEDED task on an ACTIVE case that no later tick
-	// could move, reported as a healthy tick.
-	//
-	// What the ceiling now protects against is a bound the walk cannot reach:
-	// the kind index (kind, created_at, evidence_id) makes the whole walk a
-	// range scan of one kind, so what it costs is the number of accepted triage
-	// records in the store and not the size of the store. What it no longer
-	// protects against is a store whose accepted-index kind grows without
-	// bound - a pruning or an index keyed by case is what that would need, and
-	// neither exists.
-	//
-	// math.MaxInt rather than a large number, so the statement stays a ceiling
-	// on any platform's int rather than one that does not fit on a 32-bit one.
+	// Legacy records have no case key, so the fallback must walk every record
+	// of the kind: a fixed lower limit would silently lose older cases.
 	acceptedIndexScanLimit = math.MaxInt
 )
 
@@ -391,30 +373,42 @@ func (d *Driver) recordAccepted(ctx context.Context, c workflowcase.Case, eviden
 		Revision:           c.RevisionID,
 		DecisionEvidenceID: evidenceID,
 	}
+	_, linkedRaw, linked, err := d.evidence.FindBySubject(ctx, KindAccepted, string(c.ID))
+	if err != nil {
+		return err
+	}
+	if linked {
+		var existing acceptedIndex
+		if err := json.Unmarshal(linkedRaw, &existing); err != nil {
+			return fmt.Errorf("decode accepted index for case %s: %w", c.ID, err)
+		}
+		if existing != record {
+			return fmt.Errorf("accepted index for case %s conflicts with completed decision", c.ID)
+		}
+		return nil
+	}
 	raw, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
-	_, _, err = d.putOnce(ctx, raw, KindAccepted)
-	return err
+	object, _, err := d.putOnce(ctx, raw, KindAccepted)
+	if err != nil {
+		return err
+	}
+	return d.evidence.LinkSubject(ctx, KindAccepted, string(c.ID), object.ID)
 }
 
-// findAccepted locates the driver's own accepted index for a case. The evidence
-// store has no case column and FindByContentHash needs a hash that is unknown
-// before the record exists, so the lookup walks the records of the kind and
-// checks the identity in each one: several cases of one mission each write a
-// record of this kind, and only this case's record carries this case's
-// identity, so a lookup that stopped at the first candidate it could decode
-// would report "not found" for every case but one whenever another case wrote
-// its record later. The walk is therefore over every record of the kind - see
-// acceptedIndexScanLimit - because a candidate that is not this case's has to
-// be walked past, not skipped over by a ceiling. The recorded task ID is the
-// case's work ID, which is the task's idempotency key and therefore the identity
-// recordAccepted wrote it under; the task row's own ID is a different value and
-// would never match.
+// findAccepted uses the case-scoped subject index. Older stores may still have
+// unlinked accepted records; one legacy walk finds and links each such record.
+// The recorded task ID is the case's work ID and the task's idempotency key,
+// rather than the task row's ID.
 func (d *Driver) findAccepted(ctx context.Context, c workflowcase.Case, task domain.Task) ([]byte, bool, error) {
 	if d.evidence == nil {
 		return nil, false, errors.New("evidence store is not configured")
+	}
+	_, linkedRaw, linked, err := d.evidence.FindBySubject(ctx, KindAccepted, string(c.ID))
+	if err != nil {
+		return nil, false, err
 	}
 	matches := func(_ evidence.EvidenceObject, raw []byte) bool {
 		var record acceptedIndex
@@ -423,8 +417,17 @@ func (d *Driver) findAccepted(ctx context.Context, c workflowcase.Case, task dom
 		}
 		return record.CaseID == c.ID && record.TaskID == domain.ID(task.IdempotencyKey)
 	}
-	_, raw, found, err := d.evidence.FindByKind(ctx, KindAccepted, acceptedIndexScanLimit, matches)
+	if linked {
+		if !matches(evidence.EvidenceObject{}, linkedRaw) {
+			return nil, false, fmt.Errorf("accepted index for case %s does not match task %s", c.ID, task.IdempotencyKey)
+		}
+		return linkedRaw, true, nil
+	}
+	object, raw, found, err := d.evidence.FindByKind(ctx, KindAccepted, acceptedIndexScanLimit, matches)
 	if err != nil || !found {
+		return nil, false, err
+	}
+	if err := d.evidence.LinkSubject(ctx, KindAccepted, string(c.ID), object.ID); err != nil {
 		return nil, false, err
 	}
 	return raw, true, nil

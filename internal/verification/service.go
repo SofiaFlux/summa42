@@ -223,6 +223,44 @@ func (s *Service) AcceptTask(ctx context.Context, taskID domain.ID, request Acce
 	return record, nil
 }
 
+// FindAcceptance returns the durable acceptance for a task, if one exists.
+func (s *Service) FindAcceptance(ctx context.Context, taskID domain.ID) (AcceptanceRecord, bool, error) {
+	if s == nil || s.store == nil {
+		return AcceptanceRecord{}, false, errors.New("verification service is not configured")
+	}
+	if taskID == "" {
+		return AcceptanceRecord{}, false, errors.New("task ID is required")
+	}
+	var record AcceptanceRecord
+	var criteriaJSON, evidenceJSON, createdAt string
+	err := s.store.DB().QueryRowContext(ctx,
+		`SELECT acceptance_id, task_id, attempt_id, verifier_id, verifier_type, criteria_result_json, evidence_ids_json, created_at
+		 FROM acceptance_records WHERE task_id = ?`, taskID,
+	).Scan(&record.ID, &record.TaskID, &record.AttemptID, &record.VerifierID, &record.VerifierType,
+		&criteriaJSON, &evidenceJSON, &createdAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AcceptanceRecord{}, false, nil
+	}
+	if err != nil {
+		return AcceptanceRecord{}, false, fmt.Errorf("read task acceptance: %w", err)
+	}
+	var criteria struct {
+		Met bool `json:"met"`
+	}
+	if err := json.Unmarshal([]byte(criteriaJSON), &criteria); err != nil {
+		return AcceptanceRecord{}, false, fmt.Errorf("decode acceptance criteria: %w", err)
+	}
+	if err := json.Unmarshal([]byte(evidenceJSON), &record.EvidenceIDs); err != nil {
+		return AcceptanceRecord{}, false, fmt.Errorf("decode acceptance evidence: %w", err)
+	}
+	record.CriteriaMet = criteria.Met
+	record.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return AcceptanceRecord{}, false, fmt.Errorf("parse acceptance time: %w", err)
+	}
+	return record, true, nil
+}
+
 func requireEvidence(ctx context.Context, tx *sql.Tx, ids []domain.ID) error {
 	for _, id := range ids {
 		var one int

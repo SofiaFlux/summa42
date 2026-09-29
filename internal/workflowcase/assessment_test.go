@@ -103,6 +103,30 @@ func TestAssessCannotIncreaseBudget(t *testing.T) {
 	}
 }
 
+func TestAssessLatestRejectsSupersededRevision(t *testing.T) {
+	svc, _, missionID, ctx := setupEnsure(t)
+	firstObservation := sampleObservation(missionID)
+	firstObservation.Source = "github"
+	firstObservation.RevisionID = "2026-09-29T10:00:00Z"
+	first, err := svc.Ensure(ctx, firstObservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer := firstObservation
+	newer.RevisionID = "2026-09-29T10:00:00.5Z"
+	if _, err := svc.Ensure(ctx, newer); err != nil {
+		t.Fatal(err)
+	}
+	request := continueRequest(first)
+	request.RequireLatestRevision = true
+	if _, err := svc.Assess(ctx, request); err == nil {
+		t.Fatal("assessed an older revision after a newer one was registered")
+	}
+	if got := assessmentCount(t, svc, ctx, first.ID); got != 0 {
+		t.Fatalf("older case assessments = %d, want none", got)
+	}
+}
+
 func TestAssessFailedDecisionRollsBack(t *testing.T) {
 	svc, ctx, initial := assessmentFixture(t)
 	request := continueRequest(initial)

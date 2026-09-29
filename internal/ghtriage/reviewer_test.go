@@ -1041,6 +1041,23 @@ func TestReviewerAcceptsARecentReadyToPlanCaseAsMatchingItsDisposition(t *testin
 	}
 }
 
+func TestReviewerAcceptsReadyToPlanCaseAfterPlanningHandoff(t *testing.T) {
+	rf := newReviewerFixture(t)
+	model := &plannerModel{output: validPlannerOutput()}
+	planner := ghtriage.NewPlanner(rf.driver.cases, rf.driver.execSvc, rf.driver.verifSvc, rf.driver.evidenceStore, model)
+	planned, err := planner.Tick(rf.driver.ctx, rf.driver.missionID)
+	if err != nil || planned.Planned != 1 || len(planned.Failures) != 0 {
+		t.Fatalf("planning: %+v, %v", planned, err)
+	}
+	rf.model.ScriptedReview = []bool{true}
+	if _, err := rf.review.Tick(rf.driver.ctx, rf.driver.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if verdict := rf.lastVerdict(t); !verdict.Structural.StateMatchesDisposition {
+		t.Fatalf("planned case reported as violation: %+v", verdict)
+	}
+}
+
 // A not-actionable decision is closed by the driver as an assessment whose
 // reason is the disposition itself, so the matching case is BLOCKED and its
 // latest assessment says not-actionable. That is the pair the default branch
@@ -1344,8 +1361,8 @@ func TestReviewerDoesNotReviewACaseTheDriverHasDecidedButNotAccepted(t *testing.
 
 	// Once the driver has moved the case, the next tick reviews it, and the state
 	// it was in all along is reported as what it is.
-	if _, err := f.driver.Tick(context.Background(), f.missionID); err != nil {
-		t.Fatal(err)
+	if tickResult, err := f.driver.Tick(context.Background(), f.missionID); err != nil || len(tickResult.Failures) != 0 {
+		t.Fatalf("driver tick: result=%+v err=%v", tickResult, err)
 	}
 	if got := f.caseState(t, fixtureRevision); got != string(workflowcase.Blocked) {
 		t.Fatalf("case state after the driver tick = %q, want BLOCKED", got)
