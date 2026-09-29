@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -522,37 +523,48 @@ func parseWorkerFlags(args []string) (pollInterval time.Duration, leaseDuration 
 // different models. binaryUse names what the binary is for, because it is the
 // only part of the default that differs between them.
 //
-// The prompt is written to the binary's stdin and nothing else, so a binary that
-// needs a subcommand cannot be used without --model-arg: without it every
-// invocation is a run that reads no prompt and produces no conforming response,
-// which the adapter reports as a model failure after the full timeout, twice per
-// attempt. The help says so rather than leaving the default untested against the
-// binary it names.
+// The defaults are codex-shaped: binary codex with args ["exec"], the prompt on
+// stdin and nothing else. Bare codex with a piped stdin exits immediately
+// demanding a terminal (it launches the interactive TUI), while codex exec
+// with no prompt argument reads the instructions from stdin per its own help,
+// so the adapter's stdin contract reaches a working invocation only with the
+// exec default in place. A binary that is not codex gets no default arguments:
+// anyone pointing --model-binary at something else must set --model-arg
+// explicitly, and whatever was explicitly passed is used exactly as passed,
+// with nothing prepended.
 func registerTriageModelFlags(flags *flag.FlagSet, binaryUse string) {
-	flags.String("model-binary", "codex", binaryUse+", which must read the prompt on stdin")
+	flags.String("model-binary", "codex", binaryUse+", which must read the prompt on stdin (defaults are codex-shaped: codex + exec)")
 	flags.String("model-timeout", "60s", "per-invocation model timeout")
 	flags.Var(&modelArgs{}, "model-arg",
 		"argument passed to the model binary before the prompt, repeatable and in order "+
-			"(the prompt is on stdin; a binary needing a subcommand takes it here)")
+			"(the prompt is on stdin; when unset and the binary is codex this defaults to \"exec\"; "+
+			"a binary that is not codex takes no default arguments, so set this flag explicitly)")
 }
 
 // modelArgs collects a repeatable string flag, so --model-arg exec --model-arg -
 // reaches the binary as two arguments in the order they were written. flag's own
 // String collects only the last occurrence, which is the wrong answer for a
-// subcommand plus its arguments.
-type modelArgs []string
+// subcommand plus its arguments. Set records that the flag was passed at all,
+// so triageModelConfig can tell "the user passed arguments" apart from "the
+// default empty": the codex exec default applies only to the latter, and an
+// explicit argument list is used exactly as passed, with nothing prepended.
+type modelArgs struct {
+	args []string
+	set  bool
+}
 
-func (m *modelArgs) String() string { return strings.Join(*m, " ") }
+func (m *modelArgs) String() string { return strings.Join(m.args, " ") }
 
 func (m *modelArgs) Set(value string) error {
-	*m = append(*m, value)
+	m.set = true
+	m.args = append(m.args, value)
 	return nil
 }
 
 // Get is what triageModelConfig reads: the flag package hands a Getter its
 // underlying value, so a []string reaches the config without a second parse of
 // the argument list.
-func (m *modelArgs) Get() any { return []string(*m) }
+func (m *modelArgs) Get() any { return append([]string(nil), m.args...) }
 
 // triageModelConfig reads the model flags off any flag set, so run-worker,
 // run-gh-triage-driver and run-gh-triage-review agree on the model; the flag
@@ -594,6 +606,19 @@ func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
 	args, ok := getter.Get().([]string)
 	if !ok {
 		return climodel.Config{}, errors.New("--model-arg does not collect values from the flag set")
+	}
+	// Bare codex with a piped stdin exits immediately demanding a terminal,
+	// while codex exec reads the prompt from stdin, so the default invocation
+	// has to be codex + exec for the adapter's stdin contract to work. The
+	// default applies only when no --model-arg was explicitly passed and the
+	// binary resolves to codex: anything explicitly passed is used exactly as
+	// passed, and a binary that is not codex gets no injected arguments.
+	explicit := false
+	if collected, ok := argsFlag.Value.(*modelArgs); ok {
+		explicit = collected.set
+	}
+	if !explicit && filepath.Base(binary) == "codex" {
+		args = []string{"exec"}
 	}
 	return climodel.Config{Binary: binary, Args: args, Timeout: duration}, nil
 }

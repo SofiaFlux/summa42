@@ -7,6 +7,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -269,10 +270,54 @@ func TestModelArgsReachTheModelConfigurationInOrder(t *testing.T) {
 			t.Fatalf("review args = %q, want %q in the order they were written", config.Args, args)
 		}
 	}
-	// Omitting the flag is not an error and means no arguments, which is the
-	// documented contract of the binary: it reads the prompt on stdin.
+	// Omitting the flag is not an error; for a binary that is not codex it
+	// means no arguments, which is the documented contract of the binary: it
+	// reads the prompt on stdin. (The codex default is ["exec"]; that binary
+	// here is a stub whose base name is not codex, so no default applies.)
 	if got := triageModelConfigFor(t, "--model-binary="+usableModelBinary(t), "--model-timeout=5s"); len(got.Args) != 0 {
 		t.Fatalf("args = %q, want none when the flag is omitted", got.Args)
+	}
+}
+
+// The default invocation is codex + exec: bare codex with a piped stdin exits
+// immediately demanding a terminal, while codex exec with no prompt argument
+// reads the instructions from stdin, so the adapter's stdin contract reaches a
+// working invocation only with the exec default in place. The reviewer shares
+// the default because both commands build their config through
+// triageModelConfig.
+func TestTriageModelConfigDefaultsCodexToExec(t *testing.T) {
+	got := triageModelConfigFor(t)
+	if got.Binary != "codex" {
+		t.Fatalf("binary = %q, want codex", got.Binary)
+	}
+	if !slices.Equal(got.Args, []string{"exec"}) {
+		t.Fatalf("args = %q, want [exec] when no --model-arg was passed", got.Args)
+	}
+	if _, config, err := parseGHTriageReviewFlags([]string{"--mission", "mission-1"}); err != nil {
+		t.Fatal(err)
+	} else if !slices.Equal(config.Args, []string{"exec"}) {
+		t.Fatalf("review args = %q, want [exec] when no --model-arg was passed", config.Args)
+	}
+}
+
+// An explicitly passed argument list is used exactly as passed, with nothing
+// prepended: a user pointing --model-binary at codex who needs different
+// arguments must be able to say so.
+func TestTriageModelConfigKeepsExplicitArgsWithoutPrependingExec(t *testing.T) {
+	got := triageModelConfigFor(t,
+		"--model-binary=codex", "--model-arg=foo", "--model-arg=bar")
+	if !slices.Equal(got.Args, []string{"foo", "bar"}) {
+		t.Fatalf("args = %q, want exactly [foo bar] with no exec prepended", got.Args)
+	}
+}
+
+// A binary that is not codex must not receive a stray exec: the default is
+// codex-shaped, and anyone pointing --model-binary elsewhere sets --model-arg
+// explicitly or gets no arguments.
+func TestTriageModelConfigInjectsNoExecForABinaryThatIsNotCodex(t *testing.T) {
+	got := triageModelConfigFor(t, "--model-binary=/usr/bin/other")
+	if len(got.Args) != 0 {
+		t.Fatalf("args = %q, want none for a binary that is not codex", got.Args)
 	}
 }
 
