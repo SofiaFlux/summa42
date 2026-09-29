@@ -4,16 +4,16 @@ import (
 	"context"
 	"io/fs"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/pressly/goose/v3"
 )
 
-// The triage driver walks the evidence objects of one kind newest first, because
-// the store has no case or revision column. The index is what keeps that lookup
-// from being a full scan and sort of the whole table on every case, on every
-// revision, on every tick.
+// The index behind the triage driver's lookup has to exist, carry the columns
+// that lookup is equality-first on, and come and go with the migration that
+// created it. Whether the lookup is served by it is the other half of the same
+// claim, and it is asserted in evidence_kind_query_plan_test.go, which can reach
+// the statement the lookup actually runs and this file cannot.
 func TestEvidenceKindIndexServesTheTriageDriversLookup(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "evidence-kind-index.db"))
@@ -45,41 +45,15 @@ func TestEvidenceKindIndexServesTheTriageDriversLookup(t *testing.T) {
 		}
 	}
 
-	// The plan has to name the index: an assertion that the index exists says
-	// nothing about whether the lookup uses it.
-	rows, err := db.QueryContext(ctx,
-		`EXPLAIN QUERY PLAN
-		 SELECT evidence_id, content_hash, media_type, kind, size_bytes, created_at
-		 FROM evidence_objects WHERE kind = ?
-		 ORDER BY created_at DESC, evidence_id DESC LIMIT 10`, "doc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	plan := make([]string, 0, 4)
-	for rows.Next() {
-		var id, parent, notUsed int
-		var detail string
-		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
-			t.Fatal(err)
-		}
-		plan = append(plan, detail)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if len(plan) == 0 {
-		t.Fatal("the lookup produced no query plan")
-	}
-	if !strings.Contains(plan[len(plan)-1], "evidence_objects_kind_created_at") {
-		t.Fatalf("lookup plan = %v, want it served by evidence_objects_kind_created_at", plan)
-	}
-	for _, step := range plan {
-		if strings.Contains(step, "SCAN") && !strings.Contains(step, "USING") {
-			t.Fatalf("lookup plan = %v, want no bare scan", plan)
-		}
-	}
-
+	// That the index exists says nothing about whether the lookup is served by
+	// it, and the plan assertion can only be made over the statement the lookup
+	// runs - which lives in the evidence package, so it cannot be reached from
+	// here. It is in evidence_kind_query_plan_test.go, in the external test
+	// package, over evidence.FindByKindQuery itself.
+	//
+	// What is left here is the half only this package can check: the index
+	// carries the columns the query is equality-first on, and it goes away and
+	// comes back with the migration that created it.
 	migrations, err := fs.Sub(migrationFiles, "migrations")
 	if err != nil {
 		t.Fatal(err)

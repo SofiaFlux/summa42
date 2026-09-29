@@ -164,6 +164,22 @@ func (s *Store) FindByContentHash(ctx context.Context, contentHash, kind string)
 	return object, true, nil
 }
 
+// FindByKindPredicate and FindByKindOrderBy are the two halves of FindByKind's
+// statement that decide how it is served: the equality the kind index leads
+// with, and the order the index already delivers. FindByKindQuery is the
+// statement built from them, and it is exported so the index test can take the
+// plan of the query that runs instead of the plan of a copy of it typed in the
+// test - a plan assertion over a re-typed statement proves only that the copy
+// is served, and an order the index cannot deliver (content_hash, say) would
+// leave such a test green while every lookup degraded to a scan and a sort.
+const (
+	FindByKindPredicate = "kind = ?"
+	FindByKindOrderBy   = "created_at DESC, evidence_id DESC"
+	FindByKindQuery     = `SELECT evidence_id, content_hash, media_type, kind, size_bytes, created_at
+		FROM evidence_objects WHERE ` + FindByKindPredicate +
+		` ORDER BY ` + FindByKindOrderBy + ` LIMIT ?`
+)
+
 // FindByKind returns the most recent evidence object of a kind that match
 // accepts, walking newest first and reading that object's bytes. The evidence
 // store has no case or revision column, so a caller that must find a document by
@@ -175,7 +191,10 @@ func (s *Store) FindByContentHash(ctx context.Context, contentHash, kind string)
 // is simply one more candidate the caller rejects.
 //
 // The limit bounds both the query and the number of blobs read, so one lookup
-// cannot become unbounded as the store grows.
+// cannot become unbounded as the store grows. It is the caller's to choose,
+// because only the caller knows whether a bounded walk is a cost or a silent
+// loss: a caller whose record may be any record of the kind has to pass a
+// ceiling its own record cannot fall outside of.
 func (s *Store) FindByKind(ctx context.Context, kind string, limit int, match func(EvidenceObject, []byte) bool) (EvidenceObject, []byte, bool, error) {
 	if s == nil || s.state == nil {
 		return EvidenceObject{}, nil, false, errors.New("evidence store is not configured")
@@ -189,10 +208,7 @@ func (s *Store) FindByKind(ctx context.Context, kind string, limit int, match fu
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.state.DB().QueryContext(ctx,
-		`SELECT evidence_id, content_hash, media_type, kind, size_bytes, created_at
-		 FROM evidence_objects WHERE kind = ?
-		 ORDER BY created_at DESC, evidence_id DESC LIMIT ?`, kind, limit)
+	rows, err := s.state.DB().QueryContext(ctx, FindByKindQuery, kind, limit)
 	if err != nil {
 		return EvidenceObject{}, nil, false, fmt.Errorf("list evidence of kind %s: %w", kind, err)
 	}
