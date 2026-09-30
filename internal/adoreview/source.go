@@ -88,7 +88,10 @@ func listPage(ctx context.Context, caller PRCaller, project, repository, token s
 			args["project"] = project
 		}
 		if repository != "" {
-			args["repository"] = repository
+			// Azure DevOps' real repo_pull_request "list" action names this
+			// parameter repositoryId, not repository (confirmed against the
+			// live tool schema); adomcp forwards this map as-is.
+			args["repositoryId"] = repository
 		}
 	} else {
 		capability = "ado.pr.org_active"
@@ -194,6 +197,12 @@ func ParsePR(item any) (PullRequest, error) {
 				isGroup, _ := reviewer["isGroup"].(bool)
 				if !isGroup {
 					isGroup, _ = reviewer["group"].(bool)
+				}
+				if !isGroup {
+					// Azure DevOps' real reviewer object marks team/group
+					// reviewers with isContainer, not isGroup/group
+					// (confirmed against a live PR's get response).
+					isGroup, _ = reviewer["isContainer"].(bool)
 				}
 				if strings.TrimSpace(id) != "" {
 					pr.Reviewers = append(pr.Reviewers, Reviewer{ID: id, IsGroup: isGroup})

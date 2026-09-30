@@ -119,7 +119,7 @@ func AssessReview(ctx context.Context, cases *workflowcase.Service, evidenceStor
 		return finish(workflow.Unknown, nil, ReviewDecision{Action: DecisionHoldAction, Reason: reason})
 	}
 
-	getArgs := map[string]any{"action": "get", "repository": input.Repo, "pullRequestId": input.PR}
+	getArgs := map[string]any{"action": "get", "repositoryId": input.Repo, "pullRequestId": input.PR}
 	if strings.TrimSpace(input.Project) != "" {
 		getArgs["project"] = input.Project
 	}

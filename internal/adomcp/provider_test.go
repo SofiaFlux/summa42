@@ -234,17 +234,93 @@ func TestProviderAdvertisesAllEightCapabilities(t *testing.T) {
 	}
 }
 
-func TestProviderOrgActiveForwardsFiltersWithoutAction(t *testing.T) {
+func TestProviderOrgActiveRequiresDefaultProjectFailClosed(t *testing.T) {
+	// Azure DevOps has no organization-wide active-PR listing tool (confirmed
+	// live: repo_pull_request_org does not exist, and repo_pull_request's
+	// list action rejects a scopeless call). Without a configured
+	// DefaultProject, org_active must fail closed before ever dialing.
 	p, _ := New(Config{Command: "/bin/true", Organization: "Contoso"})
 	dials := 0
-	session := &fakeSession{tools: []string{"repo_pull_request_org"}}
-	p.dial = func(context.Context) (mcpSession, error) { dials++; return session, nil }
-	if _, err := p.Call(t.Context(), "ado.pr.org_active", nil); err != nil {
+	p.dial = func(context.Context) (mcpSession, error) { dials++; return &fakeSession{}, nil }
+	if _, err := p.Call(t.Context(), "ado.pr.org_active", nil); err == nil {
+		t.Fatal("accepted org_active without a configured default project")
+	}
+	if dials != 0 {
+		t.Fatalf("dialed %d times for a fail-closed call", dials)
+	}
+}
+
+func TestProviderOrgActiveListsAndEnrichesEachPR(t *testing.T) {
+	p, _ := New(Config{Command: "/bin/true", Organization: "Contoso", DefaultProject: "Contoso-Proj"})
+	session := &fakeResponder{
+		byTool: map[string][]*mcp.CallToolResult{
+			"repo_pull_request": {
+				textCallResult(`[{"pullRequestId":1,"repository":"shop","project":"Contoso-Proj","title":"Fix","isDraft":false}]`),
+				textCallResult(`{"pullRequestId":1,"createdBy":{"id":"author-1"},"lastMergeSourceCommit":{"commitId":"abc"},"lastMergeTargetCommit":{"commitId":"def"},"reviewers":[{"id":"rev-1","uniqueName":"a@example.com","vote":0}]}`),
+			},
+		},
+	}
+	p.dial = func(context.Context) (mcpSession, error) { return session, nil }
+	got, err := p.Call(t.Context(), "ado.pr.org_active", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Call(t.Context(), "ado.pr.org_active", map[string]any{"status": "active"}); err != nil {
-		t.Fatal(err)
+	m, ok := got.(map[string]any)
+	if !ok {
+		t.Fatalf("got %#v, want a map", got)
 	}
+	prs, ok := m["prs"].([]any)
+	if !ok || len(prs) != 1 {
+		t.Fatalf("prs = %#v, want one enriched PR", m["prs"])
+	}
+	pr, ok := prs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("pr[0] = %#v, want an object", prs[0])
+	}
+	if pr["repository"] != "shop" || pr["sourceCommit"] != "abc" || pr["targetCommit"] != "def" {
+		t.Fatalf("pr = %#v, want repository=shop sourceCommit=abc targetCommit=def", pr)
+	}
+	reviewers, ok := pr["reviewers"].([]any)
+	if !ok || len(reviewers) != 1 {
+		t.Fatalf("reviewers = %#v, want one entry", pr["reviewers"])
+	}
+	if len(session.called) != 2 || session.called[0] != "repo_pull_request" || session.called[1] != "repo_pull_request" {
+		t.Fatalf("called tools: %v, want [repo_pull_request repo_pull_request] (one list, one get)", session.called)
+	}
+	if listArgs, ok := session.args[0].(map[string]any); !ok || listArgs["project"] != "Contoso-Proj" {
+		t.Fatalf("list args: %#v, want project=Contoso-Proj (the configured default)", session.args[0])
+	}
+}
+
+// fakeResponder returns queued CallTool results per tool name, so a test can
+// script a list call followed by one or more per-item get calls.
+type fakeResponder struct {
+	byTool map[string][]*mcp.CallToolResult
+	called []string
+	args   []any
+}
+
+func (f *fakeResponder) ListTools(_ context.Context, _ *mcp.ListToolsParams) (*mcp.ListToolsResult, error) {
+	return &mcp.ListToolsResult{}, nil
+}
+
+func (f *fakeResponder) CallTool(_ context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+	f.called = append(f.called, params.Name)
+	f.args = append(f.args, params.Arguments)
+	queue := f.byTool[params.Name]
+	if len(queue) == 0 {
+		return &mcp.CallToolResult{IsError: true}, nil
+	}
+	f.byTool[params.Name] = queue[1:]
+	return queue[0], nil
+}
+
+func (f *fakeResponder) Close() error { return nil }
+
+func TestProviderOrgActiveRejectsActionAndToolOverride(t *testing.T) {
+	p, _ := New(Config{Command: "/bin/true", Organization: "Contoso", DefaultProject: "Contoso-Proj"})
+	dials := 0
+	p.dial = func(context.Context) (mcpSession, error) { dials++; return &fakeSession{}, nil }
 	for _, bad := range []any{
 		map[string]any{"action": "list"},
 		map[string]any{"tool": "repo_pull_request"},
@@ -253,11 +329,45 @@ func TestProviderOrgActiveForwardsFiltersWithoutAction(t *testing.T) {
 			t.Fatalf("accepted org_active: %#v", bad)
 		}
 	}
-	if dials != 2 {
-		t.Fatalf("dialed %d times, want 2", dials)
+	if dials != 0 {
+		t.Fatalf("dialed %d times for rejected org_active requests", dials)
 	}
-	if len(session.called) != 2 || session.called[0] != "repo_pull_request_org" {
-		t.Fatalf("called tools: %v", session.called)
+}
+
+func TestProviderOrgActiveDegradesOnPerPRDetailFailure(t *testing.T) {
+	// One PR's enrichment "get" can fail transiently without the whole
+	// project/org being unhealthy (confirmed live: Azure DevOps intermittently
+	// rejects a single otherwise-healthy PR's "get" call). That single PR
+	// must not abort discovery of the rest of the page.
+	p, _ := New(Config{Command: "/bin/true", Organization: "Contoso", DefaultProject: "Contoso-Proj"})
+	session := &fakeResponder{
+		byTool: map[string][]*mcp.CallToolResult{
+			"repo_pull_request": {
+				textCallResult(`[{"pullRequestId":1,"repository":"shop","project":"Contoso-Proj","title":"Fix","isDraft":false},{"pullRequestId":2,"repository":"shop","project":"Contoso-Proj","title":"Flaky","isDraft":false}]`),
+				textCallResult(`{"pullRequestId":1,"createdBy":{"id":"author-1"},"lastMergeSourceCommit":{"commitId":"abc"},"lastMergeTargetCommit":{"commitId":"def"},"reviewers":[]}`),
+				{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "Error with pull request operation: "}}},
+			},
+		},
+	}
+	p.dial = func(context.Context) (mcpSession, error) { return session, nil }
+	got, err := p.Call(t.Context(), "ado.pr.org_active", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prs := got.(map[string]any)["prs"].([]any)
+	if len(prs) != 2 {
+		t.Fatalf("prs = %#v, want 2 (one enriched, one degraded)", prs)
+	}
+	healthy := prs[0].(map[string]any)
+	if healthy["sourceCommit"] != "abc" {
+		t.Fatalf("healthy PR = %#v, want sourceCommit=abc", healthy)
+	}
+	degraded := prs[1].(map[string]any)
+	if _, has := degraded["sourceCommit"]; has {
+		t.Fatalf("degraded PR = %#v, want no sourceCommit (so ParsePR buckets it Unparseable)", degraded)
+	}
+	if degraded["repository"] != "shop" || degraded["number"] != float64(2) {
+		t.Fatalf("degraded PR = %#v, want repository=shop number=2", degraded)
 	}
 }
 

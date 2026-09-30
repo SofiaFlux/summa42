@@ -280,7 +280,7 @@ func (d *Driver) resolveProject(ctx context.Context, payload workOnePayload) (st
 	if payload.Project != "" {
 		return payload.Project, nil
 	}
-	args := map[string]any{"action": "get", "repository": payload.Repo, "pullRequestId": payload.PR}
+	args := map[string]any{"action": "get", "repositoryId": payload.Repo, "pullRequestId": payload.PR}
 	if d.config.Project != "" {
 		args["project"] = d.config.Project
 	}

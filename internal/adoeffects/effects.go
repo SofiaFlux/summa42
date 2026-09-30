@@ -241,12 +241,10 @@ func (p *CommentProvider) Dispatch(ctx context.Context, request operations.Provi
 	}
 	body := intent.Body + "\n" + intent.Marker
 	result, err := call(callCtx, "repo_pull_request_thread_write", map[string]any{
-		"action": "create", "project": intent.Project, "repository": intent.Repository,
+		"action": "create", "project": intent.Project, "repositoryId": intent.Repository,
 		"pullRequestId": intent.PR,
-		"thread": map[string]any{
-			"comments": []any{map[string]any{"content": body}},
-			"status":   "active",
-		},
+		"content":       body,
+		"status":        "Active",
 	})
 	if err != nil {
 		return operations.ProviderOutcome{}, err
@@ -274,9 +272,13 @@ func (p *VoteProvider) Dispatch(ctx context.Context, request operations.Provider
 	if err != nil {
 		return operations.ProviderOutcome{}, fmt.Errorf("connect ADO MCP: %w", err)
 	}
+	voteValue, err := adoVoteEnum(intent.Vote)
+	if err != nil {
+		return operations.ProviderOutcome{}, err
+	}
 	result, err := call(callCtx, "repo_pull_request_write", map[string]any{
-		"action": "vote", "project": intent.Project, "repository": intent.Repository,
-		"pullRequestId": intent.PR, "vote": intent.Vote,
+		"action": "vote", "project": intent.Project, "repositoryId": intent.Repository,
+		"pullRequestId": intent.PR, "vote": voteValue,
 	})
 	if err != nil {
 		return operations.ProviderOutcome{}, err
@@ -303,7 +305,7 @@ func (p *CommentProvider) LookupOutcome(ctx context.Context, request operations.
 	if err != nil {
 		return operations.ProviderOutcome{}, err
 	}
-	raw, err := p.read(ctx, "ado.pr.threads", map[string]any{"action": "list", "project": intent.Project, "repository": intent.Repository, "pullRequestId": intent.PR})
+	raw, err := p.read(ctx, "ado.pr.threads", map[string]any{"action": "list", "project": intent.Project, "repositoryId": intent.Repository, "pullRequestId": intent.PR})
 	if err != nil {
 		return operations.ProviderOutcome{State: domain.OperationOutcomeUnknown}, nil
 	}
@@ -322,7 +324,7 @@ func (p *VoteProvider) LookupOutcome(ctx context.Context, request operations.Pro
 	if err != nil {
 		return operations.ProviderOutcome{}, err
 	}
-	raw, err := p.read(ctx, "ado.pr.get", map[string]any{"action": "get", "project": intent.Project, "repository": intent.Repository, "pullRequestId": intent.PR})
+	raw, err := p.read(ctx, "ado.pr.get", map[string]any{"action": "get", "project": intent.Project, "repositoryId": intent.Repository, "pullRequestId": intent.PR})
 	if err != nil {
 		return operations.ProviderOutcome{State: domain.OperationOutcomeUnknown}, nil
 	}
@@ -330,6 +332,29 @@ func (p *VoteProvider) LookupOutcome(ctx context.Context, request operations.Pro
 		return operations.ProviderOutcome{State: domain.OperationConfirmedEffect, ProviderReference: voteReference(intent)}, nil
 	}
 	return operations.ProviderOutcome{State: domain.OperationOutcomeUnknown}, nil
+}
+
+// adoVoteEnum maps Azure DevOps' numeric vote codes to the string enum the
+// real repo_pull_request_write "vote" action requires (confirmed against
+// the live tool schema: Approved/ApprovedWithSuggestions/NoVote/
+// WaitingForAuthor/Rejected — never a raw integer). CanonicalIntent already
+// only accepts approveVote (10), so this always resolves to "Approved"
+// today; the full table is kept for when a future intent needs the others.
+func adoVoteEnum(vote int64) (string, error) {
+	switch vote {
+	case 10:
+		return "Approved", nil
+	case 5:
+		return "ApprovedWithSuggestions", nil
+	case 0:
+		return "NoVote", nil
+	case -5:
+		return "WaitingForAuthor", nil
+	case -10:
+		return "Rejected", nil
+	default:
+		return "", fmt.Errorf("ADO vote %d has no known enum mapping", vote)
+	}
 }
 
 // commentReference unifies the ProviderReference for Dispatch and
@@ -541,7 +566,11 @@ func productionDial(ctx context.Context, config Config) (callToolFunc, error) {
 }
 
 // toolResultMap converts a tool result to a plain map, preferring structured
-// content and falling back to JSON text content.
+// content and falling back to JSON text content. Real Azure DevOps MCP write
+// responses are wrapped in the same untrusted-content banner as reads
+// (confirmed live); stripUntrustedBanner mirrors internal/adomcp's helper so
+// a banner-wrapped object decodes instead of silently degrading to the
+// {"text": ...} fallback below.
 func toolResultMap(result *mcp.CallToolResult) (map[string]any, error) {
 	if result.StructuredContent != nil {
 		raw, err := json.Marshal(result.StructuredContent)
@@ -560,7 +589,7 @@ func toolResultMap(result *mcp.CallToolResult) (map[string]any, error) {
 			texts = append(texts, text.Text)
 		}
 	}
-	joined := strings.TrimSpace(strings.Join(texts, "\n"))
+	joined := stripUntrustedBanner(strings.TrimSpace(strings.Join(texts, "\n")))
 	if joined == "" {
 		return nil, errors.New("ADO MCP returned no content")
 	}
@@ -569,6 +598,18 @@ func toolResultMap(result *mcp.CallToolResult) (map[string]any, error) {
 		return map[string]any{"text": joined}, nil
 	}
 	return decoded, nil
+}
+
+// untrustedContentBanner mirrors internal/adomcp's banner-stripping regex
+// (kept as a small, dependency-free duplicate the same way adoEnvironment
+// below already mirrors internal/adomcp's copy).
+var untrustedContentBanner = regexp.MustCompile(`(?s)^\s*<<([0-9a-fA-F]{8,})>>\s*\[.*?\]\s*<<[0-9a-fA-F]{8,}>>\s*\r?\n(.*?)\r?\n?\s*<<\s*/\s*[0-9a-fA-F]{8,}\s*>>\s*$`)
+
+func stripUntrustedBanner(text string) string {
+	if m := untrustedContentBanner.FindStringSubmatch(text); m != nil {
+		return m[2]
+	}
+	return text
 }
 
 // adoEnvironment mirrors internal/adomcp adoEnvironment; export a shared

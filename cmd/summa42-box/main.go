@@ -219,7 +219,8 @@ func buildADOProviderFromEnv() (*adomcp.Provider, error) {
 	if command == "" || organization == "" {
 		return nil, errors.New("ADO MCP requires both SUMMA42_ADO_MCP_COMMAND and SUMMA42_ADO_ORGANIZATION")
 	}
-	return adomcp.New(adomcp.Config{Command: command, Organization: organization})
+	defaultProject := strings.TrimSpace(os.Getenv("SUMMA42_ADO_DEFAULT_PROJECT"))
+	return adomcp.New(adomcp.Config{Command: command, Organization: organization, DefaultProject: defaultProject})
 }
 
 type publishSettings struct {
