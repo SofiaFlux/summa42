@@ -292,3 +292,21 @@ func TestTimeoutBoundsTheWholeSubtree(t *testing.T) {
 			elapsed, timeout, childLives)
 	}
 }
+
+func TestImplementationUsesStrictStructuredEdits(t *testing.T) {
+	adapter, err := New(Config{Binary: writeScript(t, `{"summary":"change","edits":[{"path":"code.go","content":"package test\n","delete":false}]}`), Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := adapter.Implement(t.Context(), ghtriage.ImplementationInput{Schema: ghtriage.ImplementationVersion})
+	if err != nil || len(out.Edits) != 1 || out.Edits[0].Path != "code.go" {
+		t.Fatalf("%+v %v", out, err)
+	}
+	adapter, err = New(Config{Binary: writeScript(t, `{"summary":"change","edits":[{"path":"code.go","content":"x","delete":false}],"run":"model-shell"}`), Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Implement(t.Context(), ghtriage.ImplementationInput{}); err == nil {
+		t.Fatal("model command accepted")
+	}
+}

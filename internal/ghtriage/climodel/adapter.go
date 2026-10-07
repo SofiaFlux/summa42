@@ -87,6 +87,18 @@ func (a *Adapter) ReviewPlan(ctx context.Context, input ghtriage.PlanReviewInput
 	return ghtriage.ParsePlanReviewOutput(raw)
 }
 
+func (a *Adapter) Implement(ctx context.Context, input ghtriage.ImplementationInput) (ghtriage.ImplementationOutput, error) {
+	prompt, err := json.Marshal(input)
+	if err != nil {
+		return ghtriage.ImplementationOutput{}, err
+	}
+	raw, err := a.run(ctx, prompt)
+	if err != nil {
+		return ghtriage.ImplementationOutput{}, err
+	}
+	return ghtriage.ParseImplementationOutput(raw)
+}
+
 func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 	if a == nil {
 		return nil, errors.New("model adapter is not configured")

@@ -22,6 +22,8 @@ import (
 )
 
 type Metadata struct {
+	// Subject optionally binds the object atomically to an immutable business key.
+	Subject   string
 	MediaType string
 	Kind      string
 }
@@ -128,12 +130,23 @@ func (s *Store) Put(ctx context.Context, r io.Reader, metadata Metadata) (Eviden
 		ID: domain.NewID("evidence"), ContentHash: contentHash, MediaType: metadata.MediaType,
 		Kind: metadata.Kind, SizeBytes: size, CreatedAt: now,
 	}
-	if _, err := s.state.DB().ExecContext(ctx,
-		`INSERT INTO evidence_objects(evidence_id, content_hash, media_type, kind, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		object.ID, object.ContentHash, object.MediaType, object.Kind, object.SizeBytes, now.Format(time.RFC3339Nano),
-	); err != nil {
+	if err := s.state.WithTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO evidence_objects(evidence_id, content_hash, media_type, kind, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?)`, object.ID, object.ContentHash, object.MediaType, object.Kind, object.SizeBytes, now.Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+		if metadata.Subject != "" {
+			if strings.TrimSpace(metadata.Subject) == "" {
+				return errors.New("evidence subject is empty")
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO evidence_subjects(kind,subject_id,evidence_id) VALUES (?,?,?)`, metadata.Kind, metadata.Subject, object.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		return EvidenceObject{}, err
 	}
+
 	return object, nil
 }
 

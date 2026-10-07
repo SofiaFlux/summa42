@@ -60,6 +60,11 @@ func New(store *state.Store, clk clock.Clock, executionService *execution.Servic
 }
 
 func (s *Service) CompleteAttempt(ctx context.Context, attemptID domain.ID, manifest CompletionManifest) (CompletionRecord, error) {
+	return s.CompleteAttemptWithGuard(ctx, attemptID, manifest, nil)
+}
+
+// CompleteAttemptWithGuard checks canonical work in the same fenced completion transaction.
+func (s *Service) CompleteAttemptWithGuard(ctx context.Context, attemptID domain.ID, manifest CompletionManifest, guard func(context.Context, *sql.Tx) error) (CompletionRecord, error) {
 	if err := s.configured(); err != nil {
 		return CompletionRecord{}, err
 	}
@@ -81,6 +86,11 @@ func (s *Service) CompleteAttempt(ctx context.Context, attemptID domain.ID, mani
 	}
 
 	err = s.execution.WithGuardedAttempt(ctx, attemptID, []domain.TaskState{domain.TaskExecuting}, func(tx *sql.Tx, guarded execution.GuardedAttempt) error {
+		if guard != nil {
+			if err := guard(ctx, tx); err != nil {
+				return err
+			}
+		}
 		if err := requireEvidence(ctx, tx, evidenceIDs); err != nil {
 			return err
 		}

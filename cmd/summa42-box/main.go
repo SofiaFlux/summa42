@@ -499,6 +499,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "run-gh-implement" {
+		if err := runGHImplement(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "run-final-verifier" {
 		if err := runFinalVerifier(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)

@@ -58,7 +58,7 @@ Worker capacity comes from executor contracts: one executor must support the Tas
 
 Reported executor usage is saved as `executor.usage.v1` evidence linked to its Attempt, including on execution failure. Missing token reports remain unknown; usage evidence does not settle monetary budgets or substitute for execution evidence.
 
-The [self-development roadmap](docs/superpowers/plans/2026-10-07-self-development-roadmap.md) records the audited baseline and remaining stages. The [executor eligibility design](docs/superpowers/specs/2026-10-07-executor-eligibility-design.md) describes the first foundation slice. [Grounded planning](docs/superpowers/specs/2026-10-07-grounded-planning-design.md) adds pinned source preparation and independent plan review; implementation execution and autonomous GitHub PR handling remain future work.
+The [self-development roadmap](docs/superpowers/plans/2026-10-07-self-development-roadmap.md) records the audited baseline and remaining stages. The [executor eligibility design](docs/superpowers/specs/2026-10-07-executor-eligibility-design.md) describes the first foundation slice. [Grounded planning](docs/superpowers/specs/2026-10-07-grounded-planning-design.md) adds pinned source preparation and independent plan review; supervised local implementation is available below; independent code acceptance and autonomous GitHub PR handling remain future work.
 
 ### Grounded GitHub issue plans
 
@@ -76,7 +76,7 @@ The [self-development roadmap](docs/superpowers/plans/2026-10-07-self-developmen
 
 These are supervised one-shot commands using the existing CLI model protocol. The reviewer gets the original issue, exact plan and hash-bound code projection through a separate invocation. It materializes a review Task and claims a fenced Attempt before calling the model, preventing overlapping ticks from paying for the same review twice. Its five-minute lease bounds the call to four minutes, leaving time for cleanup. A completed verdict resumes from its exact Task/Attempt manifest after interruption; normal runtime wake processing handles expired claims. ACCEPT can propose `github.issue.implement` only if the existing case grant permits both `workspace.repo.write` and `workspace.test` capabilities/actions. REVISE/BLOCK holds the case; a legacy v1 plan must be re-planned before implementation. Review does not execute the validation commands or materialize an implementation Task. Native model invocations remain UNENFORCED; monetary accounting and worker-based model composition remain future work.
 
-`internal/repoworkspace.Checkout` is the pinned, detached source-preparation primitive for the future implementation executor; the current worker still creates an empty attempt workspace. Selected context files must be regular tracked UTF-8 files; symlinks, submodules, path traversal and context exceeding 32 files or 256 KiB are rejected. Allowed paths are exact file names, including explicitly permitted new files.
+`internal/repoworkspace.Checkout` is the pinned, detached source-preparation primitive for supervised local implementation; the current general worker still creates an empty attempt workspace. Selected context files must be regular tracked UTF-8 files; symlinks, submodules, path traversal and context exceeding 32 files or 256 KiB are rejected. Allowed paths are exact file names, including explicitly permitted new files.
 
 Source preparation requires [Git 2.45 or newer](https://github.com/git/git/blob/v2.45.0/Documentation/RelNotes/2.45.0.txt), with `--no-lazy-fetch` support. Missing partial-clone objects fail offline instead of being fetched. Checkout copies and dissociates object storage; it does not borrow writable objects from the source. These Git controls prepare data and do not provide an execution sandbox for future tests or implementation tools.
 
@@ -166,3 +166,18 @@ See [SUPPORT.md](SUPPORT.md) for reproducible-defect, security, and conduct-repo
 ## License
 
 Summa42 is licensed under the [Apache License 2.0](LICENSE).
+
+### Supervised local implementation
+
+After an authorized ACCEPT from `run-gh-plan-review`, `run-gh-implement` can prepare an actual local candidate:
+
+```sh
+mkdir -p /absolute/path/to/attempts
+./bin/summa42-box run-gh-implement --case <case-id> \
+  --source-repo /absolute/path/to/summa42 \
+  --workspace-root /absolute/path/to/attempts --model-binary <implementation-wrapper>
+```
+
+The wrapper follows the existing stdin/stdout JSON protocol and returns `{"summary":"…","edits":[{"path":"file.go","content":"complete UTF-8 contents","delete":false}]}`. Models propose complete-file edits; deterministic code enforces the owner-selected paths, prepares a fresh pinned checkout and creates a local commit. Each claimed Task/Attempt records the exact plan/review/source citations, candidate/tree/diff identity and real results of owner-supplied validation argv. Concurrent calls return busy; completed calls return the same saved evidence. Execution results are indexed before completion, so a failed completion save resumes under the same live fence without another model/test call; an expired staged run requires operator recovery. The source repository’s observed Git/data state must remain unchanged during execution. Validation failure stays visible in the record and CLI exit status. Task completion remains awaiting independent code verification.
+
+Validation commands run natively as trusted local commands, classified UNENFORCED. They receive a private HOME/cache and no ambient credential variables. Go module downloads are disabled by default; provide preinstalled dependencies or an explicit owner-selected wrapper/argv, for example `["env","GOMODCACHE=/absolute/prepopulated/module-cache","go","test","./..."]`. Each command is limited to 60 seconds and 16 KiB captured output. Validation cannot silently change the committed candidate. This supervised slice does not accept code, publish GitHub branches/PRs or merge work. Native execution does not contain hostile repository code; use a trusted local repository and command configuration until TEB integration is available.

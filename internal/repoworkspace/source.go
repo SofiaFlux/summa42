@@ -1,4 +1,4 @@
-// Package repoworkspace prepares pinned source input without executing repository code.
+// Package repoworkspace prepares pinned source and supervised local candidates.
 package repoworkspace
 
 import (
@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -77,10 +78,14 @@ func (s Snapshot) Canonical() ([]byte, error) {
 
 // boundedBuffer consumes the entire pipe but retains only the bounded prefix.
 type boundedBuffer struct {
-	bytes.Buffer
+	buffer   bytes.Buffer
 	limit    int
 	overflow bool
 }
+
+func (b *boundedBuffer) Len() int       { return b.buffer.Len() }
+func (b *boundedBuffer) Bytes() []byte  { return b.buffer.Bytes() }
+func (b *boundedBuffer) String() string { return b.buffer.String() }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	n := len(p)
@@ -89,13 +94,23 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 		b.overflow = true
 		p = p[:remaining]
 	}
-	_, err := b.Buffer.Write(p)
+	_, err := b.buffer.Write(p)
 	return n, err
 }
 func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	out := &boundedBuffer{limit: MaxContextBytes + 1}
+	if err := gitStream(ctx, dir, out, args...); err != nil {
+		return nil, err
+	}
+	if out.overflow {
+		return nil, errors.New("Git output exceeds context limit")
+	}
+	return out.Bytes(), nil
+}
+func gitStream(ctx context.Context, dir string, out io.Writer, args ...string) error {
 	binary, err := exec.LookPath("git")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -107,22 +122,17 @@ func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	if len(args) > 0 && args[0] == "clone" {
 		allowedProtocols = "file"
 	}
-	// Repository-local protocol configuration cannot widen this allowlist.
 	cmd.Env = append(cmd.Env, "GIT_ALLOW_PROTOCOL="+allowedProtocols)
-	out := &boundedBuffer{limit: MaxContextBytes + 1}
 	stderr := &boundedBuffer{limit: 4096}
 	cmd.Stdout = out
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		if runCtx.Err() != nil {
-			return nil, runCtx.Err()
+			return runCtx.Err()
 		}
-		return nil, fmt.Errorf("git failed: %w: %s", err, stderr.String())
+		return fmt.Errorf("git failed: %w: %s", err, stderr.String())
 	}
-	if out.overflow {
-		return nil, errors.New("Git output exceeds context limit")
-	}
-	return out.Bytes(), nil
+	return nil
 }
 
 func Capture(ctx context.Context, cfg Config) (Snapshot, error) {
