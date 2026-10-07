@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -23,12 +24,12 @@ func (r TaskClassRouting) PreferredExecutor(ctx context.Context, task domain.Tas
 	}
 	kind = strings.TrimSpace(kind)
 	if kind == "" {
-		return "", false, nil
+		return "", false, fmt.Errorf("task class %q has a blank required executor", task.TaskClass)
 	}
 	for _, candidate := range eligible {
 		if strings.TrimSpace(candidate) == kind {
 			return kind, true, nil
 		}
 	}
-	return "", false, nil
+	return "", false, fmt.Errorf("task class %q requires unavailable executor %q", task.TaskClass, kind)
 }

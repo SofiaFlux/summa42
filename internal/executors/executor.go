@@ -39,6 +39,8 @@ type Evidence struct {
 }
 
 type Usage struct {
+	// Reported distinguishes an explicit provider usage report from unknown counts.
+	Reported              bool
 	WallTime              time.Duration
 	InputTokens           int64
 	CachedInputTokens     int64

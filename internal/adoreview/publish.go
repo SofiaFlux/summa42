@@ -54,6 +54,12 @@ type Publisher struct {
 	config PublishConfig
 }
 
+func (p *Publisher) ExecutionContract() executors.Contract {
+	// All modes handle both decisions. Mode gates dispatch inside Start: none
+	// records only; comments skips votes. A contract grants no effect authority.
+	return executors.Contract{TaskClasses: []string{"publish-decision"}, Capabilities: []string{"ado-publish", "ado.pr.comment", "ado.pr.approve"}, Enforcement: domain.EnforcementEnforced}
+}
+
 type publishIntent struct {
 	slot     string
 	provider string

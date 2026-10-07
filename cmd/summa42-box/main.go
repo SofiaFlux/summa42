@@ -492,6 +492,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "run-gh-plan-review" {
+		if err := runGHPlanReview(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "run-final-verifier" {
 		if err := runFinalVerifier(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -720,26 +727,11 @@ func splitWorkspaceRootArg(args []string) (workspaceRoot string, rest []string, 
 }
 
 func workerCapacity(box *summa42runtime.Box) (scheduler.CapacitySnapshot, error) {
-	caps := make(map[string]scheduler.CapabilityCapacity, len(box.Executors)+2)
-	for kind := range box.Executors {
-		kind = strings.TrimSpace(kind)
-		if kind == "" {
-			continue
-		}
-		caps[kind] = scheduler.CapabilityCapacity{Accessible: true, Enforcement: domain.EnforcementEnforced}
-	}
-	if _, registered := caps[publishExecutorKind]; registered {
-		for _, capability := range []string{publishCommentCapability, publishApproveCapability} {
-			caps[capability] = scheduler.CapabilityCapacity{Accessible: true, Enforcement: domain.EnforcementEnforced}
-		}
-	}
-	if _, registered := caps[ghtriage.ExecutorKind]; registered {
-		caps[ghtriage.RequiredCapability] = scheduler.CapabilityCapacity{Accessible: true, Enforcement: domain.EnforcementEnforced}
-	}
-	if len(caps) == 0 {
+	capacity := scheduler.CapacityForExecutors(box.Executors)
+	if len(capacity.Executors) == 0 {
 		return scheduler.CapacitySnapshot{}, errors.New("run-worker has no schedulable capabilities: the Box executor registry is empty, so there is no capability source to advertise")
 	}
-	return scheduler.CapacitySnapshot{Capabilities: caps}, nil
+	return capacity, nil
 }
 
 func runWorker(ctx context.Context, args []string) error {
@@ -1431,6 +1423,7 @@ func runGHPlan(ctx context.Context, args []string) error {
 	}
 	var mission string
 	flags := flag.NewFlagSet("run-gh-plan", flag.ContinueOnError)
+	sourceFlags := registerGroundingFlags(flags)
 	flags.StringVar(&mission, "mission", "", "mission ID whose ready GitHub issues are planned")
 	registerTriageModelFlags(flags, "model binary writing an issue plan")
 	if err := flags.Parse(args); err != nil {
@@ -1438,6 +1431,10 @@ func runGHPlan(ctx context.Context, args []string) error {
 	}
 	if strings.TrimSpace(mission) == "" || flags.NArg() != 0 {
 		return errors.New("run-gh-plan requires --mission and no positional arguments")
+	}
+	grounding, err := sourceFlags.config()
+	if err != nil {
+		return fmt.Errorf("source configuration: %w", err)
 	}
 	modelConfig, err := triageModelConfig(flags)
 	if err != nil {
@@ -1470,6 +1467,11 @@ func runGHPlan(ctx context.Context, args []string) error {
 	defer box.Close()
 	planner := ghtriage.NewPlanner(workflowcase.New(box.Store, box.Clock, box.Purpose),
 		box.Execution, box.Verification, box.Evidence, adapter)
+	if grounding != nil {
+		if err := planner.SetGrounding(*grounding); err != nil {
+			return err
+		}
+	}
 	result, err := planner.Tick(ctx, domain.ID(strings.TrimSpace(mission)))
 	if err != nil {
 		return err

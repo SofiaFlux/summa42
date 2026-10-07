@@ -66,11 +66,12 @@ func ParsePlanOutput(raw []byte) (PlanOutput, error) {
 }
 
 type PlanInput struct {
-	Schema             string    `json:"schema"`
-	Question           string    `json:"question"`
-	Snapshot           Snapshot  `json:"snapshot"`
-	Decision           Decision  `json:"decision"`
-	DecisionEvidenceID domain.ID `json:"decision_evidence_id"`
+	Grounding          *GroundedInput `json:"grounding,omitempty"`
+	Schema             string         `json:"schema"`
+	Question           string         `json:"question"`
+	Snapshot           Snapshot       `json:"snapshot"`
+	Decision           Decision       `json:"decision"`
+	DecisionEvidenceID domain.ID      `json:"decision_evidence_id"`
 }
 
 type PlanModel interface {
@@ -80,21 +81,33 @@ type PlanModel interface {
 // Plan is the durable evidence written before a ready-to-plan case is
 // assessed. Its citations make a later reader independent of the model call.
 type Plan struct {
-	Schema             string    `json:"schema"`
-	CaseID             domain.ID `json:"case_id"`
-	DecisionEvidenceID domain.ID `json:"decision_evidence_id"`
-	SnapshotEvidenceID domain.ID `json:"snapshot_evidence_id"`
-	Repository         string    `json:"repository"`
-	Issue              int64     `json:"issue"`
-	Revision           string    `json:"revision"`
+	Source             *PlanSource `json:"source,omitempty"`
+	Schema             string      `json:"schema"`
+	CaseID             domain.ID   `json:"case_id"`
+	DecisionEvidenceID domain.ID   `json:"decision_evidence_id"`
+	SnapshotEvidenceID domain.ID   `json:"snapshot_evidence_id"`
+	Repository         string      `json:"repository"`
+	Issue              int64       `json:"issue"`
+	Revision           string      `json:"revision"`
 	PlanOutput
 }
 
 func (p Plan) Canonical() ([]byte, error) {
-	if p.Schema != PlanSchema || p.CaseID == "" || p.DecisionEvidenceID == "" ||
+	if (p.Schema != PlanSchema && p.Schema != PlanSchemaV2) || p.CaseID == "" || p.DecisionEvidenceID == "" ||
 		p.SnapshotEvidenceID == "" || strings.TrimSpace(p.Repository) == "" ||
 		p.Issue <= 0 || strings.TrimSpace(p.Revision) == "" {
 		return nil, errors.New("plan identity and citations are required")
+	}
+	if p.Schema == PlanSchema && p.Source != nil {
+		return nil, errors.New("v1 plan cannot carry source authority")
+	}
+	if p.Schema == PlanSchemaV2 {
+		if p.Source == nil {
+			return nil, errors.New("v2 plan requires source")
+		}
+		if err := p.Source.Validate(); err != nil {
+			return nil, err
+		}
 	}
 	if err := p.PlanOutput.Validate(); err != nil {
 		return nil, err

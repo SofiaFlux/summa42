@@ -25,6 +25,7 @@ type CapabilityCapacity struct {
 
 type CapacitySnapshot struct {
 	Capabilities map[string]CapabilityCapacity
+	Executors    map[string]ExecutorCapacity
 }
 
 type TaskCandidate struct {
@@ -79,6 +80,9 @@ func (s *Service) Next(ctx context.Context, capacity CapacitySnapshot) (*TaskCan
 			return nil, err
 		}
 		if !ready || !capacityEligible(task, capacity) || !authorityEligible(task) {
+			continue
+		}
+		if capacity.Executors != nil && len(eligibleKinds(task, capacity)) == 0 {
 			continue
 		}
 		available, err := s.resources.Available(ctx, task.ResourceEnvelopeID)

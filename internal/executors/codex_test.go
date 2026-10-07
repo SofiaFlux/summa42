@@ -66,7 +66,7 @@ func TestCodexExecutorNormalizesJSONLAndUsesLiteralStdin(t *testing.T) {
 	assertEvidenceContains(t, result.Evidence, EvidenceFileChange, "add answer.txt")
 	assertEvidenceContains(t, result.Evidence, EvidenceAgentMessage, "Finished safely.")
 
-	if result.Usage.InputTokens != 100 || result.Usage.CachedInputTokens != 10 || result.Usage.CacheWriteInputTokens != 2 || result.Usage.OutputTokens != 20 || result.Usage.ReasoningOutputTokens != 5 {
+	if !result.Usage.Reported || result.Usage.InputTokens != 100 || result.Usage.CachedInputTokens != 10 || result.Usage.CacheWriteInputTokens != 2 || result.Usage.OutputTokens != 20 || result.Usage.ReasoningOutputTokens != 5 {
 		t.Fatalf("unexpected normalized usage: %+v", result.Usage)
 	}
 	if result.Usage.WallTime <= 0 {

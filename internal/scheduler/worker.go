@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -63,16 +62,8 @@ func NewWorker(schedulerSvc *Service, executionSvc *execution.Service, evidenceS
 	return &Worker{scheduler: schedulerSvc, execution: executionSvc, evidence: evidenceStore, verification: verificationSvc, executors: cleaned, clock: clk, workspaceRoot: workspaceRoot}, nil
 }
 
-func (w *Worker) registryKinds() []string {
-	kinds := make([]string, 0, len(w.executors))
-	for kind := range w.executors {
-		kinds = append(kinds, kind)
-	}
-	sort.Strings(kinds)
-	return kinds
-}
-
 func (w *Worker) StepOnce(ctx context.Context, capacity CapacitySnapshot) (StepResult, error) {
+	capacity = w.effectiveCapacity(capacity)
 	candidate, err := w.scheduler.Next(ctx, capacity)
 	if err != nil {
 		return StepResult{}, err
@@ -80,7 +71,7 @@ func (w *Worker) StepOnce(ctx context.Context, capacity CapacitySnapshot) (StepR
 	if candidate == nil {
 		return StepResult{Outcome: StepIdle}, nil
 	}
-	kind, err := w.scheduler.ChooseExecutor(ctx, candidate.Task, w.registryKinds())
+	kind, err := w.scheduler.ChooseExecutor(ctx, candidate.Task, eligibleKinds(candidate.Task, capacity))
 	if err != nil {
 		return StepResult{}, err
 	}
@@ -168,6 +159,13 @@ func (w *Worker) completeExecution(ctx context.Context, kind string, task domain
 	if len(ids) == 0 {
 		return w.failExecution(ctx, nil, kind, task, attempt, result, outcome, errors.New("executor returned no evidence"))
 	}
+	usageID, err := w.persistUsage(ctx, kind, task, attempt, outcome.Usage)
+	if err != nil {
+		return err
+	}
+	if usageID != "" {
+		ids = append(ids, usageID)
+	}
 	if _, err := w.verification.CompleteAttempt(ctx, attempt.ID, verification.CompletionManifest{EvidenceIDs: ids}); err != nil {
 		if errors.Is(err, domain.ErrStaleAttempt) || errors.Is(err, domain.ErrLeaseInactive) {
 			result.Outcome = StepFailed
@@ -185,6 +183,13 @@ func (w *Worker) failExecution(ctx context.Context, _ executors.Executor, kind s
 	ids, err := w.persistEvidence(ctx, outcome)
 	if err != nil {
 		return err
+	}
+	usageID, err := w.persistUsage(ctx, kind, task, attempt, outcome.Usage)
+	if err != nil {
+		return err
+	}
+	if usageID != "" {
+		ids = append(ids, usageID)
 	}
 	signature := "worker:" + kind + ":" + string(task.ID)
 	if execErr != nil && strings.HasPrefix(execErr.Error(), "executor panic:") {

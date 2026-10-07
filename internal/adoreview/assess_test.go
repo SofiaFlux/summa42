@@ -420,6 +420,9 @@ func TestAssessReviewCleanAddsApproveCapability(t *testing.T) {
 		!contains(result.Decision.Next.AuthorityCeiling, "ado.pr.approve") {
 		t.Fatalf("next capabilities = %+v, want approve capability", result.Decision.Next)
 	}
+	if len(result.Decision.Next.RequiredCapabilities) != 1 {
+		t.Fatalf("publisher inherited review capabilities: %v", result.Decision.Next.RequiredCapabilities)
+	}
 }
 
 func TestAssessReviewFindingsGrantDeniesCommentCapability(t *testing.T) {
@@ -455,6 +458,9 @@ func TestAssessReviewFindingsAddsCommentCapability(t *testing.T) {
 	if !contains(result.Decision.Next.RequiredCapabilities, "ado.pr.comment") ||
 		!contains(result.Decision.Next.AuthorityCeiling, "ado.pr.comment") {
 		t.Fatalf("next capabilities = %+v, want comment capability", result.Decision.Next)
+	}
+	if len(result.Decision.Next.RequiredCapabilities) != 1 {
+		t.Fatalf("publisher inherited review capabilities: %v", result.Decision.Next.RequiredCapabilities)
 	}
 }
 

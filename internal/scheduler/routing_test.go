@@ -35,25 +35,25 @@ func TestTaskClassRoutingDeclinesAnUnmappedClass(t *testing.T) {
 	}
 }
 
-func TestTaskClassRoutingDeclinesWhenTheKindIsNotEligible(t *testing.T) {
+func TestTaskClassRoutingRejectsWhenTheKindIsNotEligible(t *testing.T) {
 	routing := scheduler.TaskClassRouting{"github.issue.triage": "github-issue-triage"}
 
 	got, found, err := routing.PreferredExecutor(
 		context.Background(), domain.Task{TaskClass: "github.issue.triage"}, []string{"copilot"})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("missing mapped executor must block fallback")
 	}
 	if found {
 		t.Fatalf("an ineligible executor kind was selected: %q", got)
 	}
 }
 
-func TestTaskClassRoutingDeclinesAnEmptyMapping(t *testing.T) {
+func TestTaskClassRoutingRejectsAnEmptyMapping(t *testing.T) {
 	routing := scheduler.TaskClassRouting{"github.issue.triage": "  "}
 
 	found, err := foundFor(routing)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("empty mapped executor must block fallback")
 	}
 	if found {
 		t.Fatal("a blank executor kind was selected")

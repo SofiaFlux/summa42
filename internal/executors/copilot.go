@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SofiaFlux/summa42/internal/domain"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -28,6 +29,10 @@ type CopilotExecutor struct {
 	tools       []string
 	timeout     time.Duration
 	environment map[string]string
+}
+
+func (e *CopilotExecutor) ExecutionContract() Contract {
+	return Contract{TaskClasses: []string{"ado.pr.review"}, Capabilities: []string{"copilot", "ado.pr.read"}, Enforcement: domain.EnforcementPartial}
 }
 
 type ReviewVerdict string

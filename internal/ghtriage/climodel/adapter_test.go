@@ -39,6 +39,24 @@ func TestNewRejectsAnUnusableConfiguration(t *testing.T) {
 	}
 }
 
+func TestReviewPlanUsesSeparateStrictInvocation(t *testing.T) {
+	adapter, err := New(Config{Binary: writeScript(t, `{"verdict":"ACCEPT","reason":"scope fits"}`), Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := adapter.ReviewPlan(t.Context(), ghtriage.PlanReviewInput{Schema: ghtriage.PlanReviewVersion})
+	if err != nil || out.Verdict != "ACCEPT" {
+		t.Fatalf("%+v %v", out, err)
+	}
+	adapter, err = New(Config{Binary: writeScript(t, `{"verdict":"ACCEPT","reason":"ok","grant":"write"}`), Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ReviewPlan(t.Context(), ghtriage.PlanReviewInput{}); err == nil {
+		t.Fatal("extra authority field accepted")
+	}
+}
+
 func TestClassifyRequiresExactlyOneJSONObject(t *testing.T) {
 	valid := `{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"enough detail"}`
 	cases := []struct {
