@@ -82,7 +82,15 @@ func newTriageWorkload(t *testing.T) triageWorkload {
 	}
 }
 
-type triageCapacityExecutor struct{}
+type triageCapacityExecutor struct{ triage bool }
+
+func (e triageCapacityExecutor) ExecutionContract() executors.Contract {
+	c := executors.Contract{Enforcement: domain.EnforcementEnforced}
+	if e.triage {
+		c.Capabilities = []string{ghtriage.RequiredCapability}
+	}
+	return c
+}
 
 func (triageCapacityExecutor) Start(context.Context, executors.AttemptEnvelope) (executors.ExecutionResult, error) {
 	return executors.ExecutionResult{
@@ -98,7 +106,7 @@ func TestWorkerCapacityAdvertisesTriageReadAndRoutesToTheTriageExecutor(t *testi
 	work := newTriageWorkload(t)
 	registry := map[string]executors.Executor{
 		"copilot":             triageCapacityExecutor{},
-		ghtriage.ExecutorKind: triageCapacityExecutor{},
+		ghtriage.ExecutorKind: triageCapacityExecutor{triage: true},
 	}
 	capacity, err := workerCapacity(&summa42runtime.Box{Executors: registry})
 	if err != nil {
@@ -396,8 +404,8 @@ func TestInstallTriageExecutorRegistersAUsableModelAndAdvertisesTheReadCapabilit
 		t.Fatal(err)
 	}
 	available, advertised := capacity.Capabilities[ghtriage.RequiredCapability]
-	if !advertised || !available.Accessible || available.Enforcement != domain.EnforcementEnforced {
-		t.Fatalf("capacity[%q] = %+v (advertised %t), want enforced accessible capability",
+	if !advertised || !available.Accessible || available.Enforcement != domain.EnforcementUnenforced {
+		t.Fatalf("capacity[%q] = %+v (advertised %t), want unassessed accessible capability",
 			ghtriage.RequiredCapability, available, advertised)
 	}
 	if stderr.Len() != 0 {

@@ -45,6 +45,11 @@ func NewExecutor(store *evidence.Store, model ClassifierModel) *Executor {
 	return &Executor{evidence: store, model: model}
 }
 
+func (e *Executor) ExecutionContract() executors.Contract {
+	// The model interface alone cannot prove subprocess or credential isolation.
+	return executors.Contract{TaskClasses: []string{TaskClass}, Capabilities: []string{RequiredCapability}, Enforcement: domain.EnforcementUnenforced}
+}
+
 // Start runs the three deciding stages inside one lease and returns exactly
 // one decision document. A stage 1 that resolves the issue never consults the
 // model. A model response that does not validate is retried once with the same

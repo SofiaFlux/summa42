@@ -720,26 +720,11 @@ func splitWorkspaceRootArg(args []string) (workspaceRoot string, rest []string, 
 }
 
 func workerCapacity(box *summa42runtime.Box) (scheduler.CapacitySnapshot, error) {
-	caps := make(map[string]scheduler.CapabilityCapacity, len(box.Executors)+2)
-	for kind := range box.Executors {
-		kind = strings.TrimSpace(kind)
-		if kind == "" {
-			continue
-		}
-		caps[kind] = scheduler.CapabilityCapacity{Accessible: true, Enforcement: domain.EnforcementEnforced}
-	}
-	if _, registered := caps[publishExecutorKind]; registered {
-		for _, capability := range []string{publishCommentCapability, publishApproveCapability} {
-			caps[capability] = scheduler.CapabilityCapacity{Accessible: true, Enforcement: domain.EnforcementEnforced}
-		}
-	}
-	if _, registered := caps[ghtriage.ExecutorKind]; registered {
-		caps[ghtriage.RequiredCapability] = scheduler.CapabilityCapacity{Accessible: true, Enforcement: domain.EnforcementEnforced}
-	}
-	if len(caps) == 0 {
+	capacity := scheduler.CapacityForExecutors(box.Executors)
+	if len(capacity.Executors) == 0 {
 		return scheduler.CapacitySnapshot{}, errors.New("run-worker has no schedulable capabilities: the Box executor registry is empty, so there is no capability source to advertise")
 	}
-	return scheduler.CapacitySnapshot{Capabilities: caps}, nil
+	return capacity, nil
 }
 
 func runWorker(ctx context.Context, args []string) error {

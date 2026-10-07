@@ -72,6 +72,17 @@ func newPublishTestEvidenceStore(t *testing.T) *evidence.Store {
 	return evidenceStore
 }
 
+func TestPublishContractHandlesDecisionsInEveryMode(t *testing.T) {
+	for _, mode := range []PublishMode{PublishNone, PublishComments, PublishAll} {
+		contract := (&Publisher{config: PublishConfig{Mode: mode}}).ExecutionContract()
+		for _, cap := range []string{"ado.pr.comment", "ado.pr.approve"} {
+			if !contains(contract.Capabilities, cap) {
+				t.Fatalf("mode %s cannot handle %s decision", mode, cap)
+			}
+		}
+	}
+}
+
 func TestPublishConfigDoesNotHoldProviderObjects(t *testing.T) {
 	configType := reflect.TypeOf(PublishConfig{})
 	for _, name := range []string{"Comment", "Vote"} {

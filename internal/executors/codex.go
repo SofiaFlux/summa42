@@ -121,6 +121,7 @@ func (e *CodexExecutor) Start(ctx context.Context, envelope AttemptEnvelope) (Ex
 		Stderr:   stderr.String(),
 		Evidence: append(eventEvidence, Evidence{Kind: EvidenceStderr, Content: stderr.String()}),
 		Usage: Usage{
+			Reported:              tokenUsage.Reported,
 			WallTime:              wall,
 			InputTokens:           tokenUsage.InputTokens,
 			CachedInputTokens:     tokenUsage.CachedInputTokens,
@@ -166,6 +167,7 @@ func codexPrompt(envelope AttemptEnvelope) string {
 }
 
 type codexTokenUsage struct {
+	Reported              bool  `json:"-"`
 	InputTokens           int64 `json:"input_tokens"`
 	CachedInputTokens     int64 `json:"cached_input_tokens"`
 	CacheWriteInputTokens int64 `json:"cache_write_input_tokens"`
@@ -247,6 +249,11 @@ func parseCodexJSONL(data []byte) (string, []Evidence, codexTokenUsage, error) {
 			}
 		case "turn.completed":
 			usage = event.Usage
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(line, &fields); err == nil {
+				report, present := fields["usage"]
+				usage.Reported = present && !bytes.Equal(bytes.TrimSpace(report), []byte("null"))
+			}
 			sawCompleted = true
 		case "turn.failed":
 			if event.Error != nil && event.Error.Message != "" {

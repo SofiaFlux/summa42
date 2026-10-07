@@ -52,7 +52,13 @@ The Box has **no ambient Copilot or MCP discovery**. To enable its narrowly scop
 
 At startup, the Box checks the configured server for `core_list_projects` and `wit_work_item` and records durable capability assessments. It exposes only `ado.projects.list` and `ado.work_item.read`; the latter accepts only documented read actions (`get`, `get_batch`, `list_comments`, `my`, `list_revisions`, `list_for_iteration`, `get_type`). A Task that needs one must declare that semantic name in both `RequiredCapabilities` and `AuthorityCeiling`, with a compatible enforcement level. A discovered server tool never grants Task authority by itself. This local-process integration is rated `PARTIAL`, not `ENFORCED`.
 
-This is a **capability primitive**, not automatic Mission execution: the current Box still does not start a scheduler/executor worker or hand an MCP session to Codex. A Task declaration alone will not call ADO. External writes remain outside this provider and must use the protected External Operation path.
+This is a **capability primitive**, not automatic Mission execution. The default Box daemon serves local control; `summa42-box run-worker --workspace-root <directory>` explicitly starts the scheduler/executor worker with configured adapters. A Task declaration alone will not call ADO or hand an MCP session to Codex. External writes remain outside this provider and must use the protected External Operation path.
+
+Worker capacity comes from executor contracts: one executor must support the Task class, every required capability and the required enforcement level. A registry name does not invent semantic capabilities. Model-based GitHub issue triage is currently `UNENFORCED`; the native Copilot adapter is `PARTIAL`. Tasks demanding stronger containment remain unclaimed. An explicit Task-class route never falls back to an unrelated executor.
+
+Reported executor usage is saved as `executor.usage.v1` evidence linked to its Attempt, including on execution failure. Missing token reports remain unknown; usage evidence does not settle monetary budgets or substitute for execution evidence.
+
+The [self-development roadmap](docs/superpowers/plans/2026-10-07-self-development-roadmap.md) records the audited baseline and remaining stages. The [executor eligibility design](docs/superpowers/specs/2026-10-07-executor-eligibility-design.md) describes the first foundation slice; repository checkout, issue-plan review and autonomous GitHub PR handling remain future work.
 
 ## What is authoritative
 

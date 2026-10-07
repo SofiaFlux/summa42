@@ -187,8 +187,8 @@ func TestOpenWorkerBoxRegistersTriageAndRoutesTheTaskClass(t *testing.T) {
 		t.Fatal(err)
 	}
 	available, advertised := capacity.Capabilities[ghtriage.RequiredCapability]
-	if !advertised || !available.Accessible || available.Enforcement != domain.EnforcementEnforced {
-		t.Fatalf("capacity[%q] = %+v (advertised %t), want enforced accessible capability",
+	if !advertised || !available.Accessible || available.Enforcement != domain.EnforcementUnenforced {
+		t.Fatalf("capacity[%q] = %+v (advertised %t), want unassessed accessible capability",
 			ghtriage.RequiredCapability, available, advertised)
 	}
 	if kind := verdict.routing[ghtriage.TaskClass]; kind != ghtriage.ExecutorKind {

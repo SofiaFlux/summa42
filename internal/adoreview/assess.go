@@ -96,7 +96,7 @@ func AssessReview(ctx context.Context, cases *workflowcase.Service, evidenceStor
 		}
 		next := workflow.WorkProposal{
 			Kind:                 "publish-decision",
-			RequiredCapabilities: append([]string(nil), input.Case.NextWork.RequiredCapabilities...),
+			RequiredCapabilities: append([]string(nil), proposedActions...),
 			AuthorityCeiling:     append([]string(nil), input.Case.NextWork.AuthorityCeiling...),
 			ProposedActions:      proposedActions,
 		}

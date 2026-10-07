@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,9 +99,9 @@ func TestStepOnceCompletesEligibleTask(t *testing.T) {
 	capacity := scheduler.CapacitySnapshot{Capabilities: map[string]scheduler.CapabilityCapacity{
 		"shell": {Accessible: true, Enforcement: domain.EnforcementEnforced},
 	}}
-	fake := &fakeExecutor{result: executors.ExecutionResult{ExitCode: 0, Stdout: "review ok", Evidence: []executors.Evidence{{Kind: executors.EvidenceAgentMessage, Content: "clean"}}}}
+	fake := &fakeExecutor{result: executors.ExecutionResult{ExitCode: 0, Usage: executors.Usage{InputTokens: 7}, Stdout: "review ok", Evidence: []executors.Evidence{{Kind: executors.EvidenceAgentMessage, Content: "clean"}}}}
 	worker, err := scheduler.NewWorker(schedSvc, execSvc, evidenceStore, verifySvc,
-		map[string]executors.Executor{"shell": fake}, clk, t.TempDir())
+		map[string]executors.Executor{"aaa-unrelated": &fakeExecutor{}, "shell": fake}, clk, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,11 +115,15 @@ func TestStepOnceCompletesEligibleTask(t *testing.T) {
 	if got.TaskID != task.ID || got.AttemptID == "" {
 		t.Fatalf("result = %+v, want task %q with attempt", got, task.ID)
 	}
-	if len(got.EvidenceIDs) != 2 {
-		t.Fatalf("evidence IDs = %v, want stdout + agent message", got.EvidenceIDs)
+	if len(got.EvidenceIDs) != 3 {
+		t.Fatalf("evidence IDs = %v, want stdout + agent message + usage", got.EvidenceIDs)
 	}
 	if len(fake.seen) != 1 {
 		t.Fatalf("executor calls = %d, want 1", len(fake.seen))
+	}
+	usageObject, usageRaw, found, usageErr := evidenceStore.FindBySubject(ctx, "executor.usage.v1", string(got.AttemptID))
+	if usageErr != nil || !found || usageObject.Kind != "executor.usage.v1" || !strings.Contains(string(usageRaw), `"InputTokens":7`) {
+		t.Fatalf("usage missing: found=%v raw=%s err=%v", found, usageRaw, usageErr)
 	}
 	envelope := fake.seen[0]
 	if envelope.TaskID != task.ID || envelope.AttemptID != got.AttemptID {
@@ -181,7 +186,7 @@ func TestStepOnceFailsExecutorErrorAndBlocksRepeatSignature(t *testing.T) {
 	capacity := scheduler.CapacitySnapshot{Capabilities: map[string]scheduler.CapabilityCapacity{
 		"shell": {Accessible: true, Enforcement: domain.EnforcementEnforced},
 	}}
-	fake := &fakeExecutor{err: errors.New("provider timeout")}
+	fake := &fakeExecutor{err: errors.New("provider timeout"), result: executors.ExecutionResult{Usage: executors.Usage{Reported: true, InputTokens: 3}}}
 	worker, err := scheduler.NewWorker(schedSvc, execSvc, evidenceStore, verifySvc,
 		map[string]executors.Executor{"shell": fake}, clk, t.TempDir())
 	if err != nil {
@@ -193,6 +198,10 @@ func TestStepOnceFailsExecutorErrorAndBlocksRepeatSignature(t *testing.T) {
 	}
 	if first.Outcome != scheduler.StepFailed {
 		t.Fatalf("outcome = %q, want FAILED", first.Outcome)
+	}
+	_, raw, found, usageErr := evidenceStore.FindBySubject(ctx, scheduler.UsageEvidenceKind, string(first.AttemptID))
+	if usageErr != nil || !found || !strings.Contains(string(raw), `"InputTokens":3`) {
+		t.Fatalf("failed attempt lost usage: found=%v raw=%s err=%v", found, raw, usageErr)
 	}
 	reloaded, err := execSvc.Task(ctx, task.ID)
 	if err != nil {
@@ -696,7 +705,7 @@ func TestStepOnceToleratesStaleLeaseOnFail(t *testing.T) {
 	}
 }
 
-func TestStepOnceFailsEmptyOutputWithKindSignature(t *testing.T) {
+func TestStepOnceFailsUsageOnlyOutputWithKindSignature(t *testing.T) {
 	ctx := context.Background()
 	store := testutil.OpenStore(t)
 	clk := testutil.NewClock(time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC))
@@ -732,7 +741,7 @@ func TestStepOnceFailsEmptyOutputWithKindSignature(t *testing.T) {
 	capacity := scheduler.CapacitySnapshot{Capabilities: map[string]scheduler.CapabilityCapacity{
 		"shell": {Accessible: true, Enforcement: domain.EnforcementEnforced},
 	}}
-	fake := &fakeExecutor{result: executors.ExecutionResult{ExitCode: 0}}
+	fake := &fakeExecutor{result: executors.ExecutionResult{ExitCode: 0, Usage: executors.Usage{Reported: true}}}
 	worker, err := scheduler.NewWorker(schedSvc, execSvc, evidenceStore, verifySvc,
 		map[string]executors.Executor{"shell": fake}, clk, t.TempDir())
 	if err != nil {
@@ -745,8 +754,8 @@ func TestStepOnceFailsEmptyOutputWithKindSignature(t *testing.T) {
 	if got.Outcome != scheduler.StepFailed {
 		t.Fatalf("outcome = %q, want FAILED", got.Outcome)
 	}
-	if len(got.EvidenceIDs) != 0 {
-		t.Fatalf("evidence IDs = %v, want empty", got.EvidenceIDs)
+	if len(got.EvidenceIDs) != 1 {
+		t.Fatalf("evidence IDs = %v, want usage evidence only", got.EvidenceIDs)
 	}
 	var signature, class string
 	if err := store.DB().QueryRowContext(ctx,

@@ -85,6 +85,10 @@ func TestPublishEnvBuildsProvidersAndSettings(t *testing.T) {
 
 type publishCapacityExecutor struct{}
 
+func (publishCapacityExecutor) ExecutionContract() executors.Contract {
+	return executors.Contract{Capabilities: []string{"ado.pr.comment", "ado.pr.approve"}, Enforcement: domain.EnforcementEnforced}
+}
+
 func (publishCapacityExecutor) Start(context.Context, executors.AttemptEnvelope) (executors.ExecutionResult, error) {
 	return executors.ExecutionResult{Evidence: []executors.Evidence{{Kind: executors.EvidenceAgentMessage, Content: "published"}}}, nil
 }

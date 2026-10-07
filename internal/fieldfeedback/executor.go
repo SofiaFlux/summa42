@@ -26,6 +26,10 @@ type EmitExecutor struct {
 	providerName string
 }
 
+func (e *EmitExecutor) ExecutionContract() executors.Contract {
+	return executors.Contract{TaskClasses: []string{"collective.feedback.emit"}, Capabilities: []string{feedbackCapability(e.providerName)}, Enforcement: domain.EnforcementEnforced}
+}
+
 func NewEmitExecutor(
 	feedback EmitTaskLookup,
 	operationsSvc *operations.Service,
