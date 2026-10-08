@@ -70,6 +70,11 @@ func New(store *state.Store, clk clock.Clock, executionSvc *execution.Service, p
 }
 
 func (s *Service) Prepare(ctx context.Context, request PrepareRequest) (domain.ExternalOperation, error) {
+	return s.PrepareWithGuard(ctx, request, nil)
+}
+
+// PrepareWithGuard checks a caller's canonical contract before reserving effects.
+func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, guard execution.TaskGuard) (domain.ExternalOperation, error) {
 	if err := s.configured(); err != nil {
 		return domain.ExternalOperation{}, err
 	}
@@ -117,6 +122,11 @@ func (s *Service) Prepare(ctx context.Context, request PrepareRequest) (domain.E
 
 	var result domain.ExternalOperation
 	err = s.store.WithTx(ctx, func(tx *sql.Tx) error {
+		if guard != nil {
+			if err := guard(ctx, tx); err != nil {
+				return err
+			}
+		}
 		guarded, err := s.execution.GuardAttempt(ctx, tx, request.AttemptID, domain.TaskExecuting)
 		if err != nil {
 			return err
@@ -282,6 +292,11 @@ func (s *Service) ResolveEffectSlot(ctx context.Context, tx *sql.Tx, taskID doma
 }
 
 func (s *Service) Dispatch(ctx context.Context, operationID, attemptID domain.ID) (domain.ExternalOperation, error) {
+	return s.DispatchWithGuard(ctx, operationID, attemptID, nil)
+}
+
+// DispatchWithGuard checks canonical authority both on replay and at the commit boundary.
+func (s *Service) DispatchWithGuard(ctx context.Context, operationID, attemptID domain.ID, guard execution.TaskGuard) (domain.ExternalOperation, error) {
 	if err := s.configured(); err != nil {
 		return domain.ExternalOperation{}, err
 	}
@@ -291,6 +306,20 @@ func (s *Service) Dispatch(ctx context.Context, operationID, attemptID domain.ID
 	op, err := s.loadOperation(ctx, operationID)
 	if err != nil {
 		return domain.ExternalOperation{}, err
+	}
+	if guard != nil {
+		if err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
+			current, err := s.execution.GuardAttempt(ctx, tx, attemptID, domain.TaskExecuting)
+			if err != nil {
+				return err
+			}
+			if current.TaskID != op.TaskID {
+				return domain.ErrStaleAttempt
+			}
+			return guard(ctx, tx)
+		}); err != nil {
+			return op, err
+		}
 	}
 	switch op.State {
 	case domain.OperationConfirmedEffect, domain.OperationConfirmedNoEffect:
@@ -353,6 +382,11 @@ func (s *Service) Dispatch(ctx context.Context, operationID, attemptID domain.ID
 	claim := domain.NewID("dispatch")
 	var dispatchRequest ProviderDispatchRequest
 	err = s.store.WithTx(ctx, func(tx *sql.Tx) error {
+		if guard != nil {
+			if err := guard(ctx, tx); err != nil {
+				return err
+			}
+		}
 		guarded, err := s.execution.GuardAttempt(ctx, tx, attemptID, domain.TaskExecuting)
 		if err != nil {
 			return err

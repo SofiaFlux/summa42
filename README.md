@@ -58,7 +58,7 @@ Worker capacity comes from executor contracts: one executor must support the Tas
 
 Reported executor usage is saved as `executor.usage.v1` evidence linked to its Attempt, including on execution failure. Missing token reports remain unknown; usage evidence does not settle monetary budgets or substitute for execution evidence.
 
-The [self-development roadmap](docs/superpowers/plans/2026-10-07-self-development-roadmap.md) records the audited baseline and remaining stages. The [executor eligibility design](docs/superpowers/specs/2026-10-07-executor-eligibility-design.md) describes the first foundation slice. [Grounded planning](docs/superpowers/specs/2026-10-07-grounded-planning-design.md) adds pinned source preparation and independent plan review; supervised local implementation and independent candidate review are available below; autonomous GitHub PR handling remains future work.
+The [self-development roadmap](docs/superpowers/plans/2026-10-07-self-development-roadmap.md) records the audited baseline and remaining stages. The [executor eligibility design](docs/superpowers/specs/2026-10-07-executor-eligibility-design.md) describes the first foundation slice. [Grounded planning](docs/superpowers/specs/2026-10-07-grounded-planning-design.md) adds pinned source preparation and independent plan review; supervised local implementation and independent candidate review are available below; supervised protected publication is available below; autonomous CI and merge handling remain future work.
 
 ### Grounded GitHub issue plans
 
@@ -196,3 +196,23 @@ The wrapper receives the original issue, exact accepted plan/context, implementa
 A claimed authority-free review Task shares the original Mission/resource envelope. Its five-minute lease permits a four-minute model call. Verdict evidence binds the exact Case/Work, implementation evidence/hash and candidate, and review Task/Attempt/fence. Interrupted completion/acceptance resumes the saved result; an expired staged review requires operator recovery. Completed reviews are reused, and tests are not rerun. Source/candidate drift or a changed issue revision/grant blocks completion/acceptance.
 
 Only `ACCEPT` together with all passing recorded owner validations accepts the implementation Task. `REVISE` / `BLOCK` or failed validation returns a held JSON result and a nonzero CLI status, keeping implementation awaiting verification. The Case stays on the implementation Work, so a future publication stage must explicitly consume its exact acceptance. No automatic reimplementation, GitHub publication or merge is performed. Native wrappers remain trusted and UNENFORCED; drift checks do not provide an atomic filesystem lock or a hostile-host sandbox.
+
+### Supervised candidate publication
+
+After the independent code review accepts the passing candidate, an owner may explicitly grant both `github.repo.publish` and `github.pr.create` capabilities **and actions** on the current Case, then invoke:
+
+```sh
+./bin/summa42-box run-gh-publish --case <case-id> \
+  --source-repo /absolute/path/to/source --base-branch main \
+  --repository owner/repo --credential-file /absolute/path/to/private-token
+```
+
+The token file must be a regular private file (0600 on Unix). Repository selection must match the Case and accepted plan. Publication runs through policy, approvals and resource reservations, using separate protected branch and PR effect slots. Costs are bounded GitHub write-request units (three for branch objects/ref, one for the PR), not a currency charge. No approval is fabricated by this command.
+
+The managed branch is `summa42/issue-<number>-<work-hash>`. The publisher exports at most 64 regular UTF-8 files and 256 KiB of new contents, preserving executable modes and deletions. Only ordinary unsigned single-parent commits are supported. GitHub must return the exact reviewed tree and commit SHA before a create-only branch ref can be written; a conflicting branch is held. The base branch must remain at the accepted base SHA. A deterministic marker binds the draft PR to the exact head, base, repository and evidence.
+
+Policy-required approval produces `held: true` with the exact operation and approval IDs and a nonzero exit. Approve that bound request within the live ten-minute lease, then rerun the command; it resumes the same Attempt and prepared operation. Branch and PR may require separate approvals. Concurrent dispatch claims still permit one write.
+
+A lost write acknowledgement yields `pending: true` and a nonzero exit. Outcome lookup is read-only; an absent branch/PR does not prove that a delayed write cannot appear. Repeated calls retain the live claim (`busy: true`); after lease recovery, protected slots reconcile uncertain effects without blindly duplicating them. Confirmed effects are staged as an immutable receipt before completion. Interrupted completion can resume under the same live fence; expired staged receipts need operator recovery. Completed replay returns the historical receipt under current authority, rather than asserting ongoing remote PR health.
+
+The publication Task stays `AWAITING_VERIFICATION`. Independent CI acceptance, merging, issue closure and automatic worker composition are later stages. The adapters mediate their own GitHub effects as ENFORCED; they do not sandbox hostile repository execution. No live Summa publication was used to validate this slice.
