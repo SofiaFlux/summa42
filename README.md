@@ -58,7 +58,7 @@ Worker capacity comes from executor contracts: one executor must support the Tas
 
 Reported executor usage is saved as `executor.usage.v1` evidence linked to its Attempt, including on execution failure. Missing token reports remain unknown; usage evidence does not settle monetary budgets or substitute for execution evidence.
 
-The [self-development roadmap](docs/superpowers/plans/2026-10-07-self-development-roadmap.md) records the audited baseline and remaining stages. The [executor eligibility design](docs/superpowers/specs/2026-10-07-executor-eligibility-design.md) describes the first foundation slice. [Grounded planning](docs/superpowers/specs/2026-10-07-grounded-planning-design.md) adds pinned source preparation and independent plan review; implementation execution and autonomous GitHub PR handling remain future work.
+The [self-development roadmap](docs/superpowers/plans/2026-10-07-self-development-roadmap.md) records the audited baseline and remaining stages. The [executor eligibility design](docs/superpowers/specs/2026-10-07-executor-eligibility-design.md) describes the first foundation slice. [Grounded planning](docs/superpowers/specs/2026-10-07-grounded-planning-design.md) adds pinned source preparation and independent plan review; supervised local implementation and independent candidate review are available below; supervised protected publication is available below; autonomous CI and merge handling remain future work.
 
 ### Grounded GitHub issue plans
 
@@ -76,7 +76,7 @@ The [self-development roadmap](docs/superpowers/plans/2026-10-07-self-developmen
 
 These are supervised one-shot commands using the existing CLI model protocol. The reviewer gets the original issue, exact plan and hash-bound code projection through a separate invocation. It materializes a review Task and claims a fenced Attempt before calling the model, preventing overlapping ticks from paying for the same review twice. Its five-minute lease bounds the call to four minutes, leaving time for cleanup. A completed verdict resumes from its exact Task/Attempt manifest after interruption; normal runtime wake processing handles expired claims. ACCEPT can propose `github.issue.implement` only if the existing case grant permits both `workspace.repo.write` and `workspace.test` capabilities/actions. REVISE/BLOCK holds the case; a legacy v1 plan must be re-planned before implementation. Review does not execute the validation commands or materialize an implementation Task. Native model invocations remain UNENFORCED; monetary accounting and worker-based model composition remain future work.
 
-`internal/repoworkspace.Checkout` is the pinned, detached source-preparation primitive for the future implementation executor; the current worker still creates an empty attempt workspace. Selected context files must be regular tracked UTF-8 files; symlinks, submodules, path traversal and context exceeding 32 files or 256 KiB are rejected. Allowed paths are exact file names, including explicitly permitted new files.
+`internal/repoworkspace.Checkout` is the pinned, detached source-preparation primitive for supervised local implementation; the current general worker still creates an empty attempt workspace. Selected context files must be regular tracked UTF-8 files; symlinks, submodules, path traversal and context exceeding 32 files or 256 KiB are rejected. Allowed paths are exact file names, including explicitly permitted new files.
 
 Source preparation requires [Git 2.45 or newer](https://github.com/git/git/blob/v2.45.0/Documentation/RelNotes/2.45.0.txt), with `--no-lazy-fetch` support. Missing partial-clone objects fail offline instead of being fetched. Checkout copies and dissociates object storage; it does not borrow writable objects from the source. These Git controls prepare data and do not provide an execution sandbox for future tests or implementation tools.
 
@@ -166,3 +166,53 @@ See [SUPPORT.md](SUPPORT.md) for reproducible-defect, security, and conduct-repo
 ## License
 
 Summa42 is licensed under the [Apache License 2.0](LICENSE).
+
+### Supervised local implementation
+
+After an authorized ACCEPT from `run-gh-plan-review`, `run-gh-implement` can prepare an actual local candidate:
+
+```sh
+mkdir -p /absolute/path/to/attempts
+./bin/summa42-box run-gh-implement --case <case-id> \
+  --source-repo /absolute/path/to/summa42 \
+  --workspace-root /absolute/path/to/attempts --model-binary <implementation-wrapper>
+```
+
+The wrapper follows the existing stdin/stdout JSON protocol and returns `{"summary":"…","edits":[{"path":"file.go","content":"complete UTF-8 contents","delete":false}]}`. Models propose complete-file edits; deterministic code enforces the owner-selected paths, prepares a fresh pinned checkout and creates a local commit. Each claimed Task/Attempt records the exact plan/review/source citations, candidate/tree/diff identity and real results of owner-supplied validation argv. Concurrent calls return busy; completed calls return the same saved evidence. Execution results are indexed before completion, so a failed completion save resumes under the same live fence without another model/test call; an expired staged run requires operator recovery. The source repository’s observed Git/data state must remain unchanged during execution. Validation failure stays visible in the record and CLI exit status. Task completion remains awaiting independent code verification.
+
+Validation commands run natively as trusted local commands, classified UNENFORCED. They receive a private HOME/cache and no ambient credential variables. Go module downloads are disabled by default; provide preinstalled dependencies or an explicit owner-selected wrapper/argv, for example `["env","GOMODCACHE=/absolute/prepopulated/module-cache","go","test","./..."]`. Each command is limited to 60 seconds and 16 KiB captured output. Validation cannot silently change the committed candidate. This supervised slice does not accept code, publish GitHub branches/PRs or merge work. Native execution does not contain hostile repository code; use a trusted local repository and command configuration until TEB integration is available.
+
+### Independent local code review
+
+After `run-gh-implement` records a candidate, run a separately configured reviewer:
+
+```sh
+./bin/summa42-box run-gh-code-review --case <case-id> \
+  --source-repo /absolute/path/to/repository --model-binary <review-wrapper>
+```
+
+The wrapper receives the original issue, exact accepted plan/context, implementation evidence and complete before/after contents and modes for every changed file. It returns only `{"verdict":"ACCEPT","reason":"…"}` (or `REVISE` / `BLOCK`). Projection is limited to 64 changed paths and 512 KiB total file contents; oversized or non-text changes are rejected rather than truncated. Configure a reviewer independently from the implementation wrapper; the system provides a separate invocation and Task/Attempt, not proof of different provider identity.
+
+A claimed authority-free review Task shares the original Mission/resource envelope. Its five-minute lease permits a four-minute model call. Verdict evidence binds the exact Case/Work, implementation evidence/hash and candidate, and review Task/Attempt/fence. Interrupted completion/acceptance resumes the saved result; an expired staged review requires operator recovery. Completed reviews are reused, and tests are not rerun. Source/candidate drift or a changed issue revision/grant blocks completion/acceptance.
+
+Only `ACCEPT` together with all passing recorded owner validations accepts the implementation Task. `REVISE` / `BLOCK` or failed validation returns a held JSON result and a nonzero CLI status, keeping implementation awaiting verification. The Case stays on the implementation Work, so a future publication stage must explicitly consume its exact acceptance. No automatic reimplementation, GitHub publication or merge is performed. Native wrappers remain trusted and UNENFORCED; drift checks do not provide an atomic filesystem lock or a hostile-host sandbox.
+
+### Supervised candidate publication
+
+After the independent code review accepts the passing candidate, an owner may explicitly grant both `github.repo.publish` and `github.pr.create` capabilities **and actions** on the current Case, then invoke:
+
+```sh
+./bin/summa42-box run-gh-publish --case <case-id> \
+  --source-repo /absolute/path/to/source --base-branch main \
+  --repository owner/repo --credential-file /absolute/path/to/private-token
+```
+
+The token file must be a regular private file (0600 on Unix). Repository selection must match the Case and accepted plan. Publication runs through policy, approvals and resource reservations, using separate protected branch and PR effect slots. Costs are bounded GitHub write-request units (three for branch objects/ref, one for the PR), not a currency charge. No approval is fabricated by this command.
+
+The managed branch is `summa42/issue-<number>-<work-hash>`. The publisher exports at most 64 regular UTF-8 files and 256 KiB of new contents, preserving executable modes and deletions. Only ordinary unsigned single-parent commits are supported. GitHub must return the exact reviewed tree and commit SHA before a create-only branch ref can be written; a conflicting branch is held. The base branch must remain at the accepted base SHA. A deterministic marker binds the draft PR to the exact head, base, repository and evidence.
+
+Policy-required approval produces `held: true` with the exact operation and approval IDs and a nonzero exit. Approve that bound request within the live ten-minute lease, then rerun the command; it resumes the same Attempt and prepared operation. Branch and PR may require separate approvals. Concurrent dispatch claims still permit one write.
+
+A lost write acknowledgement yields `pending: true` and a nonzero exit. Outcome lookup is read-only; an absent branch/PR does not prove that a delayed write cannot appear. Repeated calls retain the live claim (`busy: true`); after lease recovery, protected slots reconcile uncertain effects without blindly duplicating them. Confirmed effects are staged as an immutable receipt before completion. Interrupted completion can resume under the same live fence; expired staged receipts need operator recovery. Completed replay returns the historical receipt under current authority, rather than asserting ongoing remote PR health.
+
+The publication Task stays `AWAITING_VERIFICATION`. Independent CI acceptance, merging, issue closure and automatic worker composition are later stages. The adapters mediate their own GitHub effects as ENFORCED; they do not sandbox hostile repository execution. No live Summa publication was used to validate this slice.

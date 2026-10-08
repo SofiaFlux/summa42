@@ -292,3 +292,38 @@ func TestTimeoutBoundsTheWholeSubtree(t *testing.T) {
 			elapsed, timeout, childLives)
 	}
 }
+
+func TestImplementationUsesStrictStructuredEdits(t *testing.T) {
+	adapter, err := New(Config{Binary: writeScript(t, `{"summary":"change","edits":[{"path":"code.go","content":"package test\n","delete":false}]}`), Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := adapter.Implement(t.Context(), ghtriage.ImplementationInput{Schema: ghtriage.ImplementationVersion})
+	if err != nil || len(out.Edits) != 1 || out.Edits[0].Path != "code.go" {
+		t.Fatalf("%+v %v", out, err)
+	}
+	adapter, err = New(Config{Binary: writeScript(t, `{"summary":"change","edits":[{"path":"code.go","content":"x","delete":false}],"run":"model-shell"}`), Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Implement(t.Context(), ghtriage.ImplementationInput{}); err == nil {
+		t.Fatal("model command accepted")
+	}
+}
+
+func TestCodeReviewUsesStrictVerdict(t *testing.T) {
+	for _, raw := range []string{`{"verdict":"ACCEPT","reason":"fits"}`, `{"verdict":"ACCEPT","reason":"fits","publish":true}`, `{"verdict":"YES","reason":"fits"}`} {
+		a, err := New(Config{Binary: writeScript(t, raw), Timeout: time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := a.ReviewCode(t.Context(), ghtriage.CodeReviewInput{Schema: ghtriage.CodeReviewVersion})
+		if raw == `{"verdict":"ACCEPT","reason":"fits"}` {
+			if err != nil || out.Verdict != "ACCEPT" {
+				t.Fatalf("%+v %v", out, err)
+			}
+		} else if err == nil {
+			t.Fatalf("accepted %s", raw)
+		}
+	}
+}

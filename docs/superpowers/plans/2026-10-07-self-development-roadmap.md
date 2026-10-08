@@ -12,6 +12,14 @@
 
 **Zakres:** analiza i plan. Nie zmieniono kodu, issues, ustawień GitHuba ani wdrożenia.
 
+## Aktualizacja implementacji — 8 października 2026
+
+PR #19 dostarczył pierwszą podstawę executor eligibility. Otwarty draft PR #20 rozwija nadzorowane przygotowanie źródeł i review planu, lokalną implementację z rzeczywistymi testami, niezależne review kandydata oraz chronioną publikację dokładnego commita jako branch i draft PR. Publikacja wymaga osobnych uprawnień Case, korzysta z dwóch ExternalOperation slots, zachowuje zgody właściciela i nie ponawia niepewnych zapisów. Zobacz [plan publikacji](2026-10-08-github-publication.md).
+
+To nadal komendy nadzorowane, a nie automatycznie złożony worker. Dziś Summa nie uczestniczy w pracy ani publikacji na żywo. Następny etap to niezależny od implementera obserwator wyników CI przypisanych do dokładnego candidate SHA, z trwałym evidence i weryfikacją publikacji. Dopiero później ograniczona naprawa po review/CI, owner-approved merge oraz obsługa stanu issues. PR #20 pozostaje draft; etap publikacji nie przyznaje prawa do merge ani zamykania issues.
+
+Pierwotna analiza poniżej opisuje stan na wskazanej bazie i pozostaje historycznym punktem odniesienia.
+
 ## 1. Wniosek
 
 Summa42 ma już znaczną część mechaniki sterowania i trwałości. Najbliższa przeszkoda jest konkretna: przepływ GitHuba dochodzi do planu i propozycji `github.issue.plan.review`, po czym nie ma executora i kontraktu routingu pozwalającego kontynuować. Kolejne brakujące elementy to przygotowanie repozytorium, wykonanie i niezależna weryfikacja zmiany, publikacja PR oraz powrót wyników CI/review do workflow.
