@@ -130,6 +130,13 @@ func (s *Service) CompleteAttemptWithGuard(ctx context.Context, attemptID domain
 }
 
 func (s *Service) AcceptTask(ctx context.Context, taskID domain.ID, request AcceptanceRequest) (AcceptanceRecord, error) {
+	return s.AcceptTaskWithGuard(ctx, taskID, request, nil)
+}
+
+// AcceptTaskWithGuard validates external canonical bindings in the acceptance transaction.
+// With a non-nil guard, an exact succeeded acceptance can be replayed in that
+// same transaction. Legacy unguarded acceptance remains a one-time transition.
+func (s *Service) AcceptTaskWithGuard(ctx context.Context, taskID domain.ID, request AcceptanceRequest, guard func(context.Context, *sql.Tx) error) (AcceptanceRecord, error) {
 	if err := s.configured(); err != nil {
 		return AcceptanceRecord{}, err
 	}
@@ -153,6 +160,11 @@ func (s *Service) AcceptTask(ctx context.Context, taskID domain.ID, request Acce
 	evidenceJSON, _ := json.Marshal(evidenceIDs)
 
 	err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
+		if guard != nil {
+			if err := guard(ctx, tx); err != nil {
+				return err
+			}
+		}
 		var taskState domain.TaskState
 		var currentAttempt sql.NullString
 		if err := tx.QueryRowContext(ctx,
@@ -161,6 +173,22 @@ func (s *Service) AcceptTask(ctx context.Context, taskID domain.ID, request Acce
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("task %q not found", taskID)
 			}
+			return err
+		}
+		if guard != nil && taskState == domain.TaskSucceeded && currentAttempt.Valid {
+			record.AttemptID = domain.ID(currentAttempt.String)
+			var createdAt string
+			err := tx.QueryRowContext(ctx, `SELECT acceptance_id, created_at FROM acceptance_records
+			 WHERE task_id=? AND attempt_id=? AND verifier_id=? AND verifier_type=?
+			 AND criteria_result_json=? AND evidence_ids_json=?`, taskID, record.AttemptID,
+				request.VerifierID, request.VerifierType, string(criteriaJSON), string(evidenceJSON)).Scan(&record.ID, &createdAt)
+			if errors.Is(err, sql.ErrNoRows) {
+				return errors.New("succeeded acceptance differs from guarded request")
+			}
+			if err != nil {
+				return err
+			}
+			record.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
 			return err
 		}
 		if taskState != domain.TaskAwaitingVerification || !currentAttempt.Valid {

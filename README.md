@@ -58,7 +58,7 @@ Worker capacity comes from executor contracts: one executor must support the Tas
 
 Reported executor usage is saved as `executor.usage.v1` evidence linked to its Attempt, including on execution failure. Missing token reports remain unknown; usage evidence does not settle monetary budgets or substitute for execution evidence.
 
-The [self-development roadmap](docs/superpowers/plans/2026-10-07-self-development-roadmap.md) records the audited baseline and remaining stages. The [executor eligibility design](docs/superpowers/specs/2026-10-07-executor-eligibility-design.md) describes the first foundation slice. [Grounded planning](docs/superpowers/specs/2026-10-07-grounded-planning-design.md) adds pinned source preparation and independent plan review; supervised local implementation is available below; independent code acceptance and autonomous GitHub PR handling remain future work.
+The [self-development roadmap](docs/superpowers/plans/2026-10-07-self-development-roadmap.md) records the audited baseline and remaining stages. The [executor eligibility design](docs/superpowers/specs/2026-10-07-executor-eligibility-design.md) describes the first foundation slice. [Grounded planning](docs/superpowers/specs/2026-10-07-grounded-planning-design.md) adds pinned source preparation and independent plan review; supervised local implementation and independent candidate review are available below; autonomous GitHub PR handling remains future work.
 
 ### Grounded GitHub issue plans
 
@@ -181,3 +181,18 @@ mkdir -p /absolute/path/to/attempts
 The wrapper follows the existing stdin/stdout JSON protocol and returns `{"summary":"…","edits":[{"path":"file.go","content":"complete UTF-8 contents","delete":false}]}`. Models propose complete-file edits; deterministic code enforces the owner-selected paths, prepares a fresh pinned checkout and creates a local commit. Each claimed Task/Attempt records the exact plan/review/source citations, candidate/tree/diff identity and real results of owner-supplied validation argv. Concurrent calls return busy; completed calls return the same saved evidence. Execution results are indexed before completion, so a failed completion save resumes under the same live fence without another model/test call; an expired staged run requires operator recovery. The source repository’s observed Git/data state must remain unchanged during execution. Validation failure stays visible in the record and CLI exit status. Task completion remains awaiting independent code verification.
 
 Validation commands run natively as trusted local commands, classified UNENFORCED. They receive a private HOME/cache and no ambient credential variables. Go module downloads are disabled by default; provide preinstalled dependencies or an explicit owner-selected wrapper/argv, for example `["env","GOMODCACHE=/absolute/prepopulated/module-cache","go","test","./..."]`. Each command is limited to 60 seconds and 16 KiB captured output. Validation cannot silently change the committed candidate. This supervised slice does not accept code, publish GitHub branches/PRs or merge work. Native execution does not contain hostile repository code; use a trusted local repository and command configuration until TEB integration is available.
+
+### Independent local code review
+
+After `run-gh-implement` records a candidate, run a separately configured reviewer:
+
+```sh
+./bin/summa42-box run-gh-code-review --case <case-id> \
+  --source-repo /absolute/path/to/repository --model-binary <review-wrapper>
+```
+
+The wrapper receives the original issue, exact accepted plan/context, implementation evidence and complete before/after contents and modes for every changed file. It returns only `{"verdict":"ACCEPT","reason":"…"}` (or `REVISE` / `BLOCK`). Projection is limited to 64 changed paths and 512 KiB total file contents; oversized or non-text changes are rejected rather than truncated. Configure a reviewer independently from the implementation wrapper; the system provides a separate invocation and Task/Attempt, not proof of different provider identity.
+
+A claimed authority-free review Task shares the original Mission/resource envelope. Its five-minute lease permits a four-minute model call. Verdict evidence binds the exact Case/Work, implementation evidence/hash and candidate, and review Task/Attempt/fence. Interrupted completion/acceptance resumes the saved result; an expired staged review requires operator recovery. Completed reviews are reused, and tests are not rerun. Source/candidate drift or a changed issue revision/grant blocks completion/acceptance.
+
+Only `ACCEPT` together with all passing recorded owner validations accepts the implementation Task. `REVISE` / `BLOCK` or failed validation returns a held JSON result and a nonzero CLI status, keeping implementation awaiting verification. The Case stays on the implementation Work, so a future publication stage must explicitly consume its exact acceptance. No automatic reimplementation, GitHub publication or merge is performed. Native wrappers remain trusted and UNENFORCED; drift checks do not provide an atomic filesystem lock or a hostile-host sandbox.
