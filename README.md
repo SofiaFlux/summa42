@@ -80,6 +80,15 @@ These are supervised one-shot commands using the existing CLI model protocol. Th
 
 Source preparation requires [Git 2.45 or newer](https://github.com/git/git/blob/v2.45.0/Documentation/RelNotes/2.45.0.txt), with `--no-lazy-fetch` support. Missing partial-clone objects fail offline instead of being fetched. Checkout copies and dissociates object storage; it does not borrow writable objects from the source. These Git controls prepare data and do not provide an execution sandbox for future tests or implementation tools.
 
+### Operational notes: platform fixes and operator impact
+
+Field observations during autonomous pipeline execution identified four platform operational considerations:
+
+- **GOMODCACHE propagation in repoworkspace validation:** `ValidateCandidate` creates an isolated ephemeral environment with `GOPROXY=off`. Propagating `GOMODCACHE` / `GOPATH` from the environment ensures offline test commands resolve pre-cached modules.
+- **Validation timeout and persistent build cache:** Ephemeral cold caches can cause extensive test suites to exceed bounded timeouts (`ValidationTimeout`). Using a warm, sanitized `GOCACHE` provides predictable compilation performance.
+- **Git compatibility across distributions:** Ubuntu 24.04 (Git 2.43) does not support the `--no-lazy-fetch` command-line flag. Setting `GIT_NO_LAZY_FETCH=1` in the execution environment achieves identical fail-closed offline semantics across Git versions.
+- **Draft PR handling before merge:** Supervised publication creates pull requests with `"draft": true`. Merging draft PRs via GitHub's merge endpoint requires marking the pull request ready for review (`markPullRequestReadyForReview`) before executing the squash-merge.
+
 ## What is authoritative
 
 SQLite is the sole MVC source of truth and must live on a **local filesystem**. It runs in WAL mode with `synchronous=FULL`, foreign keys enabled and a busy timeout. The database is not supported on NFS/SMB or as shared multi-Cube state.
