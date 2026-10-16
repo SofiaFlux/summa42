@@ -114,10 +114,10 @@ func gitStream(ctx context.Context, dir string, out io.Writer, args ...string) e
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	fixed := []string{"--no-lazy-fetch", "--no-replace-objects", "--literal-pathspecs", "-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false", "-c", "core.autocrlf=false", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always"}
+	fixed := []string{"--no-replace-objects", "--literal-pathspecs", "-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false", "-c", "core.autocrlf=false", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always"}
 	cmd := exec.CommandContext(runCtx, binary, append(fixed, args...)...)
 	cmd.Dir = dir
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.TempDir(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_SYSTEM=" + os.DevNull, "GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1"}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.TempDir(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_SYSTEM=" + os.DevNull, "GIT_TERMINAL_PROMPT=0", "GIT_NO_REPLACE_OBJECTS=1", "GIT_NO_LAZY_FETCH=1"}
 	allowedProtocols := ""
 	if len(args) > 0 && args[0] == "clone" {
 		allowedProtocols = "file"
