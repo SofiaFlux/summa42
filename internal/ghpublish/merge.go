@@ -75,6 +75,7 @@ type pullMergeState struct {
 	Number         int    `json:"number"`
 	Merged         bool   `json:"merged"`
 	MergeCommitSHA string `json:"merge_commit_sha"`
+	Draft          bool   `json:"draft"`
 	Head           struct {
 		SHA  string `json:"sha"`
 		Ref  string `json:"ref"`
@@ -121,6 +122,9 @@ func (p *MergeProvider) Dispatch(ctx context.Context, r operations.ProviderDispa
 		}, nil
 	}
 
+		if pr.Draft {
+		return unknown(), fmt.Errorf("remote PR %d is a draft; mark ready for review before merge", v.PullNumber)
+	}
 	if pr.Head.SHA != v.HeadSHA {
 		return unknown(), fmt.Errorf("remote PR head SHA %s does not match expected candidate %s", pr.Head.SHA, v.HeadSHA)
 	}

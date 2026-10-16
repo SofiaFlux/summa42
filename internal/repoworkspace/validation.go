@@ -15,6 +15,16 @@ import (
 const ValidationTimeout = 60 * time.Second
 const MaxValidationOutput = 16 * 1024
 
+func validationTimeout() time.Duration {
+	if val := os.Getenv("SUMMA42_VALIDATION_TIMEOUT"); val != "" {
+		if d, err := time.ParseDuration(val); err == nil && d > 0 {
+			return d
+		}
+	}
+	return ValidationTimeout
+}
+
+
 type CommandResult struct {
 	Argv      []string `json:"argv"`
 	ExitCode  int      `json:"exit_code"`
@@ -46,13 +56,34 @@ func ValidateCandidate(ctx context.Context, dir string, c Candidate, commands []
 		return nil, err
 	}
 	defer os.RemoveAll(home)
-	env := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + home, "GOCACHE=" + filepath.Join(home, "go-cache"), "GOPROXY=off", "GOTOOLCHAIN=local", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_TERMINAL_PROMPT=0"}
+	goCache := filepath.Join(home, "go-cache")
+	if warm := os.Getenv("GOCACHE"); warm != "" {
+		goCache = warm
+	}
+	env := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + home,
+		"TMPDIR=" + home,
+		"GOCACHE=" + goCache,
+		"GOPROXY=off",
+		"GOTOOLCHAIN=local",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=" + os.DevNull,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_NO_LAZY_FETCH=1",
+	}
+	if mod := os.Getenv("GOMODCACHE"); mod != "" {
+		env = append(env, "GOMODCACHE=" + mod)
+	}
+	if gopath := os.Getenv("GOPATH"); gopath != "" {
+		env = append(env, "GOPATH=" + gopath)
+	}
 	var results []CommandResult
 	for _, argv := range commands {
 		if err := ctx.Err(); err != nil {
 			return results, err
 		}
-		commandCtx, cancel := context.WithTimeout(ctx, ValidationTimeout)
+		commandCtx, cancel := context.WithTimeout(ctx, validationTimeout())
 		cmd := exec.CommandContext(commandCtx, argv[0], argv[1:]...)
 		cmd.Dir = dir
 		cmd.Env = env

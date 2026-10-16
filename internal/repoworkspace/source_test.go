@@ -146,7 +146,8 @@ func TestCaptureDoesNotFetchMissingPartialCloneObjects(t *testing.T) {
 	partial := filepath.Join(t.TempDir(), "partial")
 	gitTest(t, cfg.LocalPath, "clone", "--filter=blob:none", "--no-checkout", "file://"+cfg.LocalPath, partial)
 	blob := gitTest(t, partial, "rev-parse", cfg.Commit+":code.go")
-	probe := exec.Command("git", "--no-lazy-fetch", "-C", partial, "cat-file", "-e", blob)
+	probe := exec.Command("git", "-C", partial, "cat-file", "-e", blob)
+	probe.Env = append(os.Environ(), "GIT_NO_LAZY_FETCH=1")
 	if err := probe.Run(); err == nil {
 		t.Fatal("fixture unexpectedly has the promised blob")
 	}

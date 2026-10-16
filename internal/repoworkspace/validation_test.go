@@ -83,3 +83,17 @@ func TestValidationPersistsBoundedUTF8Output(t *testing.T) {
 		t.Fatalf("unreplayable output len=%d", len(saved[0].Output))
 	}
 }
+
+func TestValidationPropagatesModuleAndBuildCache(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix fixture")
+	}
+	t.Setenv("GOMODCACHE", "/tmp/custom-gomodcache")
+	t.Setenv("GOPATH", "/tmp/custom-gopath")
+	t.Setenv("GOCACHE", "/tmp/custom-gocache")
+	dir, c := validationFixture(t)
+	got, err := ValidateCandidate(context.Background(), dir, c, [][]string{{"sh", "-c", "printf '%s|%s|%s' \"$GOMODCACHE\" \"$GOPATH\" \"$GOCACHE\""}})
+	if err != nil || len(got) != 1 || got[0].Output != "/tmp/custom-gomodcache|/tmp/custom-gopath|/tmp/custom-gocache" {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
