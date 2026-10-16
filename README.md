@@ -1,6 +1,6 @@
 # Summa42
 
-Summa42 is an experimental local-first agent orchestration runtime. The current **Minimal Viable Collective (MVC)** is intentionally one Cube: one trusted Box daemon owns canonical state, policy, authority checks, scheduling semantics, external-operation commit boundaries, verification, memory, audit and resource accounting.
+Summa42 is an experimental local-first agent orchestration runtime. The project distinguishes the runtime (Summa42 / Cube / Box) from the **Summand** (the task-scoped cognitive worker). The current **Minimal Viable Collective (MVC)** is intentionally one Cube: one trusted Box daemon owns canonical state, policy, authority checks, scheduling semantics, external-operation commit boundaries, verification, memory, audit and resource accounting.
 
 Read [the Vision](docs/VISION.md) for the durable Collective this MVC is meant
 to validate, and the [design specification](docs/superpowers/specs/2026-09-14-summa42-design.md)
@@ -86,8 +86,13 @@ SQLite is the sole MVC source of truth and must live on a **local filesystem**. 
 
 Canonical semantics distinguish:
 
+- Collective, Cube, Box, and Summand (the task-scoped cognitive worker);
 - Task from Attempt;
 - Attempt completion from independent Task acceptance;
+- Summand cognition from deterministic scripts/workers and interchangeable executors;
+- compiled task context (Context Projection) from ambient model context windows;
+- reusable Skills from active Capabilities and Executors;
+- Summand proposals/evidence from canonical Collective truth;
 - PREPARED external operations from the DISPATCHED commitment boundary;
 - durable effect-slot identity from mutable intent fingerprints;
 - settled cost from unresolved exposure;
