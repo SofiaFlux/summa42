@@ -389,43 +389,78 @@ one-Cube semantics justify them.
 The Collective establishes **Summand** as the canonical name for the task-scoped cognitive
 worker, resolving ambiguity between the project/runtime (Summa42) and individual workers.
 
-### 1. Task-scoped Context Projection
+### 1. Summand lifecycle (Normative)
+
+A Summand is explicitly instantiated per **Attempt** (an ephemeral cognitive worker leased
+for one fenced attempt window). Durable context, identity, obligations, and state bind
+strictly to the **Task**, not to the Summand. When an attempt completes, times out, or fails,
+the Summand ceases execution; subsequent attempts instantiate a fresh Summand with an updated,
+hash-bound Context Projection.
+
+### 2. Task-scoped Context Projection
 
 A Summand does not operate over an unconstrained ambient context window. Instead, a
-Context Projection compiles the best bounded view for the task:
+Context Projection compiles the best bounded view for the task from governed inputs:
 
 - relevant Skills (procedural knowledge);
 - relevant Knowledge and Evidence (provenance-backed facts);
-- allowed Tools and Capabilities (operational interfaces);
+- allowed Tools (operational interfaces / actuators);
+- granted Capabilities (permission / access scope);
 - deterministic workers and scripts;
 - executor and model selection;
 - policy and authority envelopes;
 - constraints and acceptance criteria.
 
-### 2. Heterogeneous execution is first-class
+The compiled projection is recorded as an immutable audit record in `evidence_objects`, is
+hash-bound, and remains strictly immutable for the duration of an attempt.
+
+### 3. Heterogeneous execution and least cognitive mechanism
 
 A task is not assumed to require an expensive general-purpose reasoning model when a cheaper
 or deterministic mechanism suffices. The governing principle is:
 
 > **Use the least cognitive mechanism sufficient for the work.**
 
-An Attempt may compose deterministic scripts, SQL queries, HTTP calls, specialized models,
+When choosing among mechanisms, the tiebreaker priority order is:
+
+1. **Deterministic scripts / SQL** — maximum verifiability, lowest cost, deterministic execution;
+2. **Specialized models / Tools** — bounded cognitive complexity, predictable outputs, lower latency and cost;
+3. **General-purpose reasoning models** — reserved for open-ended synthesis, architecture, and novel decomposition.
+
+This ordering optimizes for formal verifiability, containment, and resource accounting. An
+Attempt may compose deterministic scripts, SQL queries, HTTP calls, specialized models,
 and general reasoning models under the orchestration of a Summand.
 
-### 3. Skills distinct from Capabilities and Executors
+### 4. Distinct taxonomy: Skills, Tools, Capabilities, Executors, and Authority
 
-The architecture strictly distinguishes:
+The architecture strictly demarcates:
 
 - a **Skill**: reusable procedural knowledge (how to perform a class of work);
-- a **Tool / Capability**: an operational interface that performs actions;
+- a **Tool**: an operational interface / actuator that performs actions;
+- a **Capability**: the granted permission or access scope to use a tool or resource;
 - an **Executor**: a runtime harness that runs work;
 - **Evidence / Knowledge**: provenance-backed information that informs work;
-- **Authority**: explicit, revocable permission to act.
+- **Authority**: explicit, revocable constitutional permission to act.
 
-Stable, repeated reasoning compiles into validated Skills, and where practical, into
-tested deterministic workers.
+**Normative distinction:** Possessing a Tool does not grant Capability or Authority. Tools
+define operational mechanisms; Capabilities define admissible operational envelopes; Authority
+defines whether an actor may execute them. Stable, repeated reasoning compiles into validated
+Skills, and where practical, into tested deterministic workers.
 
-### 4. Decomposition feedback and reflection
+### 5. Blue-Green / Zero-Downtime canary handover for Cube updates
+
+When a Cube evolves or updates its trusted Box binary, self-modification must preserve
+reversibility without creating service interruption or widening authority:
+
+1. **Spawn Green process**: Launch a parallel Box process on an isolated control channel with strict liveness checks.
+2. **Verify state and health**: Confirm database integrity against SQLite state, audit logs, and operational health endpoints.
+3. **Atomic socket / metadata handover**: Atomically transfer `control.sock` or update active processor metadata.
+4. **Drain and terminate Blue**: Drain pending non-blocking operations from the Blue process, then gracefully shut it down.
+
+If health checks fail at any step, the handover rolls back immediately to Blue. Authority is
+never expanded by an update.
+
+### 6. Decomposition feedback and reflection
 
 Observed execution produces planning evidence and ProcessChangeProposals, not automatic
 rewrites of the planner or task graph. A Summand reflects upon completion to produce
