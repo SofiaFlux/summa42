@@ -40,7 +40,8 @@ Constitution
               └── Mission and obligations
                     └── Goals and task graph
                           └── Cube and Box
-                                └── Agents, executors, and attempts
+                                └── Summand (task-scoped cognitive worker)
+                                      └── Attempts, executors, tools, and deterministic workers
 ```
 
 The order matters.
@@ -60,8 +61,12 @@ The order matters.
   work. Neither is the mission itself.
 - A **Cube** is a sovereign logical unit of the Collective; a **Box** is the
   trusted control plane that holds canonical state and enforces its rules.
-- **Agents**, executors, models, and tools are replaceable workers. They do not
-  become constitutional actors merely by being useful.
+- A **Summand** is a task-scoped cognitive worker operating over a compiled, task-specific
+  view of the Collective (Context Projection). It is explicitly not synonymous with an LLM or model.
+  An Attempt may use heterogeneous executors and deterministic workers. Summands propose learning
+  and evidence; they do not write canonical Collective knowledge directly or widen authority.
+- **Executors**, models, tools, and deterministic workers are replaceable execution mechanisms.
+  They do not become constitutional actors merely by being useful.
 
 No lower layer may reinterpret or silently widen the authority of a higher one.
 
@@ -378,6 +383,56 @@ revocation, stale workers, incomplete attempts, unknown external outcomes,
 budget exhaustion, evidence review, and safe refusal. Multi-Cube coordination,
 federation, richer memory, and broader automation are later work only when the
 one-Cube semantics justify them.
+
+## Summand as the task-scoped cognitive worker
+
+The Collective establishes **Summand** as the canonical name for the task-scoped cognitive
+worker, resolving ambiguity between the project/runtime (Summa42) and individual workers.
+
+### 1. Task-scoped Context Projection
+
+A Summand does not operate over an unconstrained ambient context window. Instead, a
+Context Projection compiles the best bounded view for the task:
+
+- relevant Skills (procedural knowledge);
+- relevant Knowledge and Evidence (provenance-backed facts);
+- allowed Tools and Capabilities (operational interfaces);
+- deterministic workers and scripts;
+- executor and model selection;
+- policy and authority envelopes;
+- constraints and acceptance criteria.
+
+### 2. Heterogeneous execution is first-class
+
+A task is not assumed to require an expensive general-purpose reasoning model when a cheaper
+or deterministic mechanism suffices. The governing principle is:
+
+> **Use the least cognitive mechanism sufficient for the work.**
+
+An Attempt may compose deterministic scripts, SQL queries, HTTP calls, specialized models,
+and general reasoning models under the orchestration of a Summand.
+
+### 3. Skills distinct from Capabilities and Executors
+
+The architecture strictly distinguishes:
+
+- a **Skill**: reusable procedural knowledge (how to perform a class of work);
+- a **Tool / Capability**: an operational interface that performs actions;
+- an **Executor**: a runtime harness that runs work;
+- **Evidence / Knowledge**: provenance-backed information that informs work;
+- **Authority**: explicit, revocable permission to act.
+
+Stable, repeated reasoning compiles into validated Skills, and where practical, into
+tested deterministic workers.
+
+### 4. Decomposition feedback and reflection
+
+Observed execution produces planning evidence and ProcessChangeProposals, not automatic
+rewrites of the planner or task graph. A Summand reflects upon completion to produce
+findings (KnowledgeDelta, SkillCandidate, DecompositionFinding, ProcessChangeProposal),
+which are submitted as proposals:
+
+> **Summands contribute evidence and proposals to the sum; only governed Collective processes promote them into canonical knowledge, Skills, or process changes.**
 
 ## What Summa42 refuses to be
 
