@@ -47,6 +47,7 @@ type Config struct {
 	PolicyEngine        policy.PolicyEngine
 	OperationProviders  []operations.Provider
 	CapabilityProviders []capabilities.Provider
+	CapabilitySources   []capabilities.DiscoverySource
 	Executors           map[string]executors.Executor
 	ExecutorPreference  scheduler.ExecutorPreference
 	TaskClassRouting    map[string]string
@@ -57,21 +58,22 @@ type Config struct {
 }
 
 type Box struct {
-	Store         *state.Store
-	Clock         clock.Clock
-	Purpose       *purpose.Service
-	Execution     *execution.Service
-	Evidence      *evidence.Store
-	Verification  *verification.Service
-	Resources     *resources.Service
-	RunManifests  *runmanifest.Service
-	Approvals     *approvals.Service
-	FieldObserver *fieldfeedback.Observer
-	Feedback      *fieldfeedback.Feedback
-	Sanitizer     fieldfeedback.Sanitizer
-	Experience    *experience.Service
-	Operations    *operations.Service
-	Capabilities  *capabilities.Registry
+	Store               *state.Store
+	Clock               clock.Clock
+	Purpose             *purpose.Service
+	Execution           *execution.Service
+	Evidence            *evidence.Store
+	Verification        *verification.Service
+	Resources           *resources.Service
+	RunManifests        *runmanifest.Service
+	Approvals           *approvals.Service
+	FieldObserver       *fieldfeedback.Observer
+	Feedback            *fieldfeedback.Feedback
+	Sanitizer           fieldfeedback.Sanitizer
+	Experience          *experience.Service
+	Operations          *operations.Service
+	Capabilities        *capabilities.Registry
+	CapabilityDiscovery *capabilities.DiscoveryEngine
 	Scheduler     *scheduler.Service
 	Wake          *wake.Service
 	Memory        *memory.Service
@@ -174,6 +176,7 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	}
 	operationsSvc := operations.New(store, cfg.Clock, executionSvc, cfg.PolicyEngine, resourceSvc, approvalSvc, cfg.CollectiveID, operationProviders...)
 	capabilityRegistry := capabilities.NewRegistry(store, cfg.Clock, executionSvc, cfg.CapabilityProviders...)
+	capabilityDiscovery := capabilities.NewDiscoveryEngine(store, cfg.Clock, capabilityRegistry, approvalSvc, cfg.OwnerPrincipalID, cfg.CapabilitySources...)
 	var schedulerSvc *scheduler.Service
 	var wakeSvc *wake.Service
 	memorySvc := memory.New(store, cfg.Clock)
@@ -241,9 +244,10 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		Feedback:      feedbackSvc,
 		Sanitizer:     sanitizer,
 		Experience:    experienceSvc,
-		Operations:    operationsSvc,
-		Capabilities:  capabilityRegistry,
-		Scheduler:     schedulerSvc,
+		Operations:          operationsSvc,
+		Capabilities:        capabilityRegistry,
+		CapabilityDiscovery: capabilityDiscovery,
+		Scheduler:           schedulerSvc,
 		Wake:          wakeSvc,
 		Memory:        memorySvc,
 		Audit:         auditSvc,

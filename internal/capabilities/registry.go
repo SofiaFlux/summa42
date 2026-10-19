@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/clock"
@@ -85,6 +86,7 @@ type Registry struct {
 	store     *state.Store
 	clock     clock.Clock
 	execution *execution.Service
+	mu        sync.RWMutex
 	providers map[string]Provider
 }
 
@@ -100,6 +102,60 @@ func NewRegistry(store *state.Store, clk clock.Clock, executionSvc *execution.Se
 		}
 	}
 	return &Registry{store: store, clock: clk, execution: executionSvc, providers: registered}
+}
+
+func (r *Registry) RegisterProvider(provider Provider) error {
+	if err := r.configured(); err != nil {
+		return err
+	}
+	if provider == nil {
+		return errors.New("provider cannot be nil")
+	}
+	name := strings.TrimSpace(provider.Name())
+	if name == "" {
+		return errors.New("provider name cannot be empty")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.providers[name] = provider
+	return nil
+}
+
+func (r *Registry) UnregisterProvider(providerName string) error {
+	if err := r.configured(); err != nil {
+		return err
+	}
+	name := strings.TrimSpace(providerName)
+	if name == "" {
+		return errors.New("provider name cannot be empty")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.providers, name)
+	return nil
+}
+
+func (r *Registry) Provider(name string) (Provider, bool) {
+	if r == nil {
+		return nil, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.providers[strings.TrimSpace(name)]
+	return p, ok
+}
+
+func (r *Registry) Providers() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, 0, len(r.providers))
+	for name := range r.providers {
+		names = append(names, name)
+	}
+	return names
 }
 
 func (r *Registry) Register(ctx context.Context, definition Definition) error {
@@ -125,8 +181,8 @@ func (r *Registry) AssessProvider(ctx context.Context, providerName string) ([]A
 		return nil, err
 	}
 	providerName = strings.TrimSpace(providerName)
-	provider := r.providers[providerName]
-	if provider == nil {
+	provider, ok := r.Provider(providerName)
+	if !ok || provider == nil {
 		return nil, fmt.Errorf("capability provider %q is not registered", providerName)
 	}
 	assessor, ok := provider.(AssessableProvider)
@@ -265,7 +321,7 @@ func (r *Registry) validateDefinition(definition Definition) (Definition, error)
 	if definition.ID == "" || definition.Skill.Name == "" || definition.Skill.Version == "" || definition.Access.Provider == "" || definition.Access.Context == "" {
 		return Definition{}, errors.New("capability id, skill name/version, provider, and access context are required")
 	}
-	if _, ok := r.providers[definition.Access.Provider]; !ok {
+	if _, ok := r.Provider(definition.Access.Provider); !ok {
 		return Definition{}, fmt.Errorf("capability provider %q is not registered", definition.Access.Provider)
 	}
 	if !validEnforcement(definition.Environment.MinimumEnforcement) {
