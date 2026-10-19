@@ -101,7 +101,7 @@ def call_openrouter(prompt, model=None, api_key=None, timeout=60):
 
     raise RuntimeError(f"All openrouter :free models failed: {last_err}")
 
-DEFAULT_BACKEND = os.environ.get("SUMMA42_WORKER_BACKEND", "openrouter" if get_openrouter_key() else ("ollama" if shutil.which("ollama") else "opencode"))
+DEFAULT_BACKEND = os.environ.get("SUMMA42_WORKER_BACKEND", "agy" if shutil.which("agy") else ("openrouter" if get_openrouter_key() else ("ollama" if shutil.which("ollama") else "opencode")))
 DEFAULT_OPENCODE_MODEL = os.environ.get("OPENCODE_MODEL", "opencode/big-pickle")
 DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen-gpu")
 DEFAULT_MODEL = os.environ.get("SUMMA42_WORKER_MODEL", DEFAULT_OPENROUTER_MODEL if DEFAULT_BACKEND == "openrouter" else (DEFAULT_OLLAMA_MODEL if DEFAULT_BACKEND == "ollama" else DEFAULT_OPENCODE_MODEL))
@@ -110,8 +110,9 @@ DEFAULT_WRAPPER = os.environ.get("SUMMA42_HARNESS_WRAPPER", os.environ.get("CODE
 CAPABILITY_CACHE_FILE = os.path.expanduser("~/.summa42/state/capability_cache.json")
 CAPABILITY_CACHE_TTL = int(os.environ.get("SUMMA42_CAPABILITY_TTL", "600")) # 10 minutes
 
-HARNESSES = ["openrouter", "ollama", "agy", "opencode", "pi", "claude", "codex", "gemini", "commandcode", "copilot", "codemie"]
+HARNESSES = ["agy", "openrouter", "ollama", "opencode", "pi", "claude", "codex", "gemini", "commandcode", "copilot", "codemie"]
 HARNESS_TYPES = {
+    "agy": "agent_runner",
     "openrouter": "model_runner",
     "ollama": "model_runner",
     "agy": "agent_runner",

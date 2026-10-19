@@ -355,8 +355,20 @@ print(f"{mission}:::{' | '.join(executing) if executing else 'Brak'}:::{' | '.jo
 
     let rawReply = null;
 
-    // 0. OpenRouter :free models (Llama 3.3 70B, Qwen 2.5 Coder 32B, Gemini 2.0 Flash) if key provided
-    if (getOpenRouterKey()) {
+    // 0. Antigravity CLI (agy) - native, high capability, authenticated, zero configuration
+    try {
+      const res = spawnSync('agy', ['-p', prompt, '--dangerously-skip-permissions'], {
+        encoding: 'utf-8',
+        timeout: 30000,
+        env: process.env
+      });
+      if (!res.error && res.status === 0 && res.stdout && res.stdout.trim()) {
+        rawReply = res.stdout.trim();
+      }
+    } catch (_) {}
+
+    // 1. OpenRouter :free models (Llama 3.3 70B, Qwen 2.5 Coder 32B, Gemini 2.0 Flash) if key provided
+    if (!rawReply && getOpenRouterKey()) {
       try {
         rawReply = callOpenRouterFree(prompt);
       } catch (_) {}

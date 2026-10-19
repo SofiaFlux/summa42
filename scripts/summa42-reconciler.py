@@ -21,6 +21,7 @@ import json
 import re
 import hashlib
 import datetime
+import shutil
 
 def recover_expired_leases(conn):
     cur = conn.cursor()
@@ -626,10 +627,10 @@ def main():
     parser.add_argument("--repo", default="SofiaFlux/summa42", help="Repository owner/name")
     parser.add_argument("--source", default=os.getcwd(), help="Absolute path to source repository")
     parser.add_argument("--maintainer", default="SofiaFlux", help="Maintainer eligible to open issues")
-    parser.add_argument("--backend", default=os.environ.get("SUMMA42_WORKER_BACKEND", "opencode"), help="Worker harness (opencode, copilot, agy, claude, codex, gemini, commandcode, pi, codemie, script)")
+    parser.add_argument("--backend", default=os.environ.get("SUMMA42_WORKER_BACKEND", "agy" if shutil.which("agy") else "openrouter"), help="Worker harness (agy, openrouter, ollama, opencode, copilot, claude, codex, gemini, commandcode, pi, codemie, script)")
     parser.add_argument("--wrapper", default=os.environ.get("SUMMA42_HARNESS_WRAPPER", None), help="Company wrapper prefix (e.g. codemie-)")
     parser.add_argument("--model", default=None, help="Model name for backend")
-    parser.add_argument("--fallback", default="agy", help="Fallback backend if primary fails")
+    parser.add_argument("--fallback", default="openrouter" if shutil.which("agy") else "ollama", help="Fallback backend if primary fails")
     parser.add_argument("--model-binary", default=os.path.abspath("bin/call-worker"), help="Model binary router")
     parser.add_argument("--poll-interval", type=int, default=15, help="Reconciliation poll interval in seconds")
     parser.add_argument("--once", action="store_true", help="Run a single reconciliation tick and exit")
