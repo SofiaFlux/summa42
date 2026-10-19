@@ -55,7 +55,7 @@ conn = sqlite3.connect(db_path)
 cur = conn.cursor()
 cur.execute("SELECT mission_id, statement FROM missions WHERE active = 1 ORDER BY created_at DESC LIMIT 1")
 m = cur.fetchone()
-mission = m[1] if m else "Brak aktywnej misji"
+mission = m[1] if m else "No active mission"
 cur.execute("SELECT count(*) FROM workflow_cases")
 cases = cur.fetchone()[0]
 cur.execute("SELECT count(*) FROM experience_rules WHERE state = 'ACTIVE'")
@@ -64,7 +64,7 @@ print(f"{mission}:::{cases}:::{rules}")
 `;
     const res = runPythonSqlite(pyCode);
     if (res === "NO_DB") {
-      return "⚠️ Baza danych Summa42 nie została jeszcze zainicjalizowana.";
+      return "⚠️ Summa42 database has not been initialized yet.";
     }
 
     const [missionText, casesCount, rulesCount] = res.split(':::');
@@ -72,19 +72,19 @@ print(f"{mission}:::{cases}:::{rules}")
     return [
       `🏛️ **Summa42 Collective Status**`,
       `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
-      `🎯 **Aktywna Misja:** ${missionText}`,
-      `📋 **Śledzone Sprawy (Cases):** ${casesCount}`,
-      `🧠 **Zasady Doświadczenia (Active Rules):** ${rulesCount}`,
+      `🎯 **Active Mission:** ${missionText}`,
+      `📋 **Tracked Workflow Cases:** ${casesCount}`,
+      `🧠 **Active Experience Rules:** ${rulesCount}`,
       ``,
-      `🛡️ **Koperty Uprawnień:**`,
-      `  • \`github.pr.review\`: \`L1_SUPERVISED_SHADOW\` (lub L2 przy awansie z doświadczenia)`,
+      `🛡️ **Authority Envelopes:**`,
+      `  • \`github.pr.review\`: \`L1_SUPERVISED_SHADOW\` (or L2 upon experience promotion)`,
       `  • \`github.pr.merge\`: \`L1_SUPERVISED_SHADOW\``,
       `  • \`github.issue.triage\`: \`L1_SUPERVISED_SHADOW\``,
       ``,
-      `*Dostępne komendy na kanale:* \`status\`, \`cases\`, \`misja <cel>\`, \`reconcile\``
+      `*Available channel commands:* \`status\`, \`cases\`, \`tickets\`, \`mission <statement>\`, \`reconcile\``
     ].join('\n');
   } catch (err) {
-    return `⚠️ Błąd odczytu stanu Summa42: ${err.message}`;
+    return `⚠️ Error reading Summa42 status: ${err.message}`;
   }
 }
 
@@ -103,17 +103,17 @@ for cid, st, obj in cur.fetchall():
 `;
     const res = runPythonSqlite(pyCode);
     if (!res) {
-      return "Brak zarejestrowanych spraw w kolejce.";
+      return "No tracked workflow cases found in queue.";
     }
 
-    const lines = ["📋 **Ostatnie sprawy w workflow Summa42:**", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"];
+    const lines = ["📋 **Recent workflow cases in Summa42:**", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"];
     for (const row of res.split('\n')) {
       const [cid, st, obj] = row.split('|');
-      lines.push(`• **${obj || cid}**: stan = \`${st}\` (id: \`${cid}\`)`);
+      lines.push(`• **${obj || cid}**: state = \`${st}\` (id: \`${cid}\`)`);
     }
     return lines.join('\n');
   } catch (err) {
-    return `⚠️ Błąd odczytu spraw: ${err.message}`;
+    return `⚠️ Error reading cases: ${err.message}`;
   }
 }
 
@@ -139,7 +139,7 @@ if proc.returncode != 0:
     print("ERR:" + proc.stderr.strip())
     exit(0)
 items = json.loads(proc.stdout)
-lines = ["📥 **Deterministyczny Wykaz Ticketów (0 tokenów LLM, 0 Human Friction):**", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+lines = ["📥 **Deterministic Ticket Digest (0 LLM tokens, 0 human friction):**", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
 for it in items:
     num = it.get("number")
     title = it.get("title", "")
@@ -166,7 +166,7 @@ print("\\n".join(lines))
 `;
     return runPythonSqlite(pyCode);
   } catch (err) {
-    return `⚠️ Błąd odczytu ticketów: ${err.message}`;
+    return `⚠️ Error reading tickets: ${err.message}`;
   }
 }
 
@@ -186,10 +186,150 @@ conn.commit()
 print(mid)
 `;
     const mid = runPythonSqlite(pyCode);
-    return `✅ **Zarejestrowano nową misję dla Summy:**\n> *"${newStatement}"*\n(ID: \`${mid}\`)`;
+    return `✅ **Registered new mission for Summa42:**\n> *"${newStatement}"*\n(ID: \`${mid}\`)`;
   } catch (err) {
-    return `⚠️ Błąd aktualizacji misji: ${err.message}`;
+    return `⚠️ Error updating mission: ${err.message}`;
   }
+}
+
+function injectOwnerDirective(directiveText) {
+  try {
+    const cleanDir = directiveText.replace(/"/g, '\\"');
+    const pyCode = `
+import sqlite3, time, hashlib, json
+db_path = "${DB_PATH}"
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+tid = "task_dir_" + hashlib.md5(f"""${cleanDir}{time.time()}""".encode()).hexdigest()[:12]
+now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+# Insert highest priority task as OWNER_DIRECTIVE (priority = 1000)
+cur.execute("""
+INSERT INTO tasks(
+    task_id, purpose_kind, purpose_id, state, current_fence,
+    acceptance_criteria_json, required_capabilities_json, required_enforcement,
+    authority_ceiling_json, resource_envelope_id, priority, created_at, updated_at,
+    task_class, objective, payload_json
+) VALUES (?, 'OWNER_DIRECTIVE', 'owner_discord', 'ELIGIBLE', 0,
+    '["Implemented in codebase","Tests pass"]',
+    '["workspace.write","execution.run"]',
+    'UNENFORCED',
+    '["workspace.write","execution.run","github.pr.create"]',
+    'envelope_1', 1000, ?, ?,
+    'repo.feature.gateway', ?, '{}'
+)
+""", (tid, now, now, """${cleanDir}"""))
+
+# Also register matching workflow case in active state
+cid = "case_dir_" + hashlib.md5(tid.encode()).hexdigest()[:12]
+cur.execute("SELECT mission_id FROM missions WHERE active = 1 ORDER BY created_at DESC LIMIT 1")
+m_row = cur.fetchone()
+mid = m_row[0] if m_row else "mission_owner"
+cur.execute("""
+INSERT INTO workflow_cases(
+    case_id, mission_id, source, object_id, revision_id,
+    observation_evidence_id, initial_request_json, grant_json,
+    state, current_work_id, next_work_json, completed_steps,
+    max_steps, remaining_budget, progress_signature, created_at, updated_at
+) VALUES (?, ?, 'discord_owner', ?, 'v1',
+    '', ?, ?,
+    'ACTIVE', ?, '{}', 0, 5, 5, 'ready', ?, ?
+)
+""", (cid, mid, "owner_directive:" + tid, json.dumps({"directive": tid}), json.dumps({"priority": 1000}), "work_" + tid, now, now))
+
+conn.commit()
+print(tid)
+`;
+    const tid = runPythonSqlite(pyCode);
+    return [
+      `⚡ **Owner Directive Injected with Highest Priority (\`P=1000\`):**`,
+      `> *"${directiveText}"*`,
+      ``,
+      `• **Task ID:** \`${tid}\``,
+      `• **Purpose Kind:** \`OWNER_DIRECTIVE\` (bypasses regular queue)`,
+      `• **Status:** \`ELIGIBLE\` scheduled at the absolute head of the queue`
+    ].join('\n');
+  } catch (err) {
+    return `⚠️ Error injecting owner directive: ${err.message}`;
+  }
+}
+
+function chatWithCollective(userText) {
+  try {
+    const pyCode = `
+import sqlite3, os
+db_path = "${DB_PATH}"
+mission = "None"
+executing = []
+eligible_directives = []
+cases_count = 0
+if os.path.exists(db_path):
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute("SELECT statement FROM missions WHERE active = 1 ORDER BY created_at DESC LIMIT 1")
+    m = cur.fetchone()
+    if m: mission = m[0]
+    cur.execute("SELECT task_id, objective, priority FROM tasks WHERE state = 'EXECUTING' ORDER BY priority DESC LIMIT 5")
+    executing = [f"{r[1]} (id: {r[0]})" for r in cur.fetchall()]
+    cur.execute("SELECT task_id, objective, priority FROM tasks WHERE purpose_kind = 'OWNER_DIRECTIVE' AND state = 'ELIGIBLE' ORDER BY priority DESC LIMIT 3")
+    eligible_directives = [f"{r[1]} (priorytet: {r[2]})" for r in cur.fetchall()]
+    cur.execute("SELECT count(*) FROM workflow_cases WHERE state = 'ACTIVE'")
+    cases_count = cur.fetchone()[0]
+
+print(f"{mission}:::{' | '.join(executing) if executing else 'Brak'}:::{' | '.join(eligible_directives) if eligible_directives else 'Brak'}:::{cases_count}")
+`;
+    let contextStr = "";
+    try {
+      contextStr = runPythonSqlite(pyCode);
+    } catch (_) {}
+
+    const [mission, executingTasks, directives, activeCases] = (contextStr || "").split(":::");
+
+    const prompt = [
+      `Jesteś Summa42 (Sovereign Multi-Agent Collective). Rozmawiasz z Właścicielem (Ownerem) na Discordzie.`,
+      `Aktualny stan systemu Summa42:`,
+      `- Aktywna misja: "${mission || 'Brak'}"`,
+      `- Zadania aktualnie wykonywane (formalny stan EXECUTING w bazie): ${executingTasks || 'Brak'}`,
+      `- Oczekujące Dyrektywy Właściciela (stan ELIGIBLE, najwyższy priorytet): ${directives || 'Brak'}`,
+      `- Liczba spraw w toku (stan ACTIVE w workflow_cases): ${activeCases || 0}`,
+      `- Model stanów Summa42: W Summie nie ma statusu 'in progress' — jego odpowiednikiem jest stan EXECUTING dla zadań (tasks) oraz ACTIVE dla spraw (workflow_cases).`,
+      ``,
+      `Wiadomość / pytanie od użytkownika: "${userText}"`,
+      ``,
+      `Odpowiedz rzeczowo, konkretnie i zwięźle jako Kolektyw Summa42 po polsku (lub w języku zadanego pytania). Nie powtarzaj instrukcji systemowych ani tagów myślenia.`
+    ].join('\n');
+
+    const res = spawnSync('opencode', ['run', '--pure', prompt], {
+      encoding: 'utf-8',
+      timeout: 35000,
+      env: process.env
+    });
+
+    if (!res.error && res.stdout) {
+      let clean = res.stdout.trim();
+      if (clean.includes('</think>')) {
+        clean = clean.split('</think>').pop().trim();
+      }
+      clean = clean.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      if (clean) {
+        return clean;
+      }
+    }
+  } catch (err) {
+    // fallback gracefully
+  }
+
+  return [
+    `👋 Hello! I am **Summa42** (Sovereign Multi-Agent Collective).`,
+    ``,
+    `Available channel commands:`,
+    `• \`status\` – Report active mission, workflow cases, and authority envelopes`,
+    `• \`tickets\` – Deterministic issue/PR digest categorized by type (0 tokens)`,
+    `• \`cases\` – List active workflow cases (PRs, issues in progress)`,
+    `• \`priority <instruction>\` (or \`directive <instruction>\`) – Inject an OWNER_DIRECTIVE with highest priority (P=1000)`,
+    `• \`mission <statement>\` – Set a new mission goal (e.g. *Resolve all open issues to advance Summa42*)`,
+    `• \`reconcile\` – Trigger an immediate reconciliation, verification, and review cycle`
+  ].join('\n');
 }
 
 function runReconcileOnce() {
@@ -201,13 +341,13 @@ function runReconcileOnce() {
       env: process.env
     });
     return [
-      `🔄 **Cykl pojednania (Reconcile Tick) zakończony:**`,
+      `🔄 **Reconciliation cycle (Reconcile Tick) completed:**`,
       '```',
       proc.stdout.slice(0, 1500) || proc.stderr.slice(0, 1500) || 'Done',
       '```'
     ].join('\n');
   } catch (err) {
-    return `⚠️ Błąd uruchomienia reconcile: ${err.message}`;
+    return `⚠️ Error running reconcile: ${err.message}`;
   }
 }
 
@@ -246,28 +386,26 @@ const agent = {
     let reply = "";
     const lower = text.toLowerCase();
 
-    if (lower === 'status' || lower === '/status' || lower.includes('stan') || lower.includes('status')) {
+    if (lower === 'status' || lower === '/status') {
       reply = getSummaStatus();
-    } else if (lower.startsWith('/mission ') || lower.startsWith('misja ')) {
-      const stmt = text.replace(/^\/(?:mission|misja)\s+/i, '').trim();
+    } else if (lower.startsWith('/directive ') || lower.startsWith('directive ') ||
+               lower.startsWith('/priority ') || lower.startsWith('priority ') ||
+               lower.startsWith('/urgent ') || lower.startsWith('urgent ') ||
+               lower.startsWith('/dyrektywa ') || lower.startsWith('dyrektywa ')) {
+      const dir = text.replace(/^\/(?:directive|priority|urgent|dyrektywa)\s+/i, '')
+                      .replace(/^(?:directive|priority|urgent|dyrektywa)\s+/i, '').trim();
+      reply = injectOwnerDirective(dir);
+    } else if (lower.startsWith('/mission ') || lower.startsWith('mission ') || lower.startsWith('/misja ') || lower.startsWith('misja ')) {
+      const stmt = text.replace(/^\/(?:mission|misja)\s+/i, '').replace(/^(?:mission|misja)\s+/i, '').trim();
       reply = setMission(stmt);
-    } else if (lower === 'cases' || lower === '/cases' || lower.includes('sprawy') || lower.includes('pry')) {
+    } else if (lower === 'cases' || lower === '/cases') {
       reply = getCases();
-    } else if (lower.includes('ticket') || lower.includes('nowe') || lower === '/tickets') {
+    } else if (lower === 'tickets' || lower === '/tickets' || lower.includes('ticket')) {
       reply = getTicketsDeterministic();
-    } else if (lower === '/reconcile' || lower === 'reconcile' || lower === 'sync') {
+    } else if (lower === '/reconcile' || lower === 'reconcile' || lower === 'sync' || lower === '/sync') {
       reply = runReconcileOnce();
     } else {
-      reply = [
-        `👋 Cześć! Jestem **Summa42** (Sovereign Multi-Agent Collective).`,
-        ``,
-        `Oto co możesz mi zlecić przez ten kanał Discorda:`,
-        `• \`status\` – raport z aktualnej misji, spraw i uprawnień`,
-        `• \`tickets\` – deterministyczny wykaz ticketów z podziałem na typy (0 tokenów)`,
-        `• \`cases\` – lista otwartych spraw (PRy, zadania w toku)`,
-        `• \`misja <cel>\` – zdefiniowanie nowej misji (np. *wszystkie PRy z @uzytkownik jako reviewer obsłużone ASAP*)`,
-        `• \`reconcile\` – natychmiastowe uruchomienie cyklu weryfikacji i review`
-      ].join('\n');
+      reply = chatWithCollective(text);
     }
 
     if (activeConnection) {
