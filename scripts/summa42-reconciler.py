@@ -433,7 +433,6 @@ def reconcile_issues(args, mission_id):
     plan_args = [
         "run-repo-plan",
         "--mission", mission_id,
-        "--source-repo", args.source,
         "--model-binary", args.model_binary
     ] + model_extra_args
     code, out, err = run_box_command(plan_args)
