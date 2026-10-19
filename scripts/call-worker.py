@@ -18,10 +18,15 @@ import re
 import shutil
 import argparse
 
+import time
+
 DEFAULT_BACKEND = os.environ.get("SUMMA42_WORKER_BACKEND", "opencode")
 DEFAULT_OPENCODE_MODEL = os.environ.get("OPENCODE_MODEL", "opencode/big-pickle")
 DEFAULT_MODEL = os.environ.get("SUMMA42_WORKER_MODEL", DEFAULT_OPENCODE_MODEL)
 DEFAULT_WRAPPER = os.environ.get("SUMMA42_HARNESS_WRAPPER", os.environ.get("CODEMIE_WRAPPER", None))
+
+CAPABILITY_CACHE_FILE = os.path.expanduser("~/.summa42/state/capability_cache.json")
+CAPABILITY_CACHE_TTL = int(os.environ.get("SUMMA42_CAPABILITY_TTL", "600")) # 10 minutes
 
 HARNESSES = ["agy", "opencode", "pi", "claude", "codex", "gemini", "commandcode", "copilot", "codemie"]
 HARNESS_TYPES = {
@@ -40,26 +45,181 @@ HARNESS_TYPES = {
 def is_tool_available(name):
     return shutil.which(name) is not None
 
-def list_backends():
+def load_capability_cache():
+    if os.path.exists(CAPABILITY_CACHE_FILE):
+        try:
+            with open(CAPABILITY_CACHE_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_capability_cache(cache):
+    try:
+        os.makedirs(os.path.dirname(CAPABILITY_CACHE_FILE), exist_ok=True)
+        with open(CAPABILITY_CACHE_FILE, "w") as f:
+            json.dump(cache, f, indent=2)
+    except Exception:
+        pass
+
+def check_harness_auth(harness, wrapper=None, force=False):
+    """
+    Checks if a harness is installed AND authenticated / healthy to serve tasks.
+    Returns: (ready: bool, reason: str)
+    Results are cached with a TTL (10m) to avoid latency on repetitive calls.
+    """
+    if harness == "script":
+        return True, "Deterministic worker ready"
+
+    base = harness
+    if harness.startswith("codemie-"):
+        base = harness[len("codemie-"):]
+
+    cache = load_capability_cache()
+    cached = cache.get(harness)
+    now = time.time()
+    if not force and cached:
+        last = cached.get("last_checked", 0)
+        if now - last < CAPABILITY_CACHE_TTL:
+            return cached.get("ready", False), cached.get("reason", "cached")
+
+    target_bin = f"{wrapper}{base}" if wrapper else base
+    if not is_tool_available(target_bin):
+        if wrapper and is_tool_available(wrapper.rstrip("-")):
+            pass
+        elif not is_tool_available(base):
+            reason = f"Binary '{target_bin}' not found in PATH"
+            cache[harness] = {"ready": False, "reason": reason, "last_checked": now}
+            save_capability_cache(cache)
+            return False, reason
+
+    ready = False
+    reason = "Unknown"
+
+    try:
+        if base == "copilot":
+            probe_env = os.environ.copy()
+            if not probe_env.get("GITHUB_TOKEN") and os.path.exists("/tmp/summa42_github_token"):
+                try:
+                    with open("/tmp/summa42_github_token", "r") as f:
+                        probe_env["GITHUB_TOKEN"] = f.read().strip()
+                except Exception:
+                    pass
+            has_token = bool(probe_env.get("GITHUB_TOKEN") or probe_env.get("GH_TOKEN"))
+            copilot_cfg = os.path.expanduser("~/.config/github-copilot")
+            copilot_alt = os.path.expanduser("~/.copilot")
+            if has_token or os.path.exists(copilot_cfg) or os.path.exists(copilot_alt):
+                # Verify binary works with zero token consumption (no AI credits burned)
+                probe = subprocess.run(
+                    ["copilot", "--version"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5
+                )
+                if probe.returncode == 0:
+                    ready = True
+                    reason = "Authenticated (GitHub token/credentials present, CLI verified)"
+                else:
+                    ready = False
+                    reason = f"CLI probe failed: {probe.stderr.strip()[:100]}"
+            else:
+                ready = False
+                reason = "Not logged in (missing GITHUB_TOKEN or ~/.config/github-copilot)"
+
+        elif base == "opencode":
+            probe = subprocess.run(
+                ["opencode", "models"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=6
+            )
+            if probe.returncode == 0:
+                ready = True
+                reason = "Healthy (opencode service responding)"
+            else:
+                ready = False
+                reason = f"opencode service unavailable: {probe.stderr.strip()[:100]}"
+
+        elif base == "agy":
+            probe = subprocess.run(
+                ["agy", "--version"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5
+            )
+            if probe.returncode == 0:
+                ready = True
+                reason = "Ready (agy CLI verified)"
+            else:
+                ready = False
+                reason = f"agy probe failed: {probe.stderr.strip()[:100]}"
+
+        elif base == "claude":
+            if os.environ.get("ANTHROPIC_API_KEY") or os.path.exists(os.path.expanduser("~/.claude.json")):
+                ready = True
+                reason = "Authenticated (Anthropic credentials detected)"
+            else:
+                ready = False
+                reason = "Missing ANTHROPIC_API_KEY or ~/.claude.json login"
+
+        elif base == "gemini":
+            if os.environ.get("GEMINI_API_KEY") or os.path.exists(os.path.expanduser("~/.gemini")):
+                ready = True
+                reason = "Authenticated (Gemini credentials detected)"
+            else:
+                ready = False
+                reason = "Missing GEMINI_API_KEY or ~/.gemini"
+
+        elif base == "codex":
+            if os.environ.get("OPENAI_API_KEY"):
+                ready = True
+                reason = "Authenticated (OPENAI_API_KEY detected)"
+            else:
+                ready = False
+                reason = "Missing OPENAI_API_KEY"
+
+        else:
+            ready = True
+            reason = "Installed in PATH"
+
+    except subprocess.TimeoutExpired:
+        ready = False
+        reason = "Probe timed out (interactive login prompt detected)"
+    except Exception as e:
+        ready = False
+        reason = f"Probe error: {e}"
+
+    cache[harness] = {"ready": ready, "reason": reason, "last_checked": now}
+    save_capability_cache(cache)
+    return ready, reason
+
+def list_backends(check_auth=True):
     backends = {}
     for h in HARNESSES:
         p = shutil.which(h)
+        avail = p is not None
+        ready = False
+        reason = "Not in PATH"
+        if avail and check_auth:
+            ready, reason = check_harness_auth(h)
+        elif avail:
+            ready = True
+            reason = "Binary present"
         backends[h] = {
-            "available": p is not None,
+            "available": avail,
+            "authenticated": ready,
+            "status": reason,
             "path": p,
             "type": HARNESS_TYPES.get(h, "agent_runner")
         }
-    # Check if codemie wrapper or any codemie-* binary exists
     codemie_bin = shutil.which("codemie")
     has_codemie_any = codemie_bin is not None or any(shutil.which(f"codemie-{h}") for h in HARNESSES)
     backends["codemie"] = {
         "available": has_codemie_any,
+        "authenticated": has_codemie_any,
+        "status": "Company wrapper active" if has_codemie_any else "Not in PATH",
         "path": codemie_bin,
         "type": "company_wrapper",
         "description": "Company wrapper (supports codemie- prefix or codemie runner)"
     }
     backends["script"] = {
         "available": True,
+        "authenticated": True,
+        "status": "Deterministic worker ready",
         "type": "deterministic_worker"
     }
     return backends
@@ -212,7 +372,16 @@ def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=1
         return proc.stdout
 
     cmd = resolve_command(backend, model, prompt, wrapper=wrapper)
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+    env = os.environ.copy()
+    if not env.get("GITHUB_TOKEN") and os.path.exists("/tmp/summa42_github_token"):
+        try:
+            with open("/tmp/summa42_github_token", "r") as f:
+                token = f.read().strip()
+                env["GITHUB_TOKEN"] = token
+                env["GH_TOKEN"] = token
+        except Exception:
+            pass
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(f"{cmd[0]} exited with code {proc.returncode}: {proc.stderr}")
     return proc.stdout
@@ -349,12 +518,28 @@ def main():
             f"INPUT:\n{raw_input}"
         )
 
-    # Execute backend with fallback
-    parsed = None
-    backends_to_try = [args.backend]
+    # Execute backend with capability discovery & authenticated candidate filtering
+    candidates = [args.backend]
     if args.fallback and args.fallback != args.backend:
-        backends_to_try.append(args.fallback)
+        candidates.append(args.fallback)
+    # Only unmetered / free harnesses can be dynamic fallbacks
+    for h in ["opencode", "agy", "script"]:
+        if h not in candidates:
+            candidates.append(h)
 
+    backends_to_try = []
+    for b in candidates:
+        ready, reason = check_harness_auth(b, wrapper=args.wrapper)
+        if ready:
+            backends_to_try.append(b)
+        else:
+            sys.stderr.write(f"call-worker: skipping unready backend '{b}' ({reason}). Cached TTL window active.\n")
+
+    if not backends_to_try:
+        sys.stderr.write("call-worker: no authenticated backends available, forcing fallback to deterministic script\n")
+        backends_to_try = ["script"]
+
+    parsed = None
     last_error = None
     per_attempt_timeout = max(15, args.timeout // len(backends_to_try))
     for b in backends_to_try:
