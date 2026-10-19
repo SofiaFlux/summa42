@@ -17,19 +17,103 @@ import json
 import re
 import shutil
 import argparse
-
 import time
+import urllib.request
+import urllib.error
 
-DEFAULT_BACKEND = os.environ.get("SUMMA42_WORKER_BACKEND", "opencode")
+OPENROUTER_FREE_MODELS = [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen-2.5-coder-32b-instruct:free",
+    "google/gemini-2.0-flash-exp:free",
+    "deepseek/deepseek-r1:free",
+    "mistralai/mistral-small-24b-instruct-2501:free"
+]
+DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+
+def get_openrouter_key():
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if key:
+        return key.strip()
+    key_file = os.path.expanduser("~/.openrouter_api_key")
+    if os.path.exists(key_file):
+        try:
+            with open(key_file, "r") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    tmp_file = "/tmp/summa42_openrouter_key"
+    if os.path.exists(tmp_file):
+        try:
+            with open(tmp_file, "r") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return None
+
+def call_openrouter(prompt, model=None, api_key=None, timeout=60):
+    """
+    Calls OpenRouter strictly enforcing zero-cost :free models.
+    Rejects any model not ending in ':free'.
+    """
+    if not api_key:
+        api_key = get_openrouter_key()
+    if not api_key:
+        raise ValueError("Missing OPENROUTER_API_KEY")
+
+    models_to_try = [model] if model else []
+    for m in OPENROUTER_FREE_MODELS:
+        if m not in models_to_try:
+            models_to_try.append(m)
+
+    last_err = None
+    for target_model in models_to_try:
+        if not target_model.endswith(":free"):
+            raise ValueError(f"CRITICAL SAFETY VIOLATION: model '{target_model}' does not end with ':free'. Only free models are permitted.")
+
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": "https://github.com/SofiaFlux/summa42",
+            "X-Title": "Summa42 Collective",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": target_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1
+        }
+        data_bytes = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8")
+                res_json = json.loads(body)
+                return res_json["choices"][0]["message"]["content"]
+        except urllib.error.HTTPError as e:
+            last_err = e
+            # If rate-limited (429) or model temporarily unavailable (503), try next free model
+            sys.stderr.write(f"call-worker: openrouter model '{target_model}' returned {e.code}, trying fallback free model...\n")
+            continue
+        except Exception as e:
+            last_err = e
+            sys.stderr.write(f"call-worker: openrouter error with '{target_model}': {e}\n")
+            continue
+
+    raise RuntimeError(f"All openrouter :free models failed: {last_err}")
+
+DEFAULT_BACKEND = os.environ.get("SUMMA42_WORKER_BACKEND", "openrouter" if get_openrouter_key() else ("ollama" if shutil.which("ollama") else "opencode"))
 DEFAULT_OPENCODE_MODEL = os.environ.get("OPENCODE_MODEL", "opencode/big-pickle")
-DEFAULT_MODEL = os.environ.get("SUMMA42_WORKER_MODEL", DEFAULT_OPENCODE_MODEL)
+DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen-gpu")
+DEFAULT_MODEL = os.environ.get("SUMMA42_WORKER_MODEL", DEFAULT_OPENROUTER_MODEL if DEFAULT_BACKEND == "openrouter" else (DEFAULT_OLLAMA_MODEL if DEFAULT_BACKEND == "ollama" else DEFAULT_OPENCODE_MODEL))
 DEFAULT_WRAPPER = os.environ.get("SUMMA42_HARNESS_WRAPPER", os.environ.get("CODEMIE_WRAPPER", None))
 
 CAPABILITY_CACHE_FILE = os.path.expanduser("~/.summa42/state/capability_cache.json")
 CAPABILITY_CACHE_TTL = int(os.environ.get("SUMMA42_CAPABILITY_TTL", "600")) # 10 minutes
 
-HARNESSES = ["agy", "opencode", "pi", "claude", "codex", "gemini", "commandcode", "copilot", "codemie"]
+HARNESSES = ["openrouter", "ollama", "agy", "opencode", "pi", "claude", "codex", "gemini", "commandcode", "copilot", "codemie"]
 HARNESS_TYPES = {
+    "openrouter": "model_runner",
+    "ollama": "model_runner",
     "agy": "agent_runner",
     "opencode": "model_runner",
     "pi": "agent_runner",
@@ -123,6 +207,27 @@ def check_harness_auth(harness, wrapper=None, force=False):
             else:
                 ready = False
                 reason = "Not logged in (missing GITHUB_TOKEN or ~/.config/github-copilot)"
+
+        elif base == "openrouter":
+            k = get_openrouter_key()
+            if k:
+                ready = True
+                reason = "Authenticated (OPENROUTER_API_KEY detected, strict :free enforcement active)"
+            else:
+                ready = False
+                reason = "Missing OPENROUTER_API_KEY (set env var or save in ~/.openrouter_api_key)"
+
+        elif base == "ollama":
+            probe = subprocess.run(
+                ["ollama", "list"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5
+            )
+            if probe.returncode == 0:
+                ready = True
+                reason = "Healthy (local ollama service running)"
+            else:
+                ready = False
+                reason = f"ollama service unavailable: {probe.stderr.strip()[:100]}"
 
         elif base == "opencode":
             probe = subprocess.run(
@@ -392,6 +497,8 @@ def resolve_command(backend, model, prompt, wrapper=None):
         cmd = [tool_binary, "-p", prompt]
         if model: cmd.extend(["-m", model])
         return cmd
+    elif backend == "ollama":
+        return [tool_binary, "run", model or DEFAULT_OLLAMA_MODEL, prompt]
     elif backend == "codemie":
         return [tool_binary, "run", prompt]
     else:
@@ -406,6 +513,9 @@ def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=1
             raise RuntimeError(f"worker script exited with code {proc.returncode}: {proc.stderr}")
         return proc.stdout
 
+    if backend == "openrouter":
+        return call_openrouter(prompt, model=model, timeout=timeout)
+
     cmd = resolve_command(backend, model, prompt, wrapper=wrapper)
     env = os.environ.copy()
     if not env.get("GITHUB_TOKEN") and os.path.exists("/tmp/summa42_github_token"):
@@ -419,7 +529,10 @@ def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=1
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(f"{cmd[0]} exited with code {proc.returncode}: {proc.stderr}")
-    return proc.stdout
+    out = proc.stdout
+    if backend == "ollama":
+        out = re.sub(r'^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏\s]+', '', out)
+    return out
 
 def main():
     parser = argparse.ArgumentParser(description="Summa42 Universal Cognitive Worker Router")
@@ -573,7 +686,7 @@ def main():
     if args.fallback and args.fallback != args.backend:
         candidates.append(args.fallback)
     # Only unmetered / free harnesses can be dynamic fallbacks
-    for h in ["opencode", "agy", "script"]:
+    for h in ["openrouter", "ollama", "opencode", "agy", "script"]:
         if h not in candidates:
             candidates.append(h)
 

@@ -36,6 +36,60 @@ try {
 
 const DB_PATH = process.env.SUMMA42_DB || path.expanduser ? path.expanduser('~/.summa42/state/summa42.db') : path.join(process.env.HOME || '/home/topol', '.summa42', 'state', 'summa42.db');
 
+function getOpenRouterKey() {
+  if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY.trim();
+  const keyFile = path.join(process.env.HOME || '/home/topol', '.openrouter_api_key');
+  if (fs.existsSync(keyFile)) {
+    try { return fs.readFileSync(keyFile, 'utf-8').trim(); } catch (_) {}
+  }
+  const tmpFile = '/tmp/summa42_openrouter_key';
+  if (fs.existsSync(tmpFile)) {
+    try { return fs.readFileSync(tmpFile, 'utf-8').trim(); } catch (_) {}
+  }
+  return null;
+}
+
+function callOpenRouterFree(prompt) {
+  const apiKey = getOpenRouterKey();
+  if (!apiKey) return null;
+
+  const freeModels = [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen-2.5-coder-32b-instruct:free",
+    "google/gemini-2.0-flash-exp:free",
+    "deepseek/deepseek-r1:free",
+    "mistralai/mistral-small-24b-instruct-2501:free"
+  ];
+
+  for (const model of freeModels) {
+    if (!model.endsWith(':free')) continue; // Strict safety check
+    try {
+      const curlProc = spawnSync('curl', [
+        '-s', '-X', 'POST', 'https://openrouter.ai/api/v1/chat/completions',
+        '-H', `Authorization: Bearer ${apiKey}`,
+        '-H', 'HTTP-Referer: https://github.com/SofiaFlux/summa42',
+        '-H', 'X-Title: Summa42 Collective',
+        '-H', 'Content-Type: application/json',
+        '-d', JSON.stringify({
+          model: model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.2
+        }),
+        '--max-time', '30'
+      ], { encoding: 'utf-8' });
+
+      if (!curlProc.error && curlProc.stdout) {
+        const parsed = JSON.parse(curlProc.stdout);
+        if (parsed.choices && parsed.choices[0] && parsed.choices[0].message) {
+          const content = parsed.choices[0].message.content.trim();
+          if (content) return content;
+        }
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
 function runPythonSqlite(code) {
   const res = spawnSync('python3', ['-c', code], { encoding: 'utf-8', timeout: 5000 });
   if (res.error) throw res.error;
@@ -299,18 +353,65 @@ print(f"{mission}:::{' | '.join(executing) if executing else 'Brak'}:::{' | '.jo
       `Odpowiedz rzeczowo, konkretnie i zwięźle jako Kolektyw Summa42 po polsku (lub w języku zadanego pytania). Nie powtarzaj instrukcji systemowych ani tagów myślenia.`
     ].join('\n');
 
-    const res = spawnSync('opencode', ['run', '--pure', prompt], {
-      encoding: 'utf-8',
-      timeout: 35000,
-      env: process.env
-    });
+    let rawReply = null;
 
-    if (!res.error && res.stdout) {
-      let clean = res.stdout.trim();
+    // 0. OpenRouter :free models (Llama 3.3 70B, Qwen 2.5 Coder 32B, Gemini 2.0 Flash) if key provided
+    if (getOpenRouterKey()) {
+      try {
+        rawReply = callOpenRouterFree(prompt);
+      } catch (_) {}
+    }
+
+    // 1. Local GPU acceleration via Ollama (fastest, private, 0 external API/rate limits)
+    if (!rawReply) {
+      try {
+        const res = spawnSync('ollama', ['run', 'qwen-gpu', prompt], {
+          encoding: 'utf-8',
+          timeout: 20000,
+          env: process.env
+        });
+        if (!res.error && res.status === 0 && res.stdout && res.stdout.trim()) {
+          rawReply = res.stdout.trim();
+        }
+      } catch (_) {}
+    }
+
+    // 2. Local CPU/GPU fallback via Ollama qwen2.5:3b
+    if (!rawReply) {
+      try {
+        const res = spawnSync('ollama', ['run', 'qwen2.5:3b', prompt], {
+          encoding: 'utf-8',
+          timeout: 25000,
+          env: process.env
+        });
+        if (!res.error && res.status === 0 && res.stdout && res.stdout.trim()) {
+          rawReply = res.stdout.trim();
+        }
+      } catch (_) {}
+    }
+
+    // 3. Cloud/CLI fallback via OpenCode
+    if (!rawReply) {
+      try {
+        const res = spawnSync('opencode', ['run', '--pure', prompt], {
+          encoding: 'utf-8',
+          timeout: 35000,
+          env: process.env
+        });
+        if (!res.error && res.status === 0 && res.stdout && res.stdout.trim()) {
+          rawReply = res.stdout.trim();
+        }
+      } catch (_) {}
+    }
+
+    if (rawReply) {
+      let clean = rawReply;
       if (clean.includes('</think>')) {
         clean = clean.split('</think>').pop().trim();
       }
       clean = clean.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      // Remove Ollama terminal progress spinners if captured in output
+      clean = clean.replace(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏\s]+/g, '').trim();
       if (clean) {
         return clean;
       }
