@@ -257,6 +257,11 @@ def list_models(backend):
 
 def extract_json(text):
     """Robustly extracts a JSON object or array from LLM output."""
+    # Strip thinking tags from reasoning models (e.g. big-pickle)
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
+    if "</think>" in text:
+        text = text.split("</think>")[-1].strip()
+
     # Try finding first '{' or '['
     brace_idx = text.find('{')
     bracket_idx = text.find('[')
@@ -541,8 +546,14 @@ def main():
 
     parsed = None
     last_error = None
-    per_attempt_timeout = max(15, args.timeout // len(backends_to_try))
-    for b in backends_to_try:
+    total_time_left = args.timeout
+    for idx, b in enumerate(backends_to_try):
+        is_last = (idx == len(backends_to_try) - 1)
+        if not is_last and total_time_left > 45:
+            per_attempt_timeout = max(30, total_time_left - 30)
+        else:
+            per_attempt_timeout = max(15, total_time_left)
+        start_t = time.time()
         try:
             m = args.model if b == args.backend else None
             output = run_backend(b, m, prompt, script_cmd=args.script, wrapper=args.wrapper, timeout=per_attempt_timeout)
@@ -550,9 +561,13 @@ def main():
             break
         except subprocess.TimeoutExpired as e:
             last_error = e
-            sys.stderr.write(f"call-worker: backend {b} timed out after {per_attempt_timeout}s, falling back...\n")
+            elapsed = int(time.time() - start_t)
+            total_time_left = max(5, total_time_left - elapsed)
+            sys.stderr.write(f"call-worker: backend {b} timed out after {elapsed}s, falling back...\n")
         except Exception as e:
             last_error = e
+            elapsed = int(time.time() - start_t)
+            total_time_left = max(5, total_time_left - elapsed)
             sys.stderr.write(f"call-worker: backend {b} failed: {e}\n")
 
     if parsed is None:

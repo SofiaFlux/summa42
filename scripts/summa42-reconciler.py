@@ -20,6 +20,27 @@ import sqlite3
 import json
 import re
 import hashlib
+import datetime
+
+def recover_expired_leases(conn):
+    cur = conn.cursor()
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    now_dt = datetime.datetime.now(datetime.timezone.utc)
+    cur.execute("SELECT attempt_id, task_id, lease_expires_at FROM attempts WHERE lease_state = 'ACTIVE'")
+    active_leases = cur.fetchall()
+    recovered = 0
+    for aid, tid, exp in active_leases:
+        try:
+            exp_dt = datetime.datetime.fromisoformat(exp.replace('Z', '+00:00'))
+            if exp_dt <= now_dt:
+                cur.execute("UPDATE attempts SET lease_state = 'EXPIRED', state = 'EXPIRED', completed_at = ? WHERE attempt_id = ?", (now_iso, aid))
+                cur.execute("UPDATE tasks SET state = 'ELIGIBLE', updated_at = ? WHERE task_id = ?", (now_iso, tid))
+                recovered += 1
+        except Exception:
+            pass
+    if recovered > 0:
+        conn.commit()
+        print(f"[RECONCILER] Recovered {recovered} expired task lease(s).")
 
 def get_db_path():
     home = os.environ.get("SUMMA42_HOME", os.path.expanduser("~/.summa42"))
@@ -361,8 +382,11 @@ def reconcile_prs(args, mission_id, conn):
 
         conn.commit()
 
-def reconcile_issues(args, mission_id):
+def reconcile_issues(args, mission_id, conn):
     """Reconciles standard issue workflow pipeline."""
+    # 0. Recover any orphaned/expired leases so tasks never get stuck in EXECUTING
+    recover_expired_leases(conn)
+
     # 1. Intake: Ingest new issues
     intake_args = [
         "run-repo-intake",
@@ -394,17 +418,26 @@ def reconcile_issues(args, mission_id):
     if args.model:
         model_extra_args.extend(["--model-arg", f"--model={args.model}"])
 
-    worker_args = [
-        "run-worker",
-        "--workspace-root", workspace_root,
-        "--model-binary", args.model_binary,
-        "--model-timeout", "60s",
-        "--poll-interval", "1s"
-    ] + model_extra_args
-    try:
-        code, out, err = run_box_command(worker_args, timeout=35)
-    except subprocess.TimeoutExpired:
-        pass
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM tasks WHERE state = 'ELIGIBLE'")
+    eligible_count = cur.fetchone()[0]
+    if eligible_count > 0:
+        print(f"[RECONCILER] Processing {eligible_count} eligible task(s) with worker...")
+        worker_args = [
+            "run-worker",
+            "--workspace-root", workspace_root,
+            "--model-binary", args.model_binary,
+            "--model-timeout", "150s",
+            "--poll-interval", "1s"
+        ] + model_extra_args
+        try:
+            code, out, err = run_box_command(worker_args, timeout=180)
+            if out or err:
+                print(f"[RECONCILER] Worker: {out or err}")
+        except subprocess.TimeoutExpired:
+            print("[RECONCILER] Worker batch tick timed out; will resume on next cycle.")
+    else:
+        print("[RECONCILER] No eligible tasks currently pending for worker.")
 
     # 3. Triage Driver: Advance cases with completed triage tasks
     triage_driver_args = [
@@ -453,6 +486,89 @@ def reconcile_issues(args, mission_id):
         code, out, err = run_box_command(plan_review_args)
     print(f"[RECONCILER] Plan Review: {out or err or 'done'}")
 
+    # 7. Implement: Generate code candidate in isolated git worktree for cases with accepted plan
+    source_dir = os.path.abspath(args.source)
+    cur.execute("""
+        SELECT case_id FROM workflow_cases
+        WHERE mission_id = ? AND state = 'ACTIVE'
+        AND json_extract(next_work_json, '$.kind') = 'github.issue.implementation'
+    """, (mission_id,))
+    impl_cases = [r[0] for r in cur.fetchall()]
+    for cid in impl_cases:
+        print(f"[RECONCILER] Implementing case {cid}...")
+        impl_args = [
+            "run-repo-implement",
+            "--case", cid,
+            "--source-repo", source_dir,
+            "--workspace-root", workspace_root,
+            "--model-binary", args.model_binary
+        ] + model_extra_args
+        code, out, err = run_box_command(impl_args, timeout=300)
+        print(f"[RECONCILER] Implement {cid}: {out or err or 'done'}")
+
+    # 8. Code Review: Verify candidate code changes
+    cur.execute("""
+        SELECT case_id FROM workflow_cases
+        WHERE mission_id = ? AND state = 'ACTIVE'
+        AND json_extract(next_work_json, '$.kind') = 'github.issue.code_review'
+    """, (mission_id,))
+    review_cases = [r[0] for r in cur.fetchall()]
+    for cid in review_cases:
+        print(f"[RECONCILER] Code review for case {cid}...")
+        code_rev_args = [
+            "run-repo-code-review",
+            "--case", cid,
+            "--source-repo", source_dir,
+            "--model-binary", args.model_binary
+        ] + model_extra_args
+        code, out, err = run_box_command(code_rev_args, timeout=180)
+        print(f"[RECONCILER] Code Review {cid}: {out or err or 'done'}")
+
+    # 9. Publish: Push branch and open Pull Request on GitHub
+    token_file = "/tmp/summa42_github_token"
+    if os.path.exists(token_file):
+        cur.execute("""
+            SELECT case_id FROM workflow_cases
+            WHERE mission_id = ? AND state = 'ACTIVE'
+            AND json_extract(next_work_json, '$.kind') = 'github.issue.publish'
+        """, (mission_id,))
+        pub_cases = [r[0] for r in cur.fetchall()]
+        for cid in pub_cases:
+            print(f"[RECONCILER] Publishing case {cid} as PR...")
+            pub_args = [
+                "run-repo-publish",
+                "--case", cid,
+                "--source-repo", source_dir,
+                "--base-branch", "main",
+                "--repository", args.repo,
+                "--credential-file", token_file
+            ]
+            code, out, err = run_box_command(pub_args, timeout=60)
+            print(f"[RECONCILER] Publish {cid}: {out or err or 'done'}")
+
+    # 10. Merge: Merge approved PR once CI checks pass
+    if os.path.exists(token_file):
+        cur.execute("""
+            SELECT case_id FROM workflow_cases
+            WHERE mission_id = ? AND state = 'ACTIVE'
+            AND json_extract(next_work_json, '$.kind') = 'github.issue.merge'
+        """, (mission_id,))
+        merge_cases = [r[0] for r in cur.fetchall()]
+        for cid in merge_cases:
+            print(f"[RECONCILER] Merging case {cid}...")
+            merge_args = [
+                "run-repo-merge",
+                "--case", cid,
+                "--source-repo", source_dir,
+                "--base-branch", "main",
+                "--repository", args.repo,
+                "--credential-file", token_file,
+                "--merge-method", "squash"
+            ]
+            code, out, err = run_box_command(merge_args, timeout=60)
+            print(f"[RECONCILER] Merge {cid}: {out or err or 'done'}")
+
+
 def reconcile_tick(args):
     db_path = get_db_path()
     if not os.path.exists(db_path):
@@ -483,7 +599,7 @@ def reconcile_tick(args):
     reconcile_prs(args, mission_id, conn)
 
     # 2. Issue lifecycle reconciliation
-    reconcile_issues(args, mission_id)
+    reconcile_issues(args, mission_id, conn)
 
     # Summary of tracked cases
     cur = conn.cursor()

@@ -846,6 +846,11 @@ func runWorker(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
+	if box.Wake != nil {
+		if recovered, err := box.Wake.RecoverExpiredLeases(ctx); err == nil && recovered > 0 {
+			fmt.Fprintf(os.Stderr, "recovered %d expired task lease(s)\n", recovered)
+		}
+	}
 	if adoProvider != nil {
 		publisher, err := adoreview.NewPublisher(adoreview.PublishConfig{
 			Mode:           publishCfg.mode,
