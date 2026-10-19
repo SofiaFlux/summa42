@@ -457,7 +457,7 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "run-gh-intake" {
+	if len(os.Args) > 1 && (os.Args[1] == "run-gh-intake" || os.Args[1] == "run-repo-intake") {
 		if err := runGHIntake(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -471,56 +471,56 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "run-gh-triage-driver" {
+	if len(os.Args) > 1 && (os.Args[1] == "run-gh-triage-driver" || os.Args[1] == "run-repo-triage-driver") {
 		if err := runGHTriageDriver(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "run-gh-triage-review" {
+	if len(os.Args) > 1 && (os.Args[1] == "run-gh-triage-review" || os.Args[1] == "run-repo-triage-review") {
 		if err := runGHTriageReview(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "run-gh-plan" {
+	if len(os.Args) > 1 && (os.Args[1] == "run-gh-plan" || os.Args[1] == "run-repo-plan") {
 		if err := runGHPlan(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "run-gh-plan-review" {
+	if len(os.Args) > 1 && (os.Args[1] == "run-gh-plan-review" || os.Args[1] == "run-repo-plan-review") {
 		if err := runGHPlanReview(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "run-gh-implement" {
+	if len(os.Args) > 1 && (os.Args[1] == "run-gh-implement" || os.Args[1] == "run-repo-implement") {
 		if err := runGHImplement(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "run-gh-publish" {
+	if len(os.Args) > 1 && (os.Args[1] == "run-gh-publish" || os.Args[1] == "run-repo-publish") {
 		if err := runGHPublish(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "run-gh-merge" {
+	if len(os.Args) > 1 && (os.Args[1] == "run-gh-merge" || os.Args[1] == "run-repo-merge") {
 		if err := runGHMerge(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		return
 	}
-	if len(os.Args) > 1 && os.Args[1] == "run-gh-code-review" {
+	if len(os.Args) > 1 && (os.Args[1] == "run-gh-code-review" || os.Args[1] == "run-repo-code-review") {
 		if err := runGHCodeReview(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -533,6 +533,10 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+	if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "run-") {
+		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
+		os.Exit(1)
 	}
 	if err := run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)

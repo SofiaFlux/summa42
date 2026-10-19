@@ -1,0 +1,451 @@
+#!/usr/bin/env python3
+"""
+Summa42 Autonomous Mission Reconciler.
+Continuously reconciles workflow cases for an active Mission:
+- Issue pipeline: Intake -> Triage -> Planning -> Review -> Implementation -> Merge
+- Reviewer pipeline: PR intake for assigned reviewer -> Autonomous review with rules -> Publication
+
+Usage:
+  summa42-reconciler --mission "wszystkie PRy z SofiaFlux jako reviewer są obsłużone ASAP z zasadami {zasady}"
+  summa42-reconciler --mission <mission_id> --reviewer <user> --rules "{zasady}"
+  summa42-reconciler --mission <mission_id> --rules-file rules.md
+"""
+
+import sys
+import os
+import time
+import argparse
+import subprocess
+import sqlite3
+import json
+import re
+import hashlib
+
+def get_db_path():
+    home = os.environ.get("SUMMA42_HOME", os.path.expanduser("~/.summa42"))
+    return os.path.join(home, "state", "summa42.db")
+
+def get_github_token():
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if not token and os.path.exists("/tmp/summa42_github_token"):
+        try:
+            with open("/tmp/summa42_github_token", "r") as f:
+                token = f.read().strip()
+        except Exception:
+            pass
+    return token
+
+def run_box_command(cmd_args, env=None, timeout=300):
+    box_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "summa42-box"))
+    full_cmd = [box_bin] + cmd_args
+    proc_env = os.environ.copy()
+    token = get_github_token()
+    if token:
+        proc_env["GITHUB_TOKEN"] = token
+        proc_env["GH_TOKEN"] = token
+    if os.path.exists("/tmp/summa42_github_token"):
+        proc_env["SUMMA42_GITHUB_TOKEN_FILE"] = "/tmp/summa42_github_token"
+    if env:
+        proc_env.update(env)
+    res = subprocess.run(full_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=proc_env, timeout=timeout)
+    return res.returncode, res.stdout.strip(), res.stderr.strip()
+
+def extract_mission_parameters(statement):
+    """Extracts reviewer and rules from a natural language mission statement."""
+    reviewer = None
+    rules = None
+
+    # Match: PRy z <user> jako reviewer / pull requests with <user> as reviewer
+    rev_match = re.search(r"(?:PRy|pull requests?)\s+z\s+([a-zA-Z0-9_\-]+)\s+jako\s+reviewer", statement, re.IGNORECASE)
+    if not rev_match:
+        rev_match = re.search(r"reviewer\s*[:= ]\s*([a-zA-Z0-9_\-]+)", statement, re.IGNORECASE)
+    if rev_match:
+        reviewer = rev_match.group(1).strip()
+
+    # Match rules: z zasadami <rules> / rules: <rules>
+    rules_match = re.search(r"(?:z zasadami|rules:?)\s*[:=]?\s*(\{?.*\}?)", statement, re.IGNORECASE)
+    if rules_match:
+        rules = rules_match.group(1).strip().strip("{}")
+
+    return reviewer, rules
+
+def resolve_mission(statement_or_id, db_path):
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+
+    # Check if statement_or_id is already a mission_id
+    if statement_or_id and statement_or_id.startswith("mission_") and len(statement_or_id) > 10:
+        cur.execute("SELECT mission_id, statement, active FROM missions WHERE mission_id = ?", (statement_or_id,))
+        row = cur.fetchone()
+        if row:
+            conn.close()
+            return row[0], row[1]
+
+    statement = statement_or_id or "Autonomous Mission"
+
+    # Check if active mission with this statement exists
+    cur.execute("SELECT mission_id FROM missions WHERE active = 1 AND statement = ?", (statement,))
+    row = cur.fetchone()
+    if row:
+        conn.close()
+        return row[0], statement
+
+    # Check any active mission if statement was not explicitly given
+    if not statement_or_id:
+        cur.execute("SELECT mission_id, statement FROM missions WHERE active = 1")
+        row = cur.fetchone()
+        if row:
+            conn.close()
+            return row[0], row[1]
+
+    # Deactivate existing active missions to preserve single active mission invariant
+    cur.execute("UPDATE missions SET active = 0 WHERE active = 1")
+
+    # Create new active mission
+    mission_id = f"mission_{hashlib.md5(statement.encode()).hexdigest()}"
+    cur.execute("INSERT INTO missions (mission_id, statement, active, created_at) VALUES (?, ?, 1, datetime('now'))",
+                (mission_id, statement))
+    conn.commit()
+    conn.close()
+    return mission_id, statement
+
+def reconcile_prs(args, mission_id, conn):
+    """Reconciles Pull Requests where args.reviewer is requested as reviewer."""
+    if not args.reviewer:
+        return
+
+    repo = args.repo
+    reviewer = args.reviewer.lower()
+    token = get_github_token()
+    env = os.environ.copy()
+    if token:
+        env["GITHUB_TOKEN"] = token
+        env["GH_TOKEN"] = token
+
+    print(f"[RECONCILER] Checking PRs in {repo} for reviewer '{reviewer}'...")
+
+    # Fetch open PRs via gh CLI
+    try:
+        proc = subprocess.run([
+            "gh", "pr", "list",
+            "--repo", repo,
+            "--state", "open",
+            "--json", "number,title,author,headRefOid,baseRefName,reviewRequests,isDraft,url"
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=30)
+    except Exception as e:
+        print(f"[RECONCILER] Failed to query PRs via gh: {e}")
+        return
+
+    if proc.returncode != 0:
+        print(f"[RECONCILER] gh pr list error: {proc.stderr.strip()}")
+        return
+
+    try:
+        prs = json.loads(proc.stdout)
+    except Exception as e:
+        print(f"[RECONCILER] Failed to decode PR list JSON: {e}")
+        return
+
+    matching_prs = []
+    for pr in prs:
+        if pr.get("isDraft", False):
+            continue
+        author = pr.get("author", {}).get("login", "").lower()
+        if author == reviewer:
+            # Self-authored PRs excluded
+            continue
+
+        requested = [r.get("login", "").lower() for r in pr.get("reviewRequests", [])]
+        if reviewer in requested:
+            matching_prs.append(pr)
+
+    print(f"[RECONCILER] Found {len(matching_prs)} open PRs where '{reviewer}' is requested reviewer.")
+
+    cur = conn.cursor()
+    for pr in matching_prs:
+        num = pr["number"]
+        head_sha = pr["headRefOid"]
+        object_id = f"{repo}#{num}"
+        revision_id = head_sha
+
+        # Check if already reviewed for this revision
+        cur.execute(
+            "SELECT state FROM workflow_cases WHERE mission_id = ? AND object_id = ? AND revision_id = ?",
+            (mission_id, object_id, revision_id)
+        )
+        existing = cur.fetchone()
+        if existing and existing[0] == "CLOSED":
+            print(f"[RECONCILER] PR #{num} (rev {head_sha[:8]}) already reviewed and closed. Skipping.")
+            continue
+
+        print(f"[RECONCILER] Processing PR #{num}: '{pr['title']}' (rev {head_sha[:8]})...")
+
+        # Fetch PR diff
+        diff_proc = subprocess.run([
+            "gh", "pr", "diff", str(num), "--repo", repo
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=30)
+        diff_text = diff_proc.stdout if diff_proc.returncode == 0 else ""
+
+        # Prepare review input
+        review_input = {
+            "schema": "github.issue.code.review.v1",
+            "question": f"Independently review Pull Request #{num} ({pr['title']})",
+            "pr": {
+                "number": num,
+                "title": pr["title"],
+                "author": pr.get("author", {}).get("login", ""),
+                "head": head_sha,
+                "base": pr.get("baseRefName", "main"),
+                "url": pr.get("url", "")
+            },
+            "diff": diff_text[:50000] # bounded diff
+        }
+
+        # Call cognitive worker
+        worker_bin = os.path.abspath(args.model_binary)
+        worker_cmd = [
+            worker_bin,
+            "--backend", args.backend,
+            "--fallback", args.fallback
+        ]
+        if args.wrapper:
+            worker_cmd.extend(["--wrapper", args.wrapper])
+        if args.model:
+            worker_cmd.extend(["--model", args.model])
+        if args.rules:
+            worker_cmd.extend(["--rules", args.rules])
+        if args.rules_file:
+            worker_cmd.extend(["--rules-file", os.path.abspath(args.rules_file)])
+
+        worker_proc = subprocess.run(
+            worker_cmd,
+            input=json.dumps(review_input),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            timeout=180
+        )
+
+        if worker_proc.returncode != 0:
+            print(f"[RECONCILER] Worker review failed for PR #{num}: {worker_proc.stderr.strip()}")
+            continue
+
+        try:
+            review_output = json.loads(worker_proc.stdout.strip())
+        except Exception as e:
+            print(f"[RECONCILER] Worker returned non-JSON for PR #{num}: {worker_proc.stdout[:200]}")
+            continue
+
+        verdict = review_output.get("verdict", "ACCEPT")
+        reason = review_output.get("reason", "Autonomous review completed.")
+
+        # Post review to GitHub
+        review_flag = "--approve" if verdict in ("ACCEPT", "APPROVE") else "--request-changes"
+        review_body = f"**Summa42 Autonomous Review ({args.backend})**\n\n**Verdict:** `{verdict}`\n\n{reason}"
+        if args.rules:
+            review_body += f"\n\n*Evaluated against rules:* {args.rules}"
+
+        post_proc = subprocess.run([
+            "gh", "pr", "review", str(num),
+            "--repo", repo,
+            review_flag,
+            "--body", review_body
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=30)
+
+        if post_proc.returncode == 0:
+            print(f"[RECONCILER] Successfully posted {verdict} review for PR #{num}.")
+        else:
+            print(f"[RECONCILER] gh pr review output for PR #{num}: {post_proc.stderr.strip()}")
+
+        # Record case in SQLite as CLOSED
+        case_id = f"case_pr_{num}_{head_sha[:10]}"
+        evidence_id = f"ev_pr_review_{num}_{head_sha[:10]}"
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        cur.execute("""
+            INSERT OR REPLACE INTO workflow_cases (
+                case_id, mission_id, source, object_id, revision_id,
+                observation_evidence_id, initial_request_json, grant_json,
+                state, current_work_id, next_work_json, completed_steps,
+                max_steps, remaining_budget, progress_signature, created_at, updated_at
+            ) VALUES (?, ?, 'github', ?, ?, ?, ?, ?, 'CLOSED', ?, '{}', 1, 3, 2, ?, ?, ?)
+        """, (
+            case_id, mission_id, object_id, revision_id,
+            evidence_id, json.dumps(review_input), json.dumps({"capabilities": ["github.pr.review"]}),
+            f"work_{case_id}", f"verdict:{verdict}", now, now
+        ))
+
+        # Store evidence object
+        review_canonical = json.dumps(review_output).encode()
+        content_hash = hashlib.sha256(review_canonical).hexdigest()
+        cur.execute("""
+            INSERT OR REPLACE INTO evidence_objects (
+                evidence_id, media_type, content_hash, byte_length, kind, created_at
+            ) VALUES (?, 'application/json', ?, ?, 'github.pr.review.decision', ?)
+        """, (evidence_id, content_hash, len(review_canonical), now))
+
+        conn.commit()
+
+def reconcile_issues(args, mission_id):
+    """Reconciles standard issue workflow pipeline."""
+    # 1. Intake: Ingest new issues
+    intake_args = [
+        "run-repo-intake",
+        "--mission", mission_id,
+        "--repo", args.repo,
+        "--maintainer", args.maintainer,
+        "--grant-capability", "github.issue.read",
+        "--envelope", "envelope_1",
+        "--poll-interval", "5s"
+    ]
+    try:
+        code, out, err = run_box_command(intake_args, timeout=8)
+    except subprocess.TimeoutExpired:
+        out, err = "intake tick completed", ""
+    print(f"[RECONCILER] Intake: {out or err or 'done'}")
+
+    # 2. Worker: Process eligible triage/planning tasks
+    workspace_root = os.environ.get("SUMMA42_WORKSPACE_ROOT", "/tmp/summa42-workspaces")
+    os.makedirs(workspace_root, exist_ok=True)
+    model_extra_args = []
+    if args.rules:
+        model_extra_args.extend(["--model-arg", f"--rules={args.rules}"])
+    if args.rules_file:
+        model_extra_args.extend(["--model-arg", f"--rules-file={os.path.abspath(args.rules_file)}"])
+    if args.backend:
+        model_extra_args.extend(["--model-arg", f"--backend={args.backend}"])
+    if args.wrapper:
+        model_extra_args.extend(["--model-arg", f"--wrapper={args.wrapper}"])
+    if args.model:
+        model_extra_args.extend(["--model-arg", f"--model={args.model}"])
+
+    worker_args = [
+        "run-worker",
+        "--workspace-root", workspace_root,
+        "--model-binary", args.model_binary,
+        "--model-timeout", "60s",
+        "--poll-interval", "1s"
+    ] + model_extra_args
+    try:
+        code, out, err = run_box_command(worker_args, timeout=35)
+    except subprocess.TimeoutExpired:
+        pass
+
+    # 3. Triage Driver: Advance cases with completed triage tasks
+    triage_driver_args = [
+        "run-repo-triage-driver",
+        "--mission", mission_id
+    ]
+    code, out, err = run_box_command(triage_driver_args)
+    if code != 0 and "unknown subcommand" in err.lower():
+        triage_driver_args[0] = "run-gh-triage-driver"
+        code, out, err = run_box_command(triage_driver_args)
+    print(f"[RECONCILER] Triage Driver: {out or err or 'done'}")
+
+    # 4. Triage Review: Verify decisions
+    triage_review_args = [
+        "run-repo-triage-review",
+        "--mission", mission_id,
+        "--model-binary", args.model_binary
+    ] + model_extra_args
+    code, out, err = run_box_command(triage_review_args)
+    if code != 0 and "unknown subcommand" in err.lower():
+        triage_review_args[0] = "run-gh-triage-review"
+        code, out, err = run_box_command(triage_review_args)
+    print(f"[RECONCILER] Triage Review: {out or err or 'done'}")
+
+    # 5. Planning: Generate implementation plan for ready cases
+    plan_args = [
+        "run-repo-plan",
+        "--mission", mission_id,
+        "--source-repo", args.source,
+        "--model-binary", args.model_binary
+    ] + model_extra_args
+    code, out, err = run_box_command(plan_args)
+    if code != 0 and "unknown subcommand" in err.lower():
+        plan_args[0] = "run-gh-plan"
+        code, out, err = run_box_command(plan_args)
+    print(f"[RECONCILER] Plan: {out or err or 'done'}")
+
+    # 6. Plan Review: Independent verification of plan
+    plan_review_args = [
+        "run-repo-plan-review",
+        "--mission", mission_id,
+        "--model-binary", args.model_binary
+    ] + model_extra_args
+    code, out, err = run_box_command(plan_review_args)
+    if code != 0 and "unknown subcommand" in err.lower():
+        plan_review_args[0] = "run-gh-plan-review"
+        code, out, err = run_box_command(plan_review_args)
+    print(f"[RECONCILER] Plan Review: {out or err or 'done'}")
+
+def reconcile_tick(args):
+    db_path = get_db_path()
+    if not os.path.exists(db_path):
+        print(f"Database {db_path} does not exist yet. Collective not initialized?")
+        return
+
+    mission_id, statement = resolve_mission(args.mission or args.mission_goal, db_path)
+
+    # If reviewer or rules not explicitly set, try extracting from statement
+    extracted_reviewer, extracted_rules = extract_mission_parameters(statement)
+    if not args.reviewer and extracted_reviewer:
+        args.reviewer = extracted_reviewer
+        print(f"[RECONCILER] Inferred reviewer '{args.reviewer}' from mission statement.")
+    if not args.rules and extracted_rules:
+        args.rules = extracted_rules
+        print(f"[RECONCILER] Inferred rules from mission statement: {args.rules}")
+
+    conn = sqlite3.connect(db_path)
+
+    # 1. PR Review reconciliation for assigned reviewer
+    reconcile_prs(args, mission_id, conn)
+
+    # 2. Issue lifecycle reconciliation
+    reconcile_issues(args, mission_id)
+
+    # Summary of tracked cases
+    cur = conn.cursor()
+    cur.execute("SELECT case_id, state, object_id FROM workflow_cases WHERE mission_id = ?", (mission_id,))
+    cases = cur.fetchall()
+    print(f"[RECONCILER] Active cases summary: {len(cases)} cases tracked for mission {mission_id}.")
+    for cid, st, obj in cases:
+        print(f"  -> Case {cid} ({obj}): state = {st}")
+    conn.close()
+
+def main():
+    parser = argparse.ArgumentParser(description="Summa42 Autonomous Mission Reconciler")
+    parser.add_argument("--mission", default=None, help="Active mission ID or natural language mission statement")
+    parser.add_argument("--mission-goal", default=None, help="Explicit natural language mission goal")
+    parser.add_argument("--reviewer", default=None, help="Reviewer username to observe and review PRs for")
+    parser.add_argument("--rules", default=None, help="Inline review rules")
+    parser.add_argument("--rules-file", default=None, help="Path to markdown/text file with review rules")
+    parser.add_argument("--repo", default="SofiaFlux/summa42", help="Repository owner/name")
+    parser.add_argument("--source", default=os.getcwd(), help="Absolute path to source repository")
+    parser.add_argument("--maintainer", default="SofiaFlux", help="Maintainer eligible to open issues")
+    parser.add_argument("--backend", default=os.environ.get("SUMMA42_WORKER_BACKEND", "opencode"), help="Worker harness (opencode, copilot, agy, claude, codex, gemini, commandcode, pi, codemie, script)")
+    parser.add_argument("--wrapper", default=os.environ.get("SUMMA42_HARNESS_WRAPPER", None), help="Company wrapper prefix (e.g. codemie-)")
+    parser.add_argument("--model", default=None, help="Model name for backend")
+    parser.add_argument("--fallback", default="agy", help="Fallback backend if primary fails")
+    parser.add_argument("--model-binary", default=os.path.abspath("bin/call-worker"), help="Model binary router")
+    parser.add_argument("--poll-interval", type=int, default=15, help="Reconciliation poll interval in seconds")
+    parser.add_argument("--once", action="store_true", help="Run a single reconciliation tick and exit")
+
+    args = parser.parse_args()
+
+    mission_repr = args.mission or args.mission_goal or "Active Mission"
+    print(f"[RECONCILER] Starting Summa42 Reconciler for mission: '{mission_repr}'...")
+    if args.once:
+        reconcile_tick(args)
+        return
+
+    while True:
+        try:
+            reconcile_tick(args)
+        except Exception as e:
+            print(f"[RECONCILER] Tick error: {e}", file=sys.stderr)
+        time.sleep(args.poll_interval)
+
+if __name__ == "__main__":
+    main()
