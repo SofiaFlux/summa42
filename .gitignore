@@ -17,3 +17,5 @@ docs/publication-readiness-private.md
 .DS_Store
 .idea/
 .vscode/
+__pycache__/
+*.pyc
