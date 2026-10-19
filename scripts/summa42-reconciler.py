@@ -422,20 +422,21 @@ def reconcile_issues(args, mission_id, conn):
     cur.execute("SELECT COUNT(*) FROM tasks WHERE state = 'ELIGIBLE'")
     eligible_count = cur.fetchone()[0]
     if eligible_count > 0:
-        print(f"[RECONCILER] Processing {eligible_count} eligible task(s) with worker...")
+        print(f"[RECONCILER] Processing eligible tasks with worker (--once)...")
         worker_args = [
             "run-worker",
             "--workspace-root", workspace_root,
             "--model-binary", args.model_binary,
             "--model-timeout", "150s",
-            "--poll-interval", "1s"
+            "--poll-interval", "1s",
+            "--once"
         ] + model_extra_args
         try:
             code, out, err = run_box_command(worker_args, timeout=180)
             if out or err:
                 print(f"[RECONCILER] Worker: {out or err}")
         except subprocess.TimeoutExpired:
-            print("[RECONCILER] Worker batch tick timed out; will resume on next cycle.")
+            print("[RECONCILER] Worker single step timed out; will resume on next cycle.")
     else:
         print("[RECONCILER] No eligible tasks currently pending for worker.")
 
@@ -585,6 +586,11 @@ def reconcile_tick(args):
     if not args.rules and extracted_rules:
         args.rules = extracted_rules
         print(f"[RECONCILER] Inferred rules from mission statement: {args.rules}")
+
+    if not args.rules_file and not args.rules:
+        default_skills = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills", "autonomous_engineering.md"))
+        if os.path.exists(default_skills):
+            args.rules_file = default_skills
 
     conn = sqlite3.connect(db_path)
 

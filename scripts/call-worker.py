@@ -255,6 +255,36 @@ def list_models(backend):
         return ["pi-default"]
     return []
 
+def load_skill_content(task_type):
+    """Loads applicable autonomous skills from the skills/ directory."""
+    skills_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills"))
+    content = ""
+    # Base autonomous engineering principles
+    base_file = os.path.join(skills_dir, "autonomous_engineering.md")
+    if os.path.exists(base_file):
+        try:
+            with open(base_file, "r") as f:
+                content += f.read().strip() + "\n\n"
+        except Exception:
+            pass
+
+    type_map = {
+        "plan": "planning.md",
+        "plan_review": "plan_review.md",
+        "implementation": "implementation.md",
+        "code_review": "code_review.md",
+    }
+    spec_name = type_map.get(task_type)
+    if spec_name:
+        spec_file = os.path.join(skills_dir, spec_name)
+        if os.path.exists(spec_file):
+            try:
+                with open(spec_file, "r") as f:
+                    content += f.read().strip() + "\n\n"
+            except Exception:
+                pass
+    return content.strip()
+
 def extract_json(text):
     """Robustly extracts a JSON object or array from LLM output."""
     # Strip thinking tags from reasoning models (e.g. big-pickle)
@@ -437,15 +467,29 @@ def main():
     schema = input_data.get("schema", "")
     question = input_data.get("question", "")
 
-    # Identify task type and construct prompt
+    # Identify task type
     task_type = "generic"
-    prompt = ""
+    if schema == "github.issue.triage.review.v1" or ("plausible" in question.lower() and "triage" in question.lower()):
+        task_type = "triage_review"
+    elif schema == "github.issue.plan.review.v1" or "plan.review" in schema.lower() or "independently review this issue implementation plan" in question.lower():
+        task_type = "plan_review"
+    elif schema in ("github.issue.plan.v1", "github.issue.plan.v2") or "plan" in schema.lower() or "implementation plan" in question.lower():
+        task_type = "plan"
+    elif schema == "github.issue.code.review.v1" or "code.review" in schema.lower() or "independent reviewer" in question.lower():
+        task_type = "code_review"
+    elif schema == "repo.implementation.v1" or "implementation" in schema.lower():
+        task_type = "implementation"
+    elif "stage2" in schema.lower() or "classify this issue" in question.lower() or "is_actionable" in raw_input:
+        task_type = "stage2_classify"
+
+    skill_content = load_skill_content(task_type)
+    skill_block = f"\nAPPLICABLE BEST PRACTICES & SKILLS (SUPERPOWERS / PONYTAIL / TDD):\n{skill_content}\n" if skill_content else ""
 
     rules_block = f"\nEVALUATION RULES (STRICTLY ENFORCE):\n{rules_text}\nIf any rule is violated, verdict must be REVISE or BLOCK, explaining the exact violation in reason.\n" if rules_text else ""
 
+    prompt = ""
     # 1. Triage Review
-    if schema == "github.issue.triage.review.v1" or ("plausible" in question.lower() and "triage" in question.lower()):
-        task_type = "triage_review"
+    if task_type == "triage_review":
         prompt = (
             "You are an automated triage review verifier for Summa42. "
             "Evaluate if this issue triage decision is plausible and sound. "
@@ -453,12 +497,12 @@ def main():
             f"INPUT:\n{raw_input}"
         )
 
-    # 2. Plan Review (MUST check before Planning because plan review contains 'plan')
-    elif schema == "github.issue.plan.review.v1" or "plan.review" in schema.lower() or "independently review this issue implementation plan" in question.lower():
-        task_type = "plan_review"
+    # 2. Plan Review
+    elif task_type == "plan_review":
         prompt = (
             "You are an independent plan reviewer for Summa42. "
             "Review the proposed implementation plan against the issue requirements. "
+            f"{skill_block}"
             f"{rules_block}"
             "Output ONLY a raw JSON object with this exact format: "
             '{"verdict": "ACCEPT", "reason": "Detailed justification under 1000 characters"}.\n\n'
@@ -466,11 +510,11 @@ def main():
         )
 
     # 3. Planning
-    elif schema in ("github.issue.plan.v1", "github.issue.plan.v2") or "plan" in schema.lower() or "implementation plan" in question.lower():
-        task_type = "plan"
+    elif task_type == "plan":
         prompt = (
             "You are an automated software architect for Summa42. "
-            "Write a concrete, bounded implementation plan with 1 to 8 steps for the following issue. "
+            "Write a concrete, bounded, test-driven implementation plan with 1 to 8 steps for the following issue. "
+            f"{skill_block}"
             f"{rules_block}"
             "Output JSON with ONLY these exact fields: "
             '{"summary": "Summary under 1000 characters", "steps": [{"objective": "Step objective under 300 chars", "done_when": "Verifiable condition under 1000 chars"}]}. '
@@ -479,11 +523,11 @@ def main():
         )
 
     # 4. Code Review
-    elif schema == "github.issue.code.review.v1" or "code.review" in schema.lower() or "independent reviewer" in question.lower():
-        task_type = "code_review"
+    elif task_type == "code_review":
         prompt = (
             "You are an independent code reviewer for Summa42. "
             "Review the implementation diff against the issue requirements and plan. "
+            f"{skill_block}"
             f"{rules_block}"
             "Output ONLY a raw JSON object with this exact format: "
             '{"verdict": "ACCEPT", "reason": "Detailed justification under 1000 characters"}.\n\n'
@@ -491,11 +535,12 @@ def main():
         )
 
     # 5. Implementation
-    elif schema == "repo.implementation.v1" or "implementation" in schema.lower():
-        task_type = "implementation"
+    elif task_type == "implementation":
         prompt = (
             "You are an automated software engineer for Summa42. "
             "Produce the concrete code edits needed to solve the task. "
+            f"{skill_block}"
+            f"{rules_block}"
             "Output ONLY a raw JSON object with this exact format: "
             '{"summary": "Summary of changes", "edits": [{"path": "relative/path/to/file", "content": "full new content of file", "delete": false}]}. '
             "Output ONLY the raw JSON object.\n\n"
@@ -503,8 +548,7 @@ def main():
         )
 
     # 6. Stage 2 Triage Classification
-    elif "stage2" in schema.lower() or "classify this issue" in question.lower() or "is_actionable" in raw_input:
-        task_type = "stage2_classify"
+    elif task_type == "stage2_classify":
         prompt = (
             "You are an automated triage classifier for Summa42. "
             "Classify the following issue. "
@@ -516,9 +560,10 @@ def main():
         )
 
     else:
-        task_type = "generic"
         prompt = (
             "You are an automated cognitive worker for Summa42. "
+            f"{skill_block}"
+            f"{rules_block}"
             "Respond ONLY with a single valid conforming JSON object matching the requested schema.\n\n"
             f"INPUT:\n{raw_input}"
         )

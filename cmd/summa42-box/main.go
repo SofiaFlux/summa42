@@ -770,7 +770,16 @@ func runWorker(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	workspaceRoot, rest, err := splitWorkspaceRootArg(args)
+	var once bool
+	filteredArgs := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--once" {
+			once = true
+			continue
+		}
+		filteredArgs = append(filteredArgs, a)
+	}
+	workspaceRoot, rest, err := splitWorkspaceRootArg(filteredArgs)
 	if err != nil {
 		return err
 	}
@@ -875,6 +884,16 @@ func runWorker(ctx context.Context, args []string) error {
 	worker, err := scheduler.NewWorker(box.Scheduler, box.Execution, box.Evidence, box.Verification, box.Executors, box.Clock, workspaceRoot)
 	if err != nil {
 		return err
+	}
+	if once {
+		res, err := worker.StepOnce(ctx, capacity)
+		if err != nil {
+			return err
+		}
+		if res.Outcome != scheduler.StepIdle {
+			fmt.Fprintf(os.Stderr, "executed attempt %s for task %s: %s\n", res.AttemptID, res.TaskID, res.Outcome)
+		}
+		return nil
 	}
 	return worker.Run(ctx, capacity, pollInterval)
 }
