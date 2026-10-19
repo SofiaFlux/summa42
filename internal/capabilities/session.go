@@ -65,7 +65,7 @@ func (r *Registry) OpenSession(ctx context.Context, collectiveID, attemptID doma
 			if err != nil {
 				return err
 			}
-			if _, ok := r.providers[definition.Access.Provider]; !ok {
+			if _, ok := r.Provider(definition.Access.Provider); !ok {
 				return fmt.Errorf("capability provider %q is not registered", definition.Access.Provider)
 			}
 			if !authorityContains(control.Authority, definition.Authority.Capabilities) {
@@ -173,8 +173,8 @@ func (s *Session) Call(ctx context.Context, name string, request any) (any, erro
 		if err := ensureCurrentAssessmentEligible(ctx, tx, definition, control, name); err != nil {
 			return err
 		}
-		provider = s.registry.providers[definition.Access.Provider]
-		if provider == nil {
+		provider, ok = s.registry.Provider(definition.Access.Provider)
+		if !ok || provider == nil {
 			return fmt.Errorf("capability provider %q is not registered", definition.Access.Provider)
 		}
 		semanticName = definition.Skill.Name
