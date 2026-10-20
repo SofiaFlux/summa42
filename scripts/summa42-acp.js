@@ -42,6 +42,10 @@ function getOpenRouterKey() {
   if (fs.existsSync(keyFile)) {
     try { return fs.readFileSync(keyFile, 'utf-8').trim(); } catch (_) {}
   }
+  const summaKeyFile = path.join(process.env.HOME || '/home/topol', '.summa42', 'openrouter_key');
+  if (fs.existsSync(summaKeyFile)) {
+    try { return fs.readFileSync(summaKeyFile, 'utf-8').trim(); } catch (_) {}
+  }
   const tmpFile = '/tmp/summa42_openrouter_key';
   if (fs.existsSync(tmpFile)) {
     try { return fs.readFileSync(tmpFile, 'utf-8').trim(); } catch (_) {}
@@ -49,20 +53,55 @@ function getOpenRouterKey() {
   return null;
 }
 
+function getOpenRouterFreeModels() {
+  const cacheFile = '/tmp/summa42_openrouter_free_models.json';
+  try {
+    if (fs.existsSync(cacheFile)) {
+      const stats = fs.statSync(cacheFile);
+      if (Date.now() - stats.mtimeMs < 3600000) {
+        return JSON.parse(fs.readFileSync(cacheFile, 'utf-8'));
+      }
+    }
+  } catch (_) {}
+
+  try {
+    const res = spawnSync('curl', ['-s', '--max-time', '5', 'https://openrouter.ai/api/v1/models'], { encoding: 'utf-8' });
+    if (!res.error && res.stdout) {
+      const parsed = JSON.parse(res.stdout);
+      if (parsed.data && Array.isArray(parsed.data)) {
+        const models = ['openrouter/free'];
+        for (const m of parsed.data) {
+          if (m.id && (m.id.endsWith(':free') || m.id === 'openrouter/free') && !models.includes(m.id)) {
+            models.push(m.id);
+          }
+        }
+        if (models.length > 1) {
+          try { fs.writeFileSync(cacheFile, JSON.stringify(models)); } catch (_) {}
+          return models;
+        }
+      }
+    }
+  } catch (_) {}
+
+  return [
+    "openrouter/free",
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "minimax/minimax-m3.1-flash:free",
+    "cohere/north-mini-code:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen-2.5-coder-32b-instruct:free"
+  ];
+}
+
 function callOpenRouterFree(prompt) {
   const apiKey = getOpenRouterKey();
   if (!apiKey) return null;
 
-  const freeModels = [
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen-2.5-coder-32b-instruct:free",
-    "google/gemini-2.0-flash-exp:free",
-    "deepseek/deepseek-r1:free",
-    "mistralai/mistral-small-24b-instruct-2501:free"
-  ];
+  const freeModels = getOpenRouterFreeModels();
 
   for (const model of freeModels) {
-    if (!model.endsWith(':free')) continue; // Strict safety check
+    if (!model.endsWith(':free') && model !== 'openrouter/free') continue; // Strict safety check
     try {
       const curlProc = spawnSync('curl', [
         '-s', '-X', 'POST', 'https://openrouter.ai/api/v1/chat/completions',

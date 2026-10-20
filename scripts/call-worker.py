@@ -21,14 +21,63 @@ import time
 import urllib.request
 import urllib.error
 
-OPENROUTER_FREE_MODELS = [
+DEFAULT_OPENROUTER_MODEL = "openrouter/free"
+
+FALLBACK_FREE_MODELS = [
+    "openrouter/free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "minimax/minimax-m3.1-flash:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "cohere/north-mini-code:free",
     "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen-2.5-coder-32b-instruct:free",
-    "google/gemini-2.0-flash-exp:free",
-    "deepseek/deepseek-r1:free",
-    "mistralai/mistral-small-24b-instruct-2501:free"
+    "qwen/qwen-2.5-coder-32b-instruct:free"
 ]
-DEFAULT_OPENROUTER_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+
+def get_openrouter_free_models():
+    """
+    Dynamically fetches and refreshes the live list of free models from OpenRouter API,
+    caching to /tmp/summa42_openrouter_free_models.json (TTL 1 hour).
+    Ensures 'openrouter/free' is always the primary model.
+    """
+    cache_file = "/tmp/summa42_openrouter_free_models.json"
+    now = time.time()
+    try:
+        if os.path.exists(cache_file):
+            mtime = os.path.getmtime(cache_file)
+            if now - mtime < 3600:
+                with open(cache_file, "r") as f:
+                    cached = json.load(f)
+                    if isinstance(cached, list) and len(cached) > 0:
+                        return cached
+    except Exception:
+        pass
+
+    try:
+        url = "https://openrouter.ai/api/v1/models"
+        req = urllib.request.Request(url, headers={"User-Agent": "Summa42/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            models = data.get("data", [])
+            free_list = ["openrouter/free"]
+            for m in models:
+                mid = m.get("id", "")
+                if (mid.endswith(":free") or mid == "openrouter/free") and mid not in free_list:
+                    free_list.append(mid)
+            if len(free_list) > 1:
+                try:
+                    with open(cache_file, "w") as f:
+                        json.dump(free_list, f)
+                except Exception:
+                    pass
+                return free_list
+    except Exception:
+        pass
+
+    return FALLBACK_FREE_MODELS
 
 def get_openrouter_key():
     key = os.environ.get("OPENROUTER_API_KEY")
@@ -38,6 +87,13 @@ def get_openrouter_key():
     if os.path.exists(key_file):
         try:
             with open(key_file, "r") as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    summa_key_file = os.path.expanduser("~/.summa42/openrouter_key")
+    if os.path.exists(summa_key_file):
+        try:
+            with open(summa_key_file, "r") as f:
                 return f.read().strip()
         except Exception:
             pass
@@ -53,22 +109,24 @@ def get_openrouter_key():
 def call_openrouter(prompt, model=None, api_key=None, timeout=60):
     """
     Calls OpenRouter strictly enforcing zero-cost :free models.
-    Rejects any model not ending in ':free'.
+    Always prioritizes 'openrouter/free' and validates that any target model
+    ends in ':free' or is 'openrouter/free'.
     """
     if not api_key:
         api_key = get_openrouter_key()
     if not api_key:
         raise ValueError("Missing OPENROUTER_API_KEY")
 
-    models_to_try = [model] if model else []
-    for m in OPENROUTER_FREE_MODELS:
+    free_pool = get_openrouter_free_models()
+    models_to_try = [model] if model else ["openrouter/free"]
+    for m in free_pool:
         if m not in models_to_try:
             models_to_try.append(m)
 
     last_err = None
     for target_model in models_to_try:
-        if not target_model.endswith(":free"):
-            raise ValueError(f"CRITICAL SAFETY VIOLATION: model '{target_model}' does not end with ':free'. Only free models are permitted.")
+        if not (target_model.endswith(":free") or target_model == "openrouter/free"):
+            raise ValueError(f"CRITICAL SAFETY VIOLATION: model '{target_model}' is not a permitted free model. Only zero-cost ':free' and 'openrouter/free' models are permitted.")
 
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
