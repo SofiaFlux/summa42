@@ -64,9 +64,9 @@ function verifyOwnerAuthorization(requestorId) {
       return { authorized: false, reason: "Discord owners whitelist or hash not configured in ~/.summa42/config.json" };
     }
 
-    // Canonical normalization of comma-separated list
+    // Canonical normalization of comma-separated list with salt prefix "42:"
     const ownersList = ownersRaw.split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
-    const canonicalString = [...ownersList].sort().join(',');
+    const canonicalString = "42:" + [...ownersList].sort().join(',');
     const computedHash = crypto.createHash('sha256').update(canonicalString, 'utf-8').digest('hex');
 
     if (computedHash.toLowerCase() !== expectedHash.trim().toLowerCase()) {
