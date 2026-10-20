@@ -769,6 +769,8 @@ def reconcile_issues(args, mission_id, conn):
         "--repo", args.repo,
         "--maintainer", args.maintainer,
         "--grant-capability", "github.issue.read",
+        "--grant-capability", "workspace.repo.write",
+        "--grant-capability", "workspace.test",
         "--envelope", "envelope_1",
         "--poll-interval", "5s"
     ]
@@ -845,11 +847,50 @@ def reconcile_issues(args, mission_id, conn):
     reconcile_epic_decomposition(args, mission_id, conn)
 
     # 5. Planning: Generate implementation plan for ready cases
+    source_dir = os.path.abspath(args.source)
+    try:
+        source_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source_dir).decode().strip()
+    except Exception:
+        source_sha = ""
+
+    grounding_args = []
+    if source_sha and args.repo:
+        # Collect safe, representative paths for allowed-paths up to the contract limit of 64
+        allowed_paths = ["go.mod"]
+        context_files = ["go.mod"]
+        pkg_dirs = [
+            'cmd/summa42', 'cmd/summa42-box',
+            'internal/domain', 'internal/workflowcase', 'internal/ghtriage', 'internal/runtime',
+            'internal/operations', 'internal/execution', 'internal/repoworkspace', 'internal/state',
+            'internal/control', 'internal/executors', 'internal/purpose', 'internal/verification'
+        ]
+        for pd in pkg_dirs:
+            p_full = os.path.join(source_dir, pd)
+            if os.path.exists(p_full):
+                for f in sorted(os.listdir(p_full)):
+                    if f.endswith('.go'):
+                        rel = os.path.join(pd, f)
+                        if rel not in allowed_paths and len(allowed_paths) < 64:
+                            allowed_paths.append(rel)
+                        if rel not in context_files and len(context_files) < 32 and not f.endswith('_test.go'):
+                            context_files.append(rel)
+
+        grounding_args = [
+            "--source-repo", source_dir,
+            "--source-repository", args.repo,
+            "--source-sha", source_sha,
+            "--validation-command-json", '["go","test","./..."]'
+        ]
+        for cf in context_files:
+            grounding_args.extend(["--context-file", cf])
+        for ap in allowed_paths:
+            grounding_args.extend(["--allowed-path", ap])
+
     plan_args = [
         "run-repo-plan",
         "--mission", mission_id,
         "--model-binary", args.model_binary
-    ] + model_extra_args
+    ] + grounding_args + model_extra_args
     code, out, err = run_box_command(plan_args, timeout=600)
     if code != 0 and "unknown subcommand" in err.lower():
         plan_args[0] = "run-gh-plan"
