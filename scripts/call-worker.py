@@ -569,7 +569,7 @@ def resolve_command(backend, model, prompt, wrapper=None):
         elif backend == "opencode":
             return [wrapper_bin, "opencode", "run", prompt, "-m", model or DEFAULT_OPENCODE_MODEL]
         elif backend == "agy":
-            cmd = [wrapper_bin, "agy", "-p", "-", "--disable-slash-commands"]
+            cmd = [wrapper_bin, "agy", "-p", prompt, "--disable-slash-commands"]
             if model: cmd.extend(["--model", model])
             return cmd
         elif backend == "pi":
@@ -585,7 +585,7 @@ def resolve_command(backend, model, prompt, wrapper=None):
         if model: cmd.extend(["--model", model])
         return cmd
     elif backend == "agy":
-        cmd = [tool_binary, "-p", "-", "--disable-slash-commands"]
+        cmd = [tool_binary, "-p", prompt, "--disable-slash-commands"]
         if model: cmd.extend(["--model", model])
         return cmd
     elif backend == "codex":
@@ -638,8 +638,7 @@ def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=1
                 env["GH_TOKEN"] = token
         except Exception:
             pass
-    proc_input = prompt if backend == "agy" else None
-    proc = subprocess.run(cmd, input=proc_input, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=timeout)
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(f"{cmd[0]} exited with code {proc.returncode}: {proc.stderr}")
     out = proc.stdout
