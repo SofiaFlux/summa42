@@ -16,6 +16,8 @@ func Stage3(out Stage2Output) Stage3Result {
 		return Stage3Result{Disposition: DispositionReadyToPlan, Rule: "actionable-without-repro-small-or-medium"}
 	case out.Scope == ScopeLarge:
 		return Stage3Result{Disposition: DispositionNeedsHuman, Rule: "scope-large-needs-decomposition"}
+	case out.Scope == ScopeHuge:
+		return Stage3Result{Disposition: DispositionNeedsHuman, Rule: "scope-huge-needs-epic-breakdown"}
 	default:
 		return Stage3Result{Disposition: DispositionNeedsHuman, Rule: "scope-unknown-needs-scoping"}
 	}

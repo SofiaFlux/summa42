@@ -77,7 +77,7 @@ func ParseStage2Output(raw []byte) (Stage2Output, error) {
 		return Stage2Output{}, errors.New("stage 2 rationale is required")
 	}
 	switch out.Scope {
-	case ScopeSmall, ScopeMedium, ScopeLarge, ScopeUnknown:
+	case ScopeSmall, ScopeMedium, ScopeLarge, ScopeHuge, ScopeUnknown:
 	default:
 		return Stage2Output{}, fmt.Errorf("stage 2 scope %q is outside the vocabulary", out.Scope)
 	}

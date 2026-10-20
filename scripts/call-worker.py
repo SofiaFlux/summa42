@@ -595,6 +595,8 @@ def main():
         task_type = "code_review"
     elif schema == "repo.implementation.v1" or "implementation" in schema.lower():
         task_type = "implementation"
+    elif schema in ("github.issue.decompose.v1", "issue.decompose") or "decompose" in schema.lower() or "decompose this issue" in question.lower():
+        task_type = "decompose"
     elif "stage2" in schema.lower() or "classify this issue" in question.lower() or "is_actionable" in raw_input:
         task_type = "stage2_classify"
 
@@ -670,8 +672,32 @@ def main():
             "Classify the following issue. "
             "Output ONLY a raw JSON object with this exact format: "
             '{"is_actionable": true, "needs_repro": false, "scope": "small", "suggested_type": "feature", "rationale": "Explanation under 1000 characters"}.\n'
-            "Values for scope must be one of: small, medium, large, unknown.\n"
-            "Values for suggested_type must be one of: bug, feature, question, other.\n\n"
+            "Values for scope must be one of: small, medium, large, huge, unknown.\n"
+            "Values for suggested_type must be one of: bug, feature, question, other.\n"
+            "SAFETY AND RISK ASYMMETRY RULE:\n"
+            "If there is any doubt or uncertainty between two scopes, ALWAYS choose the larger scope (small -> medium -> large -> huge). "
+            "Never underestimate scope.\n\n"
+            f"INPUT:\n{raw_input}"
+        )
+
+    # 7. Decomposition
+    elif task_type == "decompose":
+        prompt = (
+            "You are an automated software systems architect for Summa42. "
+            "Your task is to decompose a large GitHub issue into a cohesive set of smaller, well-bounded child issues.\n"
+            f"{skill_block}"
+            f"{rules_block}"
+            "DECOMPOSITION RULES:\n"
+            "- If the parent issue is 'huge': Break it down into 2 to 5 epics with scope 'large'.\n"
+            "- If the parent issue is 'large':\n"
+            "  * If large_depth is 3 or more: You MUST decompose directly into 2 to 4 actionable tasks with scope 'medium' or 'small'. Do NOT produce any more 'large' child issues.\n"
+            "  * If large_depth is less than 3: Prefer decomposing into 'medium' or 'small' tasks, but if genuinely necessary, 2 to 4 'large' sub-epics are allowed.\n"
+            "- If the parent issue is 'medium': Decompose into 2 to 4 'small' tasks.\n"
+            "- Risk Asymmetry: If uncertain about a child issue's scope, choose the larger scope (small -> medium -> large).\n"
+            "- Output JSON with ONLY these exact fields:\n"
+            '{"summary": "Decomposition strategy explanation under 1000 chars", "can_decompose": true, "sub_issues": [{"title": "Concise issue title under 200 chars", "scope": "medium", "suggested_type": "feature", "body": "Comprehensive issue description including objective, acceptance criteria, and technical guidance."}]}.\n'
+            "If the issue cannot be broken down further because it is at max depth or fundamentally atomic, set 'can_decompose': false and leave 'sub_issues': [].\n"
+            "Output ONLY the raw JSON object, no markdown fences, no extra keys.\n\n"
             f"INPUT:\n{raw_input}"
         )
 
@@ -743,9 +769,15 @@ def main():
             parsed = {
                 "is_actionable": True,
                 "needs_repro": False,
-                "scope": "SMALL",
-                "suggested_type": "FEATURE",
+                "scope": "small",
+                "suggested_type": "feature",
                 "rationale": "Classified as actionable task for Summa42."
+            }
+        elif task_type == "decompose":
+            parsed = {
+                "summary": "Decomposition fallback",
+                "can_decompose": False,
+                "sub_issues": []
             }
         else:
             sys.stderr.write(f"call-worker: all backends failed: {last_error}\n")
@@ -754,7 +786,7 @@ def main():
     # Normalize fields according to Go schema invariants
     if task_type == "stage2_classify":
         scope = str(parsed.get("scope", "small")).lower()
-        if scope not in ("small", "medium", "large", "unknown"):
+        if scope not in ("small", "medium", "large", "huge", "unknown"):
             scope = "small"
         stype = str(parsed.get("suggested_type", "feature")).lower()
         if stype not in ("bug", "feature", "question", "other"):
@@ -765,6 +797,26 @@ def main():
             "scope": scope,
             "suggested_type": stype,
             "rationale": str(parsed.get("rationale", "Actionable task for Summa42."))[:1000]
+        }
+    elif task_type == "decompose":
+        sub_issues = []
+        for item in parsed.get("sub_issues", []):
+            s_scope = str(item.get("scope", "medium")).lower()
+            if s_scope not in ("small", "medium", "large", "huge"):
+                s_scope = "medium"
+            s_type = str(item.get("suggested_type", "feature")).lower()
+            if s_type not in ("bug", "feature", "question", "other"):
+                s_type = "feature"
+            sub_issues.append({
+                "title": str(item.get("title", "Sub-issue"))[:200],
+                "scope": s_scope,
+                "suggested_type": s_type,
+                "body": str(item.get("body", "Sub-issue implementation details."))
+            })
+        normalized = {
+            "summary": str(parsed.get("summary", "Decomposition plan"))[:1000],
+            "can_decompose": bool(parsed.get("can_decompose", bool(sub_issues))),
+            "sub_issues": sub_issues
         }
     elif task_type == "plan":
         steps = []

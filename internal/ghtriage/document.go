@@ -58,6 +58,7 @@ const (
 	ScopeSmall   Scope = "small"
 	ScopeMedium  Scope = "medium"
 	ScopeLarge   Scope = "large"
+	ScopeHuge    Scope = "huge"
 	ScopeUnknown Scope = "unknown"
 )
 

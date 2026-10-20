@@ -383,6 +383,359 @@ def reconcile_prs(args, mission_id, conn):
 
         conn.commit()
 
+def init_hierarchy_schema(conn):
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS issue_hierarchy (
+            issue_id INTEGER PRIMARY KEY,
+            parent_id INTEGER,
+            root_id INTEGER,
+            scope TEXT,
+            large_depth INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'OPEN',
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
+    conn.commit()
+
+def get_blob_content(conn, evidence_id):
+    cur = conn.cursor()
+    cur.execute("SELECT content_hash FROM evidence_objects WHERE evidence_id = ?", (evidence_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    h = row[0]
+    home = os.environ.get("SUMMA42_HOME", os.path.expanduser("~/.summa42"))
+    path = os.path.join(home, "evidence", "blobs", "sha256", h[:2], h)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return None
+    return None
+
+def reconcile_epic_decomposition(args, mission_id, conn):
+    """
+    Decomposes large/huge epics into linked child issues on GitHub when triage
+    indicates scope-large-needs-decomposition or scope-huge-needs-epic-breakdown.
+    Enforces large_depth <= 3 circuit breaker.
+    """
+    init_hierarchy_schema(conn)
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT c.case_id, c.object_id, c.observation_evidence_id, a.request_json, a.result_json
+        FROM workflow_cases c
+        JOIN workflow_assessments a ON a.case_id = c.case_id
+        WHERE c.mission_id = ? AND c.state = 'BLOCKED'
+    """, (mission_id,))
+    blocked_cases = cur.fetchall()
+
+    for cid, obj_id, obs_ev_id, req_json, res_json in blocked_cases:
+        m = re.search(r"([^#:]+/[^#:]+)#(\d+)", obj_id)
+        if not m:
+            continue
+        repo = m.group(1)
+        issue_num = int(m.group(2))
+
+        # Check if already decomposed into children in issue_hierarchy
+        cur.execute("SELECT COUNT(*) FROM issue_hierarchy WHERE parent_id = ?", (issue_num,))
+        if cur.fetchone()[0] > 0:
+            continue
+
+        decision_doc = None
+        try:
+            req_data = json.loads(req_json)
+            ev_ids = req_data.get("Assessment", {}).get("EvidenceIDs", [])
+            for evid in ev_ids:
+                blob = get_blob_content(conn, evid)
+                if blob:
+                    parsed_blob = json.loads(blob)
+                    if parsed_blob.get("schema") == "github.issue.triage.decision.v1":
+                        decision_doc = parsed_blob
+                        break
+        except Exception:
+            pass
+
+        if not decision_doc:
+            continue
+
+        rule = decision_doc.get("stage3", {}).get("rule", "")
+        if rule not in ("scope-large-needs-decomposition", "scope-huge-needs-epic-breakdown"):
+            continue
+
+        snapshot_blob = get_blob_content(conn, obs_ev_id)
+        if not snapshot_blob:
+            continue
+        try:
+            snapshot = json.loads(snapshot_blob)
+        except Exception:
+            continue
+
+        issue_title = snapshot.get("title", f"Issue #{issue_num}")
+        issue_body = snapshot.get("body", "")
+        current_scope = decision_doc.get("stage2", {}).get("scope", "large").lower()
+
+        cur.execute("SELECT parent_id, root_id, large_depth FROM issue_hierarchy WHERE issue_id = ?", (issue_num,))
+        h_row = cur.fetchone()
+        if h_row:
+            parent_id, root_id, current_large_depth = h_row
+        else:
+            parent_id = None
+            root_id = issue_num
+            current_large_depth = 1 if current_scope in ("large", "huge") else 0
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+            cur.execute("""
+                INSERT OR IGNORE INTO issue_hierarchy (issue_id, parent_id, root_id, scope, large_depth, status, created_at, updated_at)
+                VALUES (?, NULL, ?, ?, ?, 'WAITING_DECOMPOSITION', ?, ?)
+            """, (issue_num, root_id, current_scope, current_large_depth, now, now))
+            conn.commit()
+
+        # Check large_depth limit circuit breaker
+        if current_scope in ("large", "huge") and current_large_depth >= 3:
+            print(f"[RECONCILER] Issue #{issue_num} reached max large depth ({current_large_depth} >= 3).")
+            # If large depth limit reached, prompt will require medium/small or halt
+
+        print(f"[RECONCILER] Decomposing Issue #{issue_num}: '{issue_title}' (Scope: {current_scope}, Large Depth: {current_large_depth})...")
+
+        decomp_input = {
+            "schema": "github.issue.decompose.v1",
+            "question": f"Decompose this {current_scope} issue into child issues",
+            "issue": {
+                "number": issue_num,
+                "title": issue_title,
+                "body": issue_body,
+                "scope": current_scope
+            },
+            "current_scope": current_scope,
+            "large_depth": current_large_depth
+        }
+
+        worker_bin = os.path.abspath(args.model_binary)
+        worker_cmd = [
+            worker_bin,
+            "--backend", args.backend,
+            "--fallback", args.fallback
+        ]
+        if args.wrapper:
+            worker_cmd.extend(["--wrapper", args.wrapper])
+        if args.model:
+            worker_cmd.extend(["--model", args.model])
+        if args.rules:
+            worker_cmd.extend(["--rules", args.rules])
+        if args.rules_file:
+            worker_cmd.extend(["--rules-file", os.path.abspath(args.rules_file)])
+
+        try:
+            worker_proc = subprocess.run(
+                worker_cmd,
+                input=json.dumps(decomp_input),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=240
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[RECONCILER] Decomposition worker timed out for Issue #{issue_num}.")
+            continue
+
+        if worker_proc.returncode != 0:
+            print(f"[RECONCILER] Decomposition worker failed for Issue #{issue_num}: {worker_proc.stderr.strip()}")
+            continue
+
+        try:
+            decomp_output = json.loads(worker_proc.stdout.strip())
+        except Exception as e:
+            print(f"[RECONCILER] Failed to parse decomposition worker JSON for Issue #{issue_num}: {e}")
+            continue
+
+        can_decompose = decomp_output.get("can_decompose", True)
+        sub_issues = decomp_output.get("sub_issues", [])
+        summary = decomp_output.get("summary", "Decomposition completed.")
+
+        if not can_decompose or not sub_issues:
+            print(f"[RECONCILER] Worker indicated Issue #{issue_num} cannot be decomposed further: {summary}")
+            if current_large_depth >= 3:
+                env = os.environ.copy()
+                token = get_github_token()
+                if token:
+                    env["GITHUB_TOKEN"] = token
+                    env["GH_TOKEN"] = token
+                comment_body = (
+                    f"⚠️ **Summa42 Safety Guardrail Triggered**\n\n"
+                    f"Issue #{issue_num} has reached the maximum nested epic depth (level {current_large_depth} >= 3) and cannot be autonomously decomposed into `medium`/`small` tasks.\n"
+                    f"Recursive decomposition halted. Human architectural guidance or manual scoping is required."
+                )
+                subprocess.run(["gh", "issue", "comment", str(issue_num), "--repo", repo, "--body", comment_body], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+                cur.execute("UPDATE issue_hierarchy SET status = 'BLOCKED_DEPTH_LIMIT', updated_at = datetime('now') WHERE issue_id = ?", (issue_num,))
+                conn.commit()
+            continue
+
+        env = os.environ.copy()
+        token = get_github_token()
+        if token:
+            env["GITHUB_TOKEN"] = token
+            env["GH_TOKEN"] = token
+
+        created_children = []
+        for sub in sub_issues:
+            child_title = sub.get("title", "Subtask")
+            child_scope = sub.get("scope", "medium").lower()
+            child_type = sub.get("suggested_type", "feature").lower()
+            child_body = sub.get("body", "")
+
+            if child_scope in ("large", "huge"):
+                child_large_depth = current_large_depth + 1
+            else:
+                child_large_depth = 0
+
+            full_child_body = (
+                f"{child_body}\n\n"
+                f"---\n"
+                f"*Part of #{issue_num}* • *Root: #{root_id}* • *Scope: `{child_scope}` (depth {child_large_depth})*\n"
+                f"*Automated by Summa42 Collective*"
+            )
+
+            labels = ["sub-issue"]
+            if child_scope in ("large", "huge"):
+                labels.append("epic")
+            if child_type in ("bug", "feature"):
+                labels.append(child_type)
+
+            create_cmd = [
+                "gh", "issue", "create",
+                "--repo", repo,
+                "--title", child_title,
+                "--body", full_child_body
+            ]
+            for lbl in labels:
+                create_cmd.extend(["--label", lbl])
+
+            cp = subprocess.run(create_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+            if cp.returncode != 0:
+                fallback_cmd = [
+                    "gh", "issue", "create",
+                    "--repo", repo,
+                    "--title", child_title,
+                    "--body", full_child_body,
+                    "--label", "sub-issue"
+                ]
+                cp = subprocess.run(fallback_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+                if cp.returncode != 0:
+                    fallback_cmd = [
+                        "gh", "issue", "create",
+                        "--repo", repo,
+                        "--title", child_title,
+                        "--body", full_child_body
+                    ]
+                    cp = subprocess.run(fallback_cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+                    if cp.returncode != 0:
+                        print(f"[RECONCILER] Failed to create child issue '{child_title}': {cp.stderr.strip()}")
+                        continue
+
+            m_url = re.search(r"/issues/(\d+)", cp.stdout.strip())
+            if not m_url:
+                print(f"[RECONCILER] Created issue but could not parse issue number from stdout: {cp.stdout.strip()}")
+                continue
+
+            child_num = int(m_url.group(1))
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+            cur.execute("""
+                INSERT OR REPLACE INTO issue_hierarchy (issue_id, parent_id, root_id, scope, large_depth, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'OPEN', ?, ?)
+            """, (child_num, issue_num, root_id, child_scope, child_large_depth, now, now))
+            conn.commit()
+
+            created_children.append((child_num, child_title, child_scope))
+            print(f"[RECONCILER] Created child Issue #{child_num}: '{child_title}' (scope: {child_scope}).")
+
+        if created_children:
+            checklist_lines = [f"- [ ] #{c_num} {c_title} (`scope: {c_scope}`)" for c_num, c_title, c_scope in created_children]
+            checklist_text = "\n".join(checklist_lines)
+            comment_text = (
+                f"### Summa42 Autonomous Epic Decomposition\n\n"
+                f"**Strategy:** {summary}\n\n"
+                f"**Decomposed Sub-issues ({len(created_children)}):**\n"
+                f"{checklist_text}\n\n"
+                f"*Summa42 Reconciler will execute each sub-issue through the autonomous TDD pipeline and close this epic upon final verification.*"
+            )
+            subprocess.run(["gh", "issue", "comment", str(issue_num), "--repo", repo, "--body", comment_text], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+            cur.execute("UPDATE issue_hierarchy SET status = 'WAITING_CHILDREN', updated_at = ? WHERE issue_id = ?", (now, issue_num))
+            conn.commit()
+            print(f"[RECONCILER] Successfully linked {len(created_children)} child issue(s) to parent #{issue_num}.")
+
+def reconcile_epic_aggregation(args, mission_id, conn):
+    """
+    Checks if all child issues of decomposed epics are closed.
+    When all children are closed, performs final Epic Review and closes the parent issue.
+    """
+    init_hierarchy_schema(conn)
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT DISTINCT parent_id FROM issue_hierarchy
+        WHERE parent_id IS NOT NULL
+    """)
+    parent_ids = [r[0] for r in cur.fetchall()]
+
+    env = os.environ.copy()
+    token = get_github_token()
+    if token:
+        env["GITHUB_TOKEN"] = token
+        env["GH_TOKEN"] = token
+
+    for pid in parent_ids:
+        cur.execute("SELECT status, root_id FROM issue_hierarchy WHERE issue_id = ?", (pid,))
+        p_row = cur.fetchone()
+        if p_row and p_row[0] == "CLOSED":
+            continue
+
+        cur.execute("SELECT issue_id, status FROM issue_hierarchy WHERE parent_id = ?", (pid,))
+        children = cur.fetchall()
+        if not children:
+            continue
+
+        all_closed = True
+        for cid, c_status in children:
+            if c_status != "CLOSED":
+                try:
+                    cp = subprocess.run(
+                        ["gh", "issue", "view", str(cid), "--repo", args.repo, "--json", "state"],
+                        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15
+                    )
+                    if cp.returncode == 0:
+                        view_data = json.loads(cp.stdout.strip())
+                        if view_data.get("state") == "CLOSED":
+                            cur.execute("UPDATE issue_hierarchy SET status = 'CLOSED', updated_at = datetime('now') WHERE issue_id = ?", (cid,))
+                            conn.commit()
+                            print(f"[RECONCILER] Child Issue #{cid} is now CLOSED.")
+                        else:
+                            all_closed = False
+                    else:
+                        all_closed = False
+                except Exception:
+                    all_closed = False
+
+        if all_closed:
+            print(f"[RECONCILER] All child issues for parent #{pid} are CLOSED! Triggering Epic Review and closure...")
+            close_comment = (
+                f"### Summa42 Epic Completed 🎉\n\n"
+                f"All child sub-issues linked to this epic have been successfully implemented, verified, and closed.\n"
+                f"Autonomous Epic Review passes. Closing epic."
+            )
+            subprocess.run(["gh", "issue", "close", str(pid), "--repo", args.repo, "--comment", close_comment], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+            cur.execute("UPDATE issue_hierarchy SET status = 'CLOSED', updated_at = ? WHERE issue_id = ?", (now, pid))
+            parent_obj = f"github:{args.repo}#{pid}"
+            cur.execute("UPDATE workflow_cases SET state = 'CLOSED', updated_at = ? WHERE mission_id = ? AND object_id = ?", (now, mission_id, parent_obj))
+            conn.commit()
+            print(f"[RECONCILER] Successfully closed parent Epic #{pid}.")
+
 def reconcile_issues(args, mission_id, conn):
     """Reconciles standard issue workflow pipeline."""
     # 0. Recover any orphaned/expired leases so tasks never get stuck in EXECUTING
@@ -463,6 +816,9 @@ def reconcile_issues(args, mission_id, conn):
         triage_review_args[0] = "run-gh-triage-review"
         code, out, err = run_box_command(triage_review_args, timeout=600)
     print(f"[RECONCILER] Triage Review: {out or err or 'done'}")
+
+    # 4b. Autonomous Epic Decomposition (for scope: large/huge issues)
+    reconcile_epic_decomposition(args, mission_id, conn)
 
     # 5. Planning: Generate implementation plan for ready cases
     plan_args = [
@@ -569,6 +925,9 @@ def reconcile_issues(args, mission_id, conn):
             ]
             code, out, err = run_box_command(merge_args, timeout=60)
             print(f"[RECONCILER] Merge {cid}: {out or err or 'done'}")
+
+    # 11. Autonomous Epic Aggregation & Closure
+    reconcile_epic_aggregation(args, mission_id, conn)
 
 
 def reconcile_tick(args):

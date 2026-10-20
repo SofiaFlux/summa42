@@ -14,8 +14,9 @@ func TestStage3RuleTableIsTotal(t *testing.T) {
 		{"small is ready", Stage2Output{IsActionable: true, Scope: ScopeSmall}, DispositionReadyToPlan, "actionable-without-repro-small-or-medium"},
 		{"medium is ready", Stage2Output{IsActionable: true, Scope: ScopeMedium}, DispositionReadyToPlan, "actionable-without-repro-small-or-medium"},
 		{"large needs decomposition", Stage2Output{IsActionable: true, Scope: ScopeLarge}, DispositionNeedsHuman, "scope-large-needs-decomposition"},
+		{"huge needs epic breakdown", Stage2Output{IsActionable: true, Scope: ScopeHuge}, DispositionNeedsHuman, "scope-huge-needs-epic-breakdown"},
 		{"unknown needs scoping", Stage2Output{IsActionable: true, Scope: ScopeUnknown}, DispositionNeedsHuman, "scope-unknown-needs-scoping"},
-		{"out of vocabulary scope falls back", Stage2Output{IsActionable: true, Scope: Scope("huge")}, DispositionNeedsHuman, "scope-unknown-needs-scoping"},
+		{"out of vocabulary scope falls back", Stage2Output{IsActionable: true, Scope: Scope("gigantic")}, DispositionNeedsHuman, "scope-unknown-needs-scoping"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -34,7 +35,7 @@ func TestStage3RuleTableIsTotal(t *testing.T) {
 }
 
 func TestStage3NeverProducesDuplicate(t *testing.T) {
-	for _, scope := range []Scope{ScopeSmall, ScopeMedium, ScopeLarge, ScopeUnknown} {
+	for _, scope := range []Scope{ScopeSmall, ScopeMedium, ScopeLarge, ScopeHuge, ScopeUnknown} {
 		if got := Stage3(Stage2Output{IsActionable: true, Scope: scope}); got.Disposition == DispositionDuplicate {
 			t.Fatalf("stage 3 produced duplicate for scope %q", scope)
 		}
