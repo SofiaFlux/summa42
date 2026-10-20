@@ -879,10 +879,9 @@ def reconcile_issues(args, mission_id, conn):
             "--source-repo", source_dir,
             "--source-repository", args.repo,
             "--source-sha", source_sha,
+            "--context-file", "go.mod",
             "--validation-command-json", '["go","test","./..."]'
         ]
-        for cf in context_files:
-            grounding_args.extend(["--context-file", cf])
         for ap in allowed_paths:
             grounding_args.extend(["--allowed-path", ap])
 

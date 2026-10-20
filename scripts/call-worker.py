@@ -569,7 +569,7 @@ def resolve_command(backend, model, prompt, wrapper=None):
         elif backend == "opencode":
             return [wrapper_bin, "opencode", "run", prompt, "-m", model or DEFAULT_OPENCODE_MODEL]
         elif backend == "agy":
-            cmd = [wrapper_bin, "agy", "-p", prompt, "--disable-slash-commands"]
+            cmd = [wrapper_bin, "agy", "-p", "-", "--disable-slash-commands"]
             if model: cmd.extend(["--model", model])
             return cmd
         elif backend == "pi":
@@ -585,7 +585,7 @@ def resolve_command(backend, model, prompt, wrapper=None):
         if model: cmd.extend(["--model", model])
         return cmd
     elif backend == "agy":
-        cmd = [tool_binary, "-p", prompt, "--disable-slash-commands"]
+        cmd = [tool_binary, "-p", "-", "--disable-slash-commands"]
         if model: cmd.extend(["--model", model])
         return cmd
     elif backend == "codex":
@@ -638,7 +638,8 @@ def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=1
                 env["GH_TOKEN"] = token
         except Exception:
             pass
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=timeout)
+    proc_input = prompt if backend == "agy" else None
+    proc = subprocess.run(cmd, input=proc_input, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=timeout)
     if proc.returncode != 0:
         raise RuntimeError(f"{cmd[0]} exited with code {proc.returncode}: {proc.stderr}")
     out = proc.stdout
@@ -738,15 +739,29 @@ def main():
 
     # 3. Planning
     elif task_type == "plan":
+        # Extract compact issue & contract metadata, omitting raw monolithic file bodies
+        snap = input_data.get("snapshot", {})
+        grounding = input_data.get("grounding", {})
+        contract = grounding.get("contract", {})
+        compact_spec = {
+            "issue": snap.get("issue"),
+            "title": snap.get("title", ""),
+            "body": snap.get("body", "")[:3000],
+            "allowed_paths": contract.get("allowed_paths", []),
+            "validation_commands": contract.get("validation_commands", [])
+        }
         prompt = (
             "You are an automated software architect for Summa42. "
             "Write a concrete, bounded, test-driven implementation plan with 1 to 8 steps for the following issue. "
             f"{skill_block}"
             f"{rules_block}"
+            "CONSTRAINTS:\n"
+            "1. Plan steps must ONLY affect files listed in allowed_paths.\n"
+            "2. Validation in done_when must cite validation_commands.\n"
             "Output JSON with ONLY these exact fields: "
             '{"summary": "Summary under 1000 characters", "steps": [{"objective": "Step objective under 300 chars", "done_when": "Verifiable condition under 1000 chars"}]}. '
             "Output ONLY the raw JSON object, no markdown fences, no extra keys.\n\n"
-            f"INPUT:\n{raw_input}"
+            f"INPUT SPECIFICATION:\n{json.dumps(compact_spec, indent=2)}"
         )
 
     # 4. Code Review
