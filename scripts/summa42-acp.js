@@ -359,7 +359,7 @@ print(f"{mission}:::{' | '.join(executing) if executing else 'Brak'}:::{' | '.jo
     try {
       const res = spawnSync('agy', ['-p', prompt, '--dangerously-skip-permissions', '--disable-slash-commands'], {
         encoding: 'utf-8',
-        timeout: 25000,
+        timeout: 45000,
         env: process.env
       });
       if (!res.error && res.status === 0 && res.stdout && res.stdout.trim()) {
