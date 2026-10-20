@@ -357,9 +357,9 @@ print(f"{mission}:::{' | '.join(executing) if executing else 'Brak'}:::{' | '.jo
 
     // 0. Antigravity CLI (agy) - native, high capability, authenticated, zero configuration
     try {
-      const res = spawnSync('agy', ['-p', prompt, '--dangerously-skip-permissions'], {
+      const res = spawnSync('agy', ['-p', prompt, '--dangerously-skip-permissions', '--disable-slash-commands'], {
         encoding: 'utf-8',
-        timeout: 30000,
+        timeout: 25000,
         env: process.env
       });
       if (!res.error && res.status === 0 && res.stdout && res.stdout.trim()) {

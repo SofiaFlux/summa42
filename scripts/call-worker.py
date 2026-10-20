@@ -460,7 +460,9 @@ def resolve_command(backend, model, prompt, wrapper=None):
         elif backend == "opencode":
             return [wrapper_bin, "opencode", "run", prompt, "-m", model or DEFAULT_OPENCODE_MODEL]
         elif backend == "agy":
-            return [wrapper_bin, "agy", "-p", prompt, "--dangerously-skip-permissions"]
+            cmd = [wrapper_bin, "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands"]
+            if model: cmd.extend(["-m", model])
+            return cmd
         elif backend == "pi":
             return [wrapper_bin, "pi", "-p", prompt]
         else:
@@ -474,7 +476,7 @@ def resolve_command(backend, model, prompt, wrapper=None):
         if model: cmd.extend(["--model", model])
         return cmd
     elif backend == "agy":
-        cmd = [tool_binary, "-p", prompt, "--dangerously-skip-permissions"]
+        cmd = [tool_binary, "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands"]
         if model: cmd.extend(["-m", model])
         return cmd
     elif backend == "codex":
@@ -667,9 +669,9 @@ def main():
             "You are an automated triage classifier for Summa42. "
             "Classify the following issue. "
             "Output ONLY a raw JSON object with this exact format: "
-            '{"is_actionable": true, "needs_repro": false, "scope": "SMALL", "suggested_type": "FEATURE", "rationale": "Explanation under 1000 characters"}.\n'
-            "Values for scope must be one of: SMALL, MEDIUM, LARGE, UNKNOWN.\n"
-            "Values for suggested_type must be one of: BUG, FEATURE, QUESTION, OTHER.\n\n"
+            '{"is_actionable": true, "needs_repro": false, "scope": "small", "suggested_type": "feature", "rationale": "Explanation under 1000 characters"}.\n'
+            "Values for scope must be one of: small, medium, large, unknown.\n"
+            "Values for suggested_type must be one of: bug, feature, question, other.\n\n"
             f"INPUT:\n{raw_input}"
         )
 
@@ -751,12 +753,12 @@ def main():
 
     # Normalize fields according to Go schema invariants
     if task_type == "stage2_classify":
-        scope = str(parsed.get("scope", "SMALL")).upper()
-        if scope not in ("SMALL", "MEDIUM", "LARGE", "UNKNOWN"):
-            scope = "SMALL"
-        stype = str(parsed.get("suggested_type", "FEATURE")).upper()
-        if stype not in ("BUG", "FEATURE", "QUESTION", "OTHER"):
-            stype = "FEATURE"
+        scope = str(parsed.get("scope", "small")).lower()
+        if scope not in ("small", "medium", "large", "unknown"):
+            scope = "small"
+        stype = str(parsed.get("suggested_type", "feature")).lower()
+        if stype not in ("bug", "feature", "question", "other"):
+            stype = "feature"
         normalized = {
             "is_actionable": bool(parsed.get("is_actionable", True)),
             "needs_repro": bool(parsed.get("needs_repro", False)),

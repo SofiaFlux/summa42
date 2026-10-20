@@ -180,6 +180,9 @@ func (w *Worker) completeExecution(ctx context.Context, kind string, task domain
 }
 
 func (w *Worker) failExecution(ctx context.Context, _ executors.Executor, kind string, task domain.Task, attempt domain.Attempt, result *StepResult, outcome executors.ExecutionResult, execErr error) error {
+	if execErr != nil {
+		fmt.Fprintf(os.Stderr, "attempt %s execution failed: %v\n", attempt.ID, execErr)
+	}
 	ids, err := w.persistEvidence(ctx, outcome)
 	if err != nil {
 		return err
