@@ -41,7 +41,7 @@ try {
 }
 
 const SUMMA_QUERY_BIN = path.join(__dirname, 'summa42-query.py');
-const CONFIG_PATH = path.join(process.env.HOME || '/home/topol', '.summa42', 'config.json');
+const CONFIG_PATH = path.join(process.env.HOME || '/home/topol', '.summa42', 'discord_auth.json');
 
 /**
  * Validates whether a requestor ID belongs to an authorized Owner.
