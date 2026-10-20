@@ -79,6 +79,57 @@ def get_openrouter_free_models():
 
     return FALLBACK_FREE_MODELS
 
+def get_agy_models():
+    """
+    Dynamically fetches and caches available models from agy CLI.
+    Caches to /tmp/summa42_agy_models.json for 1 hour.
+    """
+    cache_file = "/tmp/summa42_agy_models.json"
+    now = time.time()
+    try:
+        if os.path.exists(cache_file):
+            mtime = os.path.getmtime(cache_file)
+            if now - mtime < 3600:
+                with open(cache_file, "r") as f:
+                    cached = json.load(f)
+                    if isinstance(cached, list) and len(cached) > 0:
+                        return cached
+    except Exception:
+        pass
+
+    fallback_agy = [
+        "claude-sonnet-4-6",
+        "claude-opus-4-6-thinking",
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-medium",
+        "gpt-oss-120b-medium"
+    ]
+    if not is_tool_available("agy"):
+        return fallback_agy
+
+    try:
+        res = subprocess.run(["agy", "models"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=12)
+        if res.returncode == 0 and res.stdout:
+            lines = [l.strip() for l in res.stdout.strip().splitlines() if l.strip()]
+            models = []
+            for l in lines:
+                if "Fetching" in l:
+                    continue
+                parts = l.split()
+                if parts and parts[0] and parts[0] not in models:
+                    models.append(parts[0])
+            if models:
+                try:
+                    with open(cache_file, "w") as f:
+                        json.dump(models, f)
+                except Exception:
+                    pass
+                return models
+    except Exception:
+        pass
+
+    return fallback_agy
+
 def get_openrouter_key():
     key = os.environ.get("OPENROUTER_API_KEY")
     if key:
@@ -406,7 +457,7 @@ def list_models(backend):
     elif backend_norm == "claude":
         return ["claude-code", "claude-3-5-sonnet", "claude-3-7-sonnet"]
     elif backend_norm == "agy":
-        return ["agy-default", "gemini-2.5-flash", "gemini-2.5-pro"]
+        return get_agy_models()
     elif backend_norm == "gemini":
         return ["gemini-2.5-flash", "gemini-2.5-pro"]
     elif backend_norm == "codex":
@@ -518,8 +569,8 @@ def resolve_command(backend, model, prompt, wrapper=None):
         elif backend == "opencode":
             return [wrapper_bin, "opencode", "run", prompt, "-m", model or DEFAULT_OPENCODE_MODEL]
         elif backend == "agy":
-            cmd = [wrapper_bin, "agy", "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands"]
-            if model: cmd.extend(["-m", model])
+            cmd = [wrapper_bin, "agy", "-p", prompt, "--disable-slash-commands"]
+            if model: cmd.extend(["--model", model])
             return cmd
         elif backend == "pi":
             return [wrapper_bin, "pi", "-p", prompt]
@@ -534,8 +585,8 @@ def resolve_command(backend, model, prompt, wrapper=None):
         if model: cmd.extend(["--model", model])
         return cmd
     elif backend == "agy":
-        cmd = [tool_binary, "-p", prompt, "--dangerously-skip-permissions", "--disable-slash-commands"]
-        if model: cmd.extend(["-m", model])
+        cmd = [tool_binary, "-p", prompt, "--disable-slash-commands"]
+        if model: cmd.extend(["--model", model])
         return cmd
     elif backend == "codex":
         cmd = [tool_binary, "exec"]
