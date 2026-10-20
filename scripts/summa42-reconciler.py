@@ -458,10 +458,10 @@ def reconcile_issues(args, mission_id, conn):
         "--mission", mission_id,
         "--model-binary", args.model_binary
     ] + model_extra_args
-    code, out, err = run_box_command(triage_review_args)
+    code, out, err = run_box_command(triage_review_args, timeout=600)
     if code != 0 and "unknown subcommand" in err.lower():
         triage_review_args[0] = "run-gh-triage-review"
-        code, out, err = run_box_command(triage_review_args)
+        code, out, err = run_box_command(triage_review_args, timeout=600)
     print(f"[RECONCILER] Triage Review: {out or err or 'done'}")
 
     # 5. Planning: Generate implementation plan for ready cases
@@ -470,10 +470,10 @@ def reconcile_issues(args, mission_id, conn):
         "--mission", mission_id,
         "--model-binary", args.model_binary
     ] + model_extra_args
-    code, out, err = run_box_command(plan_args)
+    code, out, err = run_box_command(plan_args, timeout=600)
     if code != 0 and "unknown subcommand" in err.lower():
         plan_args[0] = "run-gh-plan"
-        code, out, err = run_box_command(plan_args)
+        code, out, err = run_box_command(plan_args, timeout=600)
     print(f"[RECONCILER] Plan: {out or err or 'done'}")
 
     # 6. Plan Review: Independent verification of plan
@@ -482,10 +482,10 @@ def reconcile_issues(args, mission_id, conn):
         "--mission", mission_id,
         "--model-binary", args.model_binary
     ] + model_extra_args
-    code, out, err = run_box_command(plan_review_args)
+    code, out, err = run_box_command(plan_review_args, timeout=600)
     if code != 0 and "unknown subcommand" in err.lower():
         plan_review_args[0] = "run-gh-plan-review"
-        code, out, err = run_box_command(plan_review_args)
+        code, out, err = run_box_command(plan_review_args, timeout=600)
     print(f"[RECONCILER] Plan Review: {out or err or 'done'}")
 
     # 7. Implement: Generate code candidate in isolated git worktree for cases with accepted plan
