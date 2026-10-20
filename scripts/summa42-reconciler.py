@@ -416,6 +416,20 @@ def get_blob_content(conn, evidence_id):
             return None
     return None
 
+def get_issue_depth(cur, issue_id):
+    depth = 1
+    curr = issue_id
+    while True:
+        cur.execute("SELECT parent_id FROM issue_hierarchy WHERE issue_id = ?", (curr,))
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            break
+        depth += 1
+        curr = row[0]
+        if depth > 20:
+            break
+    return depth
+
 def reconcile_epic_decomposition(args, mission_id, conn):
     """
     Decomposes large/huge epics into linked child issues on GitHub when triage
@@ -478,25 +492,32 @@ def reconcile_epic_decomposition(args, mission_id, conn):
         issue_body = snapshot.get("body", "")
         current_scope = decision_doc.get("stage2", {}).get("scope", "large").lower()
 
-        cur.execute("SELECT parent_id, root_id, large_depth FROM issue_hierarchy WHERE issue_id = ?", (issue_num,))
+        cur.execute("SELECT parent_id, root_id FROM issue_hierarchy WHERE issue_id = ?", (issue_num,))
         h_row = cur.fetchone()
         if h_row:
-            parent_id, root_id, current_large_depth = h_row
+            parent_id, root_id = h_row
         else:
             parent_id = None
             root_id = issue_num
-            current_large_depth = 1 if current_scope in ("large", "huge") else 0
-            now = time.strftime("%Y-%m-%d %H:%M:%S")
-            cur.execute("""
-                INSERT OR IGNORE INTO issue_hierarchy (issue_id, parent_id, root_id, scope, large_depth, status, created_at, updated_at)
-                VALUES (?, NULL, ?, ?, ?, 'WAITING_DECOMPOSITION', ?, ?)
-            """, (issue_num, root_id, current_scope, current_large_depth, now, now))
-            conn.commit()
+        current_large_depth = get_issue_depth(cur, issue_num)
 
         # Check large_depth limit circuit breaker
-        if current_scope in ("large", "huge") and current_large_depth >= 3:
-            print(f"[RECONCILER] Issue #{issue_num} reached max large depth ({current_large_depth} >= 3).")
-            # If large depth limit reached, prompt will require medium/small or halt
+        if current_scope in ("large", "huge") and current_large_depth > 3:
+            print(f"[RECONCILER] Issue #{issue_num} reached max large depth ({current_large_depth} > 3). Halting decomposition.")
+            env = os.environ.copy()
+            token = get_github_token()
+            if token:
+                env["GITHUB_TOKEN"] = token
+                env["GH_TOKEN"] = token
+            comment_body = (
+                f"⚠️ **Summa42 Safety Guardrail Triggered**\n\n"
+                f"Issue #{issue_num} has reached the maximum nested epic depth (level {current_large_depth} > 3) without converging to actionable `medium` or `small` tasks.\n"
+                f"Recursive decomposition halted to prevent infinite loops. Human architectural guidance or manual scoping is required."
+            )
+            subprocess.run(["gh", "issue", "comment", str(issue_num), "--repo", repo, "--body", comment_body], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+            cur.execute("UPDATE issue_hierarchy SET status = 'BLOCKED_DEPTH_LIMIT', updated_at = datetime('now') WHERE issue_id = ?", (issue_num,))
+            conn.commit()
+            continue
 
         print(f"[RECONCILER] Decomposing Issue #{issue_num}: '{issue_title}' (Scope: {current_scope}, Large Depth: {current_large_depth})...")
 
@@ -776,21 +797,24 @@ def reconcile_issues(args, mission_id, conn):
     cur.execute("SELECT COUNT(*) FROM tasks WHERE state = 'ELIGIBLE'")
     eligible_count = cur.fetchone()[0]
     if eligible_count > 0:
-        print(f"[RECONCILER] Processing eligible tasks with worker (--once)...")
-        worker_args = [
-            "run-worker",
-            "--workspace-root", workspace_root,
-            "--model-binary", args.model_binary,
-            "--model-timeout", "150s",
-            "--poll-interval", "1s",
-            "--once"
-        ] + model_extra_args
-        try:
-            code, out, err = run_box_command(worker_args, timeout=180)
-            if out or err:
-                print(f"[RECONCILER] Worker: {out or err}")
-        except subprocess.TimeoutExpired:
-            print("[RECONCILER] Worker single step timed out; will resume on next cycle.")
+        batch_size = min(5, eligible_count)
+        print(f"[RECONCILER] Processing {batch_size} eligible tasks with worker...")
+        for i in range(batch_size):
+            worker_args = [
+                "run-worker",
+                "--workspace-root", workspace_root,
+                "--model-binary", args.model_binary,
+                "--model-timeout", "150s",
+                "--poll-interval", "1s",
+                "--once"
+            ] + model_extra_args
+            try:
+                code, out, err = run_box_command(worker_args, timeout=180)
+                if out or err:
+                    print(f"[RECONCILER] Worker [{i+1}/{batch_size}]: {out or err}")
+            except subprocess.TimeoutExpired:
+                print(f"[RECONCILER] Worker step {i+1} timed out; continuing.")
+                break
     else:
         print("[RECONCILER] No eligible tasks currently pending for worker.")
 

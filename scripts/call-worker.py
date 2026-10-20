@@ -673,10 +673,14 @@ def main():
             "Output ONLY a raw JSON object with this exact format: "
             '{"is_actionable": true, "needs_repro": false, "scope": "small", "suggested_type": "feature", "rationale": "Explanation under 1000 characters"}.\n'
             "Values for scope must be one of: small, medium, large, huge, unknown.\n"
-            "Values for suggested_type must be one of: bug, feature, question, other.\n"
-            "SAFETY AND RISK ASYMMETRY RULE:\n"
-            "If there is any doubt or uncertainty between two scopes, ALWAYS choose the larger scope (small -> medium -> large -> huge). "
-            "Never underestimate scope.\n\n"
+            "Values for suggested_type must be one of: bug, feature, question, other.\n\n"
+            "SCOPE GUIDELINES IN SUMMA42:\n"
+            "- 'small': Single bugfix, localized refactor, single-file addition or test improvement (~1-2 files, 1 commit).\n"
+            "- 'medium': A bounded, cohesive feature, interface, domain model, or engine module with unit/integration tests (standard 1-2 PR unit of delivery). Sub-issues with concrete acceptance criteria and technical guidance ARE 'medium' and SHOULD be planned and implemented, NOT marked large.\n"
+            "- 'large': A multi-component epic or major cross-cutting subsystem requiring multi-stage decomposition into smaller sub-issues.\n"
+            "- 'huge': A massive platform initiative or multi-epic roadmap goal.\n"
+            "RISK ASYMMETRY RULE:\n"
+            "If genuinely uncertain between two adjacent scopes (e.g. small vs medium, or medium vs large), choose the larger scope. But if an issue is a bounded sub-issue with clear acceptance criteria and technical guidance, it is 'medium' or 'small' and is READY TO PLAN.\n\n"
             f"INPUT:\n{raw_input}"
         )
 
