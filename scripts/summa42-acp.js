@@ -3,17 +3,18 @@
  * Summa42 ACP (Agent Client Protocol) Bridge.
  * Connects Summa42 to OpenACP / acp-discord over the open ACP standard.
  * 
- * SECURITY COMPLIANT:
- * 1. ZERO dynamic Python code execution / f-string injection. All DB operations run via parameterized scripts/summa42-query.py.
- * 2. Cryptographic Owner Authentication: Discord Owner whitelist and SHA-256 integrity hash verified against ~/.summa42/config.json.
- * 3. Strict Constitutional Isolation: Non-owners cannot execute directives, alter missions, or grant authority.
- * 4. Model calls respect capability boundaries without skipping safety permissions.
+ * SECURITY MODEL:
+ * 1. Read-only: status, cases and tickets only read the canonical DB through scripts/summa42-query.py
+ *    (opened mode=ro). The bridge never writes canonical state, files issues, or injects work.
+ * 2. There is NO cryptographic authentication. Owner gating is an owner-ID allowlist
+ *    (discord_owners) in $SUMMA42_HOME/discord_auth.json, which must be mode 0600 (checked at load).
+ *    The requestor ID is whatever the channel layer reports; it is only as trustworthy as that layer.
+ * 3. chat and "/mission show" are owner-only. status, cases and tickets are open to everyone.
  */
 
 const { Readable, Writable } = require('stream');
 const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 // Load ACP SDK from global npm module acp-discord
@@ -41,11 +42,17 @@ try {
 }
 
 const SUMMA_QUERY_BIN = path.join(__dirname, 'summa42-query.py');
-const CONFIG_PATH = path.join(process.env.HOME || '/home/topol', '.summa42', 'discord_auth.json');
+// No default: a bridge started without SUMMA42_HOME must not guess a home directory.
+const SUMMA42_HOME = process.env.SUMMA42_HOME;
+if (!SUMMA42_HOME) {
+  console.error("SUMMA42_HOME must be set");
+  process.exit(1);
+}
+const CONFIG_PATH = path.join(SUMMA42_HOME, 'discord_auth.json');
 
 /**
- * Validates whether a requestor ID belongs to an authorized Owner.
- * Checks the comma-separated discord_owners and verifies discord_owners_hash.
+ * Validates whether a requestor ID is on the owner allowlist (discord_owners,
+ * comma-separated) in discord_auth.json. The file must be mode 0600.
  */
 function verifyOwnerAuthorization(requestorId) {
   if (!requestorId) {
@@ -54,53 +61,27 @@ function verifyOwnerAuthorization(requestorId) {
 
   try {
     if (!fs.existsSync(CONFIG_PATH)) {
-      return { authorized: false, reason: "Config file ~/.summa42/config.json not found" };
+      return { authorized: false, reason: "discord_auth.json not found" };
+    }
+    if ((fs.statSync(CONFIG_PATH).mode & 0o077) !== 0) {
+      return { authorized: false, reason: "discord_auth.json must be mode 0600" };
     }
     const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    const ownersRaw = cfg.discord_owners || "";
-    const expectedHash = cfg.discord_owners_hash || "";
-
-    if (!ownersRaw || !expectedHash) {
-      return { authorized: false, reason: "Discord owners whitelist or hash not configured in ~/.summa42/config.json" };
+    const ownersList = String(cfg.discord_owners || "").split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+    if (!ownersList.length) {
+      return { authorized: false, reason: "discord_owners not configured in discord_auth.json" };
     }
-
-    // Canonical normalization of comma-separated list with salt prefix "42:"
-    const ownersList = ownersRaw.split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
-    const canonicalString = "42:" + [...ownersList].sort().join(',');
-    const computedHash = crypto.createHash('sha256').update(canonicalString, 'utf-8').digest('hex');
-
-    if (computedHash.toLowerCase() !== expectedHash.trim().toLowerCase()) {
-      return {
-        authorized: false,
-        reason: "SECURITY ALERT: discord_owners_hash mismatch in ~/.summa42/config.json! Potential configuration tampering detected."
-      };
+    if (!ownersList.includes(String(requestorId).trim().toLowerCase())) {
+      return { authorized: false, reason: `User '${requestorId}' is not on the owner allowlist.` };
     }
-
-    const reqClean = String(requestorId).trim().toLowerCase();
-    const isOwner = ownersList.includes(reqClean);
-    if (!isOwner) {
-      return {
-        authorized: false,
-        reason: `User '${requestorId}' is not an authorized Owner in the verified configuration whitelist.`
-      };
-    }
-
     return { authorized: true, ownersList };
   } catch (err) {
     return { authorized: false, reason: `Authorization check failed: ${err.message}` };
   }
 }
 
-function runQuery(subcommand, inputJson = null) {
-  const options = {
-    encoding: 'utf-8',
-    timeout: 10000,
-    env: process.env
-  };
-  if (inputJson !== null) {
-    options.input = typeof inputJson === 'string' ? inputJson : JSON.stringify(inputJson);
-  }
-  const res = spawnSync('python3', [SUMMA_QUERY_BIN, subcommand], options);
+function runQuery(subcommand) {
+  const res = spawnSync('python3', [SUMMA_QUERY_BIN, subcommand], { encoding: 'utf-8', timeout: 10000, env: process.env });
   if (res.error) throw res.error;
   if (res.status !== 0) throw new Error(res.stderr.trim() || `Command failed with code ${res.status}`);
   return JSON.parse(res.stdout.trim());
@@ -108,13 +89,9 @@ function runQuery(subcommand, inputJson = null) {
 
 function getOpenRouterKey() {
   if (process.env.OPENROUTER_API_KEY) return process.env.OPENROUTER_API_KEY.trim();
-  const keyFile = path.join(process.env.HOME || '/home/topol', '.openrouter_api_key');
+  const keyFile = path.join(SUMMA42_HOME, 'openrouter_key');
   if (fs.existsSync(keyFile)) {
     try { return fs.readFileSync(keyFile, 'utf-8').trim(); } catch (_) {}
-  }
-  const summaKeyFile = path.join(process.env.HOME || '/home/topol', '.summa42', 'openrouter_key');
-  if (fs.existsSync(summaKeyFile)) {
-    try { return fs.readFileSync(summaKeyFile, 'utf-8').trim(); } catch (_) {}
   }
   return null;
 }
@@ -169,19 +146,17 @@ function callOpenRouterFree(prompt) {
   for (const model of freeModels) {
     if (!model.endsWith(':free') && model !== 'openrouter/free') continue;
     try {
-      const curlProc = spawnSync('curl', [
-        '-s', '-X', 'POST', 'https://openrouter.ai/api/v1/chat/completions',
-        '-H', `Authorization: Bearer ${apiKey}`,
-        '-H', 'HTTP-Referer: https://github.com/SofiaFlux/summa42',
-        '-H', 'X-Title: Summa42 Collective',
-        '-H', 'Content-Type: application/json',
-        '-d', JSON.stringify({
-          model: model,
-          messages: [{ role: 'user', content: prompt }],
-          temperature: 0.2
-        }),
-        '--max-time', '30'
-      ], { encoding: 'utf-8' });
+      // The key travels in env and the body on stdin, never on the curl argv.
+      const curlProc = spawnSync('sh', ['-c',
+        'exec curl -s -X POST https://openrouter.ai/api/v1/chat/completions ' +
+        '-H "Authorization: Bearer $OPENROUTER_API_KEY" ' +
+        '-H "X-Title: Summa42 Collective" -H "Content-Type: application/json" ' +
+        '-d @- --max-time 30'
+      ], {
+        encoding: 'utf-8',
+        env: { ...process.env, OPENROUTER_API_KEY: apiKey },
+        input: JSON.stringify({ model: model, messages: [{ role: 'user', content: prompt }], temperature: 0.2 })
+      });
 
       if (!curlProc.error && curlProc.stdout) {
         const parsed = JSON.parse(curlProc.stdout);
@@ -201,6 +176,9 @@ function getSummaStatus() {
     if (data.error === "NO_DB") {
       return "⚠️ Summa42 database has not been initialized yet.";
     }
+    // Authority levels come from the Box via the summa42 CLI, never hard-coded here.
+    const cli = spawnSync('summa42', ['status'], { encoding: 'utf-8', timeout: 10000, env: process.env });
+    const box = (!cli.error && cli.status === 0 && cli.stdout.trim()) ? cli.stdout.trim() : 'unavailable (summa42 status failed)';
 
     return [
       `🏛️ **Summa42 Collective Status**`,
@@ -208,16 +186,25 @@ function getSummaStatus() {
       `🎯 **Active Mission:** ${data.mission}`,
       `📋 **Tracked Workflow Cases:** ${data.cases}`,
       `🧠 **Active Experience Rules:** ${data.rules}`,
+      `🛡️ **Box:** ${box}`,
       ``,
-      `🛡️ **Authority Envelopes:**`,
-      `  • \`github.pr.review\`: \`L1_SUPERVISED_SHADOW\` (or L2 upon experience promotion)`,
-      `  • \`github.pr.merge\`: \`L1_SUPERVISED_SHADOW\``,
-      `  • \`github.issue.triage\`: \`L1_SUPERVISED_SHADOW\``,
-      ``,
-      `*Available channel commands:* \`status\`, \`cases\`, \`tickets\`, \`mission <statement>\`, \`reconcile\``
+      `*Available channel commands:* \`status\`, \`cases\`, \`tickets\``
     ].join('\n');
   } catch (err) {
     return `⚠️ Error reading Summa42 status: ${err.message}`;
+  }
+}
+
+function showMission(requestorId) {
+  const auth = verifyOwnerAuthorization(requestorId);
+  if (!auth.authorized) {
+    return `⛔ **Access Denied:** owner-only.\n> *Reason:* ${auth.reason}`;
+  }
+  try {
+    const data = runQuery('status');
+    return data.error ? `⚠️ ${data.error}` : `🎯 **Active Mission:** ${data.mission}`;
+  } catch (err) {
+    return `⚠️ Error reading mission: ${err.message}`;
   }
 }
 
@@ -258,7 +245,7 @@ function getTicketsDeterministic() {
     for (const it of items) {
       const num = it.number;
       const title = it.title || "Untitled";
-      const st = it.state || "OPEN";
+      const st = it.state || "UNKNOWN";
       const is_pr = (it.url || "").includes("/pull/");
       const tlower = title.toLowerCase();
       let kind = "TASK";
@@ -278,79 +265,21 @@ function getTicketsDeterministic() {
   }
 }
 
-function setMission(newStatement, requestorId) {
-  const auth = verifyOwnerAuthorization(requestorId);
-  if (!auth.authorized) {
-    return `⛔ **Access Denied (Constitution Violation):** Cannot set mission.\n> *Reason:* ${auth.reason}`;
-  }
-
-  try {
-    const data = runQuery('set_mission', { statement: newStatement });
-    if (data.error) return `⚠️ Error: ${data.error}`;
-    return `✅ **Registered new mission for Summa42 by verified Owner (${requestorId}):**\n> *"${data.statement}"*\n(ID: \`${data.mission_id}\`)`;
-  } catch (err) {
-    return `⚠️ Error updating mission: ${err.message}`;
-  }
-}
-
-function injectOwnerDirective(directiveText, requestorId) {
-  const auth = verifyOwnerAuthorization(requestorId);
-  if (!auth.authorized) {
-    return `⛔ **Access Denied (Constitution Violation):** Cannot inject Owner Directive.\n> *Reason:* ${auth.reason}`;
-  }
-
-  try {
-    const data = runQuery('inject_directive', { text: directiveText, sender_id: requestorId });
-    if (data.error) return `⚠️ Error: ${data.error}`;
-    return [
-      `⚡ **Owner Directive Injected with Highest Priority (\`P=1000\`):**`,
-      `> *"${directiveText}"*`,
-      ``,
-      `• **Authorized By:** \`${requestorId}\` (Verified Owner)`,
-      `• **Task ID:** \`${data.task_id}\``,
-      `• **Case ID:** \`${data.case_id}\``,
-      `• **Purpose Kind:** \`OWNER_DIRECTIVE\` (bypasses regular queue)`,
-      `• **Status:** \`ELIGIBLE\` scheduled at the absolute head of the queue`
-    ].join('\n');
-  } catch (err) {
-    return `⚠️ Error injecting directive: ${err.message}`;
-  }
-}
-
-function createGitHubIssue(title, body, requestorId) {
-  try {
-    const proc = spawnSync('gh', [
-      'issue', 'create',
-      '--repo', 'SofiaFlux/summa42',
-      '--title', title,
-      '--body', body + `\n\n---\n*Created via Summa42 Discord Bridge by requestor: ${requestorId || 'unknown'}*`
-    ], { encoding: 'utf-8', timeout: 15000, env: process.env });
-
-    if (proc.error) throw proc.error;
-    if (proc.status !== 0) throw new Error(proc.stderr.trim() || 'gh issue create failed');
-
-    const out = proc.stdout.trim();
-    return `✅ **Zgłoszenie pomyślnie utworzone na GitHubie:**\n🔗 ${out}`;
-  } catch (err) {
-    return `⚠️ Błąd podczas zakładania issue: ${err.message}`;
-  }
-}
-
 function chatWithCollective(userText, requestorId) {
+  const auth = verifyOwnerAuthorization(requestorId);
+  if (!auth.authorized) {
+    return `⛔ **Access Denied:** chat is owner-only.\n> *Reason:* ${auth.reason}`;
+  }
   try {
-    const ctxData = runQuery('context');
-    const auth = verifyOwnerAuthorization(requestorId);
-    const senderRole = auth.authorized ? `Zweryfikowany Właściciel (Owner: ${requestorId})` : `Użytkownik Discorda (${requestorId || 'gość'})`;
+    const ctxData = runQuery('status');
+    const senderRole = `Właściciel (Owner: ${requestorId})`;
 
     const prompt = [
       `Jesteś Summa42 (Sovereign Multi-Agent Collective).`,
       `Rozmówca w kanale: ${senderRole}.`,
       `Aktualny stan systemu Summa42:`,
       `- Aktywna misja: "${ctxData.mission || 'Brak'}"`,
-      `- Zadania aktualnie wykonywane (formalny stan EXECUTING w bazie): ${ctxData.executing_tasks || 'Brak'}`,
-      `- Oczekujące Dyrektywy Właściciela (stan ELIGIBLE, najwyższy priorytet): ${ctxData.directives || 'Brak'}`,
-      `- Liczba spraw w toku (stan ACTIVE w workflow_cases): ${ctxData.active_cases || 0}`,
-      `- Model stanów Summa42: W Summie nie ma statusu 'in progress' — jego odpowiednikiem jest stan EXECUTING dla zadań (tasks) oraz ACTIVE dla spraw (workflow_cases).`,
+      `- Liczba spraw w workflow_cases: ${ctxData.cases || 0}`,
       ``,
       `Wiadomość / pytanie od użytkownika: "${userText}"`,
       ``,
@@ -410,28 +339,8 @@ function chatWithCollective(userText, requestorId) {
     `• \`status\` – Report active mission, workflow cases, and authority envelopes`,
     `• \`tickets\` – Deterministic issue/PR digest categorized by type`,
     `• \`cases\` – List active workflow cases`,
-    `• \`/issue <title> | <body>\` – Create an issue on GitHub`,
-    `• \`reconcile\` – Trigger an immediate reconciliation cycle`
+    `• \`chat\` and \`/mission show\` – owner only`
   ].join('\n');
-}
-
-function runReconcileOnce() {
-  try {
-    const scriptPath = path.join(__dirname, 'summa42-reconciler.py');
-    const proc = spawnSync('python3', [scriptPath, '--once'], {
-      encoding: 'utf-8',
-      timeout: 60000,
-      env: process.env
-    });
-    return [
-      `🔄 **Reconciliation cycle completed:**`,
-      '```',
-      proc.stdout.slice(0, 1500) || proc.stderr.slice(0, 1500) || 'Done',
-      '```'
-    ].join('\n');
-  } catch (err) {
-    return `⚠️ Error running reconcile: ${err.message}`;
-  }
 }
 
 // Create ACP Agent
@@ -478,28 +387,12 @@ const agent = {
 
     if (lower === 'status' || lower === '/status') {
       reply = getSummaStatus();
-    } else if (lower.startsWith('/directive ') || lower.startsWith('directive ') ||
-               lower.startsWith('/priority ') || lower.startsWith('priority ') ||
-               lower.startsWith('/urgent ') || lower.startsWith('urgent ') ||
-               lower.startsWith('/dyrektywa ') || lower.startsWith('dyrektywa ')) {
-      const dir = text.replace(/^\/(?:directive|priority|urgent|dyrektywa)\s+/i, '')
-                      .replace(/^(?:directive|priority|urgent|dyrektywa)\s+/i, '').trim();
-      reply = injectOwnerDirective(dir, requestorId);
-    } else if (lower.startsWith('/mission ') || lower.startsWith('mission ') || lower.startsWith('/misja ') || lower.startsWith('misja ')) {
-      const stmt = text.replace(/^\/(?:mission|misja)\s+/i, '').replace(/^(?:mission|misja)\s+/i, '').trim();
-      reply = setMission(stmt, requestorId);
-    } else if (lower.startsWith('/issue ') || lower.startsWith('/zadanie ')) {
-      const payload = text.replace(/^\/(?:issue|zadanie)\s+/i, '').trim();
-      const parts = payload.split('|');
-      const title = parts[0].trim();
-      const body = parts.length > 1 ? parts.slice(1).join('|').trim() : title;
-      reply = createGitHubIssue(title, body, requestorId);
     } else if (lower === 'cases' || lower === '/cases') {
       reply = getCases();
-    } else if (lower === 'tickets' || lower === '/tickets' || lower.includes('ticket')) {
+    } else if (lower === 'tickets' || lower === '/tickets') {
       reply = getTicketsDeterministic();
-    } else if (lower === '/reconcile' || lower === 'reconcile' || lower === 'sync' || lower === '/sync') {
-      reply = runReconcileOnce();
+    } else if (lower === '/mission show' || lower === 'mission show') {
+      reply = showMission(requestorId);
     } else {
       reply = chatWithCollective(text, requestorId);
     }
