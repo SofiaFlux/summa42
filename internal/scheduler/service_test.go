@@ -120,3 +120,53 @@ func TestNextFiltersIneligibleTasksAndRanksDeadlineFirst(t *testing.T) {
 		t.Fatal("opaque priority outweighed explicit deadline urgency")
 	}
 }
+
+func TestSchedulerSkipsTasksOfInactiveMission(t *testing.T) {
+	ctx := context.Background()
+	store := testutil.OpenStore(t)
+	clk := testutil.NewClock(time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC))
+	purposes := purpose.New(store, clk)
+	execSvc := execution.New(store, clk, purposes)
+	svc := scheduler.New(store, clk, purposes, execSvc, resources.New(store, clk), time.Minute)
+	missionID, err := purposes.CreateMission(ctx, "to be superseded")
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := domain.NewID("envelope")
+	if _, err := store.DB().ExecContext(ctx,
+		`INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at) VALUES (?, ?, ?)`,
+		envelope, 100, clk.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	task, err := execSvc.CreateTask(ctx, execution.TaskRequest{
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeMission, ID: missionID},
+		AcceptanceCriteria:   []string{"done"},
+		RequiredCapabilities: []string{"shell"},
+		RequiredEnforcement:  domain.EnforcementEnforced,
+		AuthorityCeiling:     []string{"shell"},
+		ResourceEnvelopeID:   envelope,
+		Priority:             50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacity := scheduler.CapacitySnapshot{Capabilities: map[string]scheduler.CapabilityCapacity{
+		"shell": {Accessible: true, Enforcement: domain.EnforcementEnforced},
+	}}
+	if c, err := svc.Next(ctx, capacity); err != nil || c == nil || c.Task.ID != task.ID {
+		t.Fatalf("active mission task not selected: %v %v", c, err)
+	}
+	if err := purposes.DeactivateMission(ctx, missionID); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := svc.Next(ctx, capacity); err != nil || c != nil {
+		t.Fatalf("inactive mission task selected: %v %v", c, err)
+	}
+	var state string
+	if err := store.DB().QueryRowContext(ctx, `SELECT state FROM tasks WHERE task_id = ?`, task.ID).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != string(domain.TaskEligible) {
+		t.Fatalf("task state %s, want it left ELIGIBLE", state)
+	}
+}

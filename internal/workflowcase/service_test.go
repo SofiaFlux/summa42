@@ -232,3 +232,52 @@ func TestListAssessmentsRoundTripsStoredJSON(t *testing.T) {
 		t.Fatalf("round trip = request %+v result %+v", decodedRequest, decodedResult)
 	}
 }
+
+func TestEnsureRefusesObjectOwnedByOtherMission(t *testing.T) {
+	svc, purposes, missionA, ctx := setupEnsure(t)
+	if _, err := svc.Ensure(ctx, sampleObservation(missionA)); err != nil {
+		t.Fatal(err)
+	}
+	if err := purposes.DeactivateMission(ctx, missionA); err != nil { // only one Mission is active at a time
+		t.Fatal(err)
+	}
+	missionB, err := purposes.CreateMission(ctx, "Second mission")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := sampleObservation(missionB)
+	request.RevisionID = "r2"
+	if _, err := svc.Ensure(ctx, request); !errors.Is(err, ErrObjectOwnedByOtherMission) {
+		t.Fatalf("got %v, want ErrObjectOwnedByOtherMission", err)
+	}
+	var count int
+	if err := svc.store.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM workflow_cases").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("refused Ensure left %d cases, want 1", count)
+	}
+}
+
+func TestEnsureAllowsObjectAfterOtherMissionCaseClosed(t *testing.T) {
+	svc, purposes, missionA, ctx := setupEnsure(t)
+	first, err := svc.Ensure(ctx, sampleObservation(missionA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := purposes.DeactivateMission(ctx, missionA); err != nil { // only one Mission is active at a time
+		t.Fatal(err)
+	}
+	missionB, err := purposes.CreateMission(ctx, "Second mission")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.store.DB().ExecContext(ctx, "UPDATE workflow_cases SET state = ? WHERE case_id = ?", Closed, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	request := sampleObservation(missionB)
+	request.RevisionID = "r2"
+	if _, err := svc.Ensure(ctx, request); err != nil {
+		t.Fatalf("closed owner still blocked: %v", err)
+	}
+}

@@ -550,6 +550,9 @@ func (s *Service) ensureTx(ctx context.Context, tx *sql.Tx, prepared preparedObs
 	if err := s.purposes.ValidatePurposeTx(ctx, tx, domain.PurposeRef{Kind: domain.PurposeMission, ID: observation.MissionID}); err != nil {
 		return Case{}, err
 	}
+	if err := requireObjectNotOwnedByOtherMissionTx(ctx, tx, observation); err != nil {
+		return Case{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO workflow_cases (
 		case_id, mission_id, source, object_id, revision_id, observation_evidence_id,
 		initial_request_json, grant_json, state, current_work_id, next_work_json,
