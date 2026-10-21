@@ -262,6 +262,30 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	return box, nil
 }
 
+// RecoveryReport counts what one Recover pass repaired.
+type RecoveryReport struct {
+	ExpiredLeases        int
+	ReconciledOperations int
+}
+
+// Recover expires stale leases and reconciles DISPATCHED / unresolved
+// operations by provider lookup (never by redispatch). Call it at start and on
+// every worker tick; errors are returned, not swallowed.
+func (b *Box) Recover(ctx context.Context) (RecoveryReport, error) {
+	var report RecoveryReport
+	if b == nil || b.Wake == nil || b.Operations == nil {
+		return report, errors.New("runtime box is not configured for recovery")
+	}
+	var err error
+	if report.ExpiredLeases, err = b.Wake.RecoverExpiredLeases(ctx); err != nil {
+		return report, fmt.Errorf("recover expired leases: %w", err)
+	}
+	if report.ReconciledOperations, err = operations.NewReconciler(b.Operations).ReconcilePending(ctx); err != nil {
+		return report, fmt.Errorf("reconcile pending operations: %w", err)
+	}
+	return report, nil
+}
+
 func (b *Box) Close() error {
 	if b == nil {
 		return nil

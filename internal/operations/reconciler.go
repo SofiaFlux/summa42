@@ -31,9 +31,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, operationID domain.ID) (doma
 // OUTCOME_UNKNOWN records that still require reconciliation are retried too.
 // Remaining unknown outcomes are expected and stay durably unresolved rather
 // than failing Box startup.
-func (r *Reconciler) ReconcilePending(ctx context.Context) error {
+func (r *Reconciler) ReconcilePending(ctx context.Context) (int, error) {
 	if r == nil || r.service == nil || r.service.store == nil {
-		return errors.New("operation reconciler is not configured")
+		return 0, errors.New("operation reconciler is not configured")
 	}
 
 	rows, err := r.service.store.DB().QueryContext(ctx, `
@@ -43,30 +43,34 @@ func (r *Reconciler) ReconcilePending(ctx context.Context) error {
 		   OR (state = 'OUTCOME_UNKNOWN' AND reconciliation_required = 1)
 		ORDER BY created_at, operation_id`)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var operationIDs []domain.ID
 	for rows.Next() {
 		var operationID domain.ID
 		if err := rows.Scan(&operationID); err != nil {
 			_ = rows.Close()
-			return err
+			return 0, err
 		}
 		operationIDs = append(operationIDs, operationID)
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return err
+		return 0, err
 	}
 	if err := rows.Close(); err != nil {
-		return err
+		return 0, err
 	}
 
+	settled := 0
 	for _, operationID := range operationIDs {
 		_, err := r.service.reconcile(ctx, operationID)
 		if err != nil && !errors.Is(err, domain.ErrOutcomeUnknown) {
-			return err
+			return settled, err
+		}
+		if err == nil {
+			settled++
 		}
 	}
-	return nil
+	return settled, nil
 }

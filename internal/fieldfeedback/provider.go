@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 	"strings"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -67,6 +68,12 @@ func (p *Provider) EnforcementLevel() domain.EnforcementLevel {
 func (p *Provider) AdapterVersion() string { return "feedback-provider-v1" }
 
 func (p *Provider) AdapterVersionSemanticallyRelevant() bool { return false }
+
+// SettleWindow: the lookup only searches for the marker; an absent marker does
+// not prove a delayed issue-create cannot still land.
+func (p *Provider) SettleWindow() time.Duration { return providerSettleWindow }
+
+const providerSettleWindow = 10 * time.Minute
 
 func (p *Provider) CanonicalIntent(descriptor operations.IntentDescriptor) ([]byte, error) {
 	var intent EmitIntent

@@ -168,6 +168,14 @@ func (*BranchProvider) AdapterVersion() string                    { return "1" }
 func (*PRProvider) AdapterVersion() string                        { return "1" }
 func (*BranchProvider) AdapterVersionSemanticallyRelevant() bool  { return true }
 func (*PRProvider) AdapterVersionSemanticallyRelevant() bool      { return true }
+
+// SettleWindow for both GitHub providers: lookups are read-only ref/PR reads
+// that never return NO_EFFECT, and an absent branch or PR does not prove a
+// delayed write cannot land.
+func (*BranchProvider) SettleWindow() time.Duration { return settleWindow }
+func (*PRProvider) SettleWindow() time.Duration     { return settleWindow }
+
+const settleWindow = 10 * time.Minute
 func (p *BranchProvider) validate(v BranchIntent) error {
 	if v.Repository != p.c.repo || !validRef(v.BaseBranch) || !managedHead.MatchString(v.HeadBranch) || v.BaseBranch == v.HeadBranch {
 		return errors.New("invalid branch publication intent")

@@ -53,7 +53,7 @@ func TestStartupRecoveryFindsDispatchedOperationWithoutRedispatch(t *testing.T) 
 	}
 
 	reconciler := operations.NewReconciler(h.svc)
-	if err := reconciler.ReconcilePending(h.ctx); err != nil {
+	if _, err := reconciler.ReconcilePending(h.ctx); err != nil {
 		t.Fatal(err)
 	}
 	if got := h.provider.DispatchCount(); got != 0 {

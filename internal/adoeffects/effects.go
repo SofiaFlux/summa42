@@ -148,6 +148,14 @@ func (p *VoteProvider) AdapterVersion() string { return "ado-effects-v1" }
 
 func (p *VoteProvider) AdapterVersionSemanticallyRelevant() bool { return false }
 
+// SettleWindow for both ADO providers: lookups are read-only list/get calls
+// that can only confirm an effect; absence does not prove a delayed write
+// cannot land.
+func (p *CommentProvider) SettleWindow() time.Duration { return settleWindow }
+func (p *VoteProvider) SettleWindow() time.Duration    { return settleWindow }
+
+const settleWindow = 10 * time.Minute
+
 // CanonicalIntent accepts CommentIntent by value or pointer, trims and
 // validates it, and returns the stable canonical JSON form.
 func (p *CommentProvider) CanonicalIntent(descriptor operations.IntentDescriptor) ([]byte, error) {

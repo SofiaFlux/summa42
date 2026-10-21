@@ -499,10 +499,16 @@ func (s *Service) DispatchWithGuard(ctx context.Context, operationID, attemptID 
 	return s.SettleOutcome(ctx, operationID, outcome)
 }
 
+// settlementTimeout bounds post-dispatch bookkeeping, which must outlive the
+// caller's cancellation: the effect has already left the process.
+const settlementTimeout = 30 * time.Second
+
 func (s *Service) SettleOutcome(ctx context.Context, operationID domain.ID, outcome ProviderOutcome) (domain.ExternalOperation, error) {
 	if err := s.configured(); err != nil {
 		return domain.ExternalOperation{}, err
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settlementTimeout)
+	defer cancel()
 	if outcome.State != domain.OperationConfirmedEffect && outcome.State != domain.OperationConfirmedNoEffect {
 		return domain.ExternalOperation{}, errors.New("settlement requires confirmed effect or confirmed no-effect")
 	}
@@ -599,10 +605,22 @@ func (s *Service) reconcile(ctx context.Context, operationID domain.ID) (domain.
 	if outcome.State != domain.OperationConfirmedEffect && outcome.State != domain.OperationConfirmedNoEffect {
 		return op, fmt.Errorf("%w: provider lookup returned invalid state %s", domain.ErrOutcomeUnknown, outcome.State)
 	}
+	// An in-flight Dispatch may not have landed yet; absence is only a proof
+	// after the provider's settle window. The slot stays closed until then.
+	if outcome.State == domain.OperationConfirmedNoEffect && !op.DispatchedAt.IsZero() &&
+		s.clock.Now().UTC().Before(op.DispatchedAt.Add(provider.SettleWindow())) {
+		unknown, markErr := s.markUnknown(ctx, operationID)
+		if markErr != nil {
+			return unknown, markErr
+		}
+		return unknown, fmt.Errorf("%w: no effect observed inside the provider settle window", domain.ErrOutcomeUnknown)
+	}
 	return s.SettleOutcome(ctx, operationID, outcome)
 }
 
 func (s *Service) markUnknown(ctx context.Context, operationID domain.ID) (domain.ExternalOperation, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settlementTimeout)
+	defer cancel()
 	now := s.clock.Now().UTC()
 	var unknown domain.ExternalOperation
 	err := s.store.WithTx(ctx, func(tx *sql.Tx) error {

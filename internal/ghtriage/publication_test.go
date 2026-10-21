@@ -44,6 +44,7 @@ func (*publicationProvider) EnforcementLevel() domain.EnforcementLevel {
 }
 func (*publicationProvider) AdapterVersion() string                   { return "1" }
 func (*publicationProvider) AdapterVersionSemanticallyRelevant() bool { return true }
+func (*publicationProvider) SettleWindow() time.Duration              { return 0 }
 func (p *publicationProvider) CanonicalIntent(d operations.IntentDescriptor) ([]byte, error) {
 	return json.Marshal(d)
 }

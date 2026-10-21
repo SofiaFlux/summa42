@@ -78,6 +78,7 @@ type harness struct {
 	svc       *operations.Service
 	taskID    domain.ID
 	attempt   domain.Attempt
+	clock     *testutil.Clock
 }
 
 func newHarness(t *testing.T) *harness {
@@ -124,7 +125,7 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &harness{ctx: ctx, store: store, exec: execSvc, ledger: ledger, approvals: approvalSvc, provider: provider, policy: pol, svc: svc, taskID: taskID, attempt: attempt}
+	return &harness{ctx: ctx, store: store, exec: execSvc, ledger: ledger, approvals: approvalSvc, provider: provider, policy: pol, svc: svc, taskID: taskID, attempt: attempt, clock: clk}
 }
 
 func setActivePolicyHash(t *testing.T, h *harness, hash string) {
@@ -518,5 +519,59 @@ func TestAllowWithUnknownLimitFailsClosed(t *testing.T) {
 	}
 	if count := h.provider.DispatchCount(); count != 0 {
 		t.Fatalf("provider dispatch count = %d, want 0", count)
+	}
+}
+
+func TestCancelledContextAfterDispatchStillSettles(t *testing.T) {
+	h := newHarness(t)
+	ctx, cancel := context.WithCancel(h.ctx)
+	defer cancel()
+	h.provider.onDispatch = cancel
+	op := preparePurchase(t, h, h.attempt.ID, "purchase-primary", 1)
+
+	settled, err := h.svc.Dispatch(ctx, op.ID, h.attempt.ID)
+	if err != nil {
+		t.Fatalf("Dispatch with context cancelled mid-flight: %v", err)
+	}
+	if settled.State != domain.OperationConfirmedEffect {
+		t.Fatalf("state = %s, want CONFIRMED_EFFECT", settled.State)
+	}
+	var stored domain.OperationState
+	if err := h.store.DB().QueryRowContext(h.ctx,
+		`SELECT state FROM external_operations WHERE operation_id = ?`, op.ID,
+	).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != domain.OperationConfirmedEffect {
+		t.Fatalf("stored state = %s, want CONFIRMED_EFFECT", stored)
+	}
+}
+
+func TestReconcileWithinSettleWindowKeepsUnknown(t *testing.T) {
+	h := newHarness(t)
+	h.provider.SetLoseAcknowledgement(true)
+	h.provider.lookupNoEffect = true
+	h.provider.settleWindow = time.Hour
+	op := preparePurchase(t, h, h.attempt.ID, "purchase-primary", 1)
+	if _, err := h.svc.Dispatch(h.ctx, op.ID, h.attempt.ID); !errors.Is(err, domain.ErrOutcomeUnknown) {
+		t.Fatalf("expected unknown outcome, got %v", err)
+	}
+
+	reconciler := operations.NewReconciler(h.svc)
+	got, err := reconciler.Reconcile(h.ctx, op.ID)
+	if !errors.Is(err, domain.ErrOutcomeUnknown) {
+		t.Fatalf("Reconcile inside window = %v, want ErrOutcomeUnknown", err)
+	}
+	if got.State != domain.OperationOutcomeUnknown {
+		t.Fatalf("state = %s, want OUTCOME_UNKNOWN", got.State)
+	}
+
+	h.clock.Advance(2 * time.Hour)
+	got, err = reconciler.Reconcile(h.ctx, op.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != domain.OperationConfirmedNoEffect {
+		t.Fatalf("state after window = %s, want CONFIRMED_NO_EFFECT", got.State)
 	}
 }

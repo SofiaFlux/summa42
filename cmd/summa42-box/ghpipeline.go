@@ -236,16 +236,15 @@ func implementationCases(ctx context.Context, cases *workflowcase.Service, missi
 }
 
 // recoverExpiredLeases is pipeline stage 1.
-// ponytail: Wake.RecoverExpiredLeases until Task 18 switches it to box.Recover.
 func recoverExpiredLeases(ctx context.Context, _ []string) error {
 	box, err := openPipelineBox(ctx)
 	if err != nil {
 		return err
 	}
 	defer box.Close()
-	recovered, err := box.Wake.RecoverExpiredLeases(ctx)
-	if recovered > 0 {
-		fmt.Fprintf(os.Stderr, "recovered %d expired task lease(s)\n", recovered)
+	report, err := box.Recover(ctx)
+	if report.ExpiredLeases > 0 || report.ReconciledOperations > 0 {
+		fmt.Fprintf(os.Stderr, "recovered %d expired task lease(s), reconciled %d operation(s)\n", report.ExpiredLeases, report.ReconciledOperations)
 	}
 	return err
 }

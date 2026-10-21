@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/operations"
@@ -20,6 +21,9 @@ type fakeProvider struct {
 	dispatchCount       int
 	lookupCount         int
 	outcomes            map[domain.ID]operations.ProviderOutcome
+	onDispatch          func()
+	lookupNoEffect      bool
+	settleWindow        time.Duration
 }
 
 func newFakeProvider(name string) *fakeProvider {
@@ -31,6 +35,7 @@ func (p *fakeProvider) Capability() string                        { return "exte
 func (p *fakeProvider) EnforcementLevel() domain.EnforcementLevel { return domain.EnforcementEnforced }
 func (p *fakeProvider) AdapterVersion() string                    { return "fake-v1" }
 func (p *fakeProvider) AdapterVersionSemanticallyRelevant() bool  { return false }
+func (p *fakeProvider) SettleWindow() time.Duration              { return p.settleWindow }
 
 func (p *fakeProvider) CanonicalIntent(descriptor operations.IntentDescriptor) ([]byte, error) {
 	intent, ok := descriptor.(testutil.PurchaseIntent)
@@ -65,6 +70,9 @@ func (p *fakeProvider) Dispatch(_ context.Context, request operations.ProviderDi
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.dispatchCount++
+	if p.onDispatch != nil {
+		p.onDispatch()
+	}
 	actualCost, err := fakePurchaseCost(request.CanonicalIntent)
 	if err != nil {
 		return operations.ProviderOutcome{}, err
@@ -85,6 +93,9 @@ func (p *fakeProvider) LookupOutcome(_ context.Context, request operations.Provi
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.lookupCount++
+	if p.lookupNoEffect {
+		return operations.ProviderOutcome{State: domain.OperationConfirmedNoEffect}, nil
+	}
 	outcome, ok := p.outcomes[request.OperationID]
 	if !ok {
 		return operations.ProviderOutcome{State: domain.OperationOutcomeUnknown}, domain.ErrOutcomeUnknown

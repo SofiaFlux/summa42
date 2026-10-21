@@ -843,10 +843,15 @@ func runWorker(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
-	if box.Wake != nil {
-		if recovered, err := box.Wake.RecoverExpiredLeases(ctx); err == nil && recovered > 0 {
-			fmt.Fprintf(os.Stderr, "recovered %d expired task lease(s)\n", recovered)
+	recoverBox := func(ctx context.Context) error {
+		report, err := box.Recover(ctx)
+		if report.ExpiredLeases > 0 || report.ReconciledOperations > 0 {
+			fmt.Fprintf(os.Stderr, "recovered %d expired task lease(s), reconciled %d operation(s)\n", report.ExpiredLeases, report.ReconciledOperations)
 		}
+		return err
+	}
+	if err := recoverBox(ctx); err != nil {
+		return err
 	}
 	if adoProvider != nil {
 		publisher, err := adoreview.NewPublisher(adoreview.PublishConfig{
@@ -883,7 +888,7 @@ func runWorker(ctx context.Context, args []string) error {
 		}
 		return nil
 	}
-	return worker.Run(ctx, capacity, pollInterval)
+	return worker.WithRecovery(recoverBox).Run(ctx, capacity, pollInterval)
 }
 
 type stringSlice []string

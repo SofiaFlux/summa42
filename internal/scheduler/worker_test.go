@@ -18,6 +18,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/scheduler"
 	"github.com/SofiaFlux/summa42/internal/testutil"
 	"github.com/SofiaFlux/summa42/internal/verification"
+	"github.com/SofiaFlux/summa42/internal/wake"
 )
 
 type fakeExecutor struct {
@@ -841,5 +842,105 @@ func TestRunSuppressesContextErrorMidStep(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not stop after cancel")
+	}
+}
+
+func TestWorkerTickRecoversExpiredLease(t *testing.T) {
+	ctx := context.Background()
+	store := testutil.OpenStore(t)
+	clk := testutil.NewClock(time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC))
+	purposes := purpose.New(store, clk)
+	execSvc := execution.New(store, clk, purposes)
+	resourceSvc := resources.New(store, clk)
+	schedSvc := scheduler.New(store, clk, purposes, execSvc, resourceSvc, time.Minute)
+	wakeSvc := wake.New(store, clk, schedSvc)
+	evidenceStore, err := evidence.New(store, t.TempDir(), clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifySvc := verification.New(store, clk, execSvc)
+	envelopeID := domain.NewID("envelope")
+	if _, err := store.DB().ExecContext(ctx,
+		`INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at) VALUES (?, ?, ?)`,
+		envelopeID, 100, clk.Now().UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		t.Fatal(err)
+	}
+	task, err := execSvc.CreateTask(ctx, execution.TaskRequest{
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeOwnerDirective, ID: domain.ID("owner-worker")},
+		Objective:            "review the diff",
+		AcceptanceCriteria:   []string{"done"},
+		RequiredCapabilities: []string{"shell"},
+		RequiredEnforcement:  domain.EnforcementEnforced,
+		AuthorityCeiling:     []string{"shell"},
+		ResourceEnvelopeID:   envelopeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A lease taken and abandoned: only recovery can make the task schedulable again.
+	if _, err := execSvc.StartAttempt(ctx, task.ID, "shell", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(2 * time.Minute)
+	capacity := scheduler.CapacitySnapshot{Capabilities: map[string]scheduler.CapabilityCapacity{
+		"shell": {Accessible: true, Enforcement: domain.EnforcementEnforced},
+	}}
+	fake := &fakeExecutor{result: executors.ExecutionResult{ExitCode: 0, Stdout: "ok"}}
+	worker, err := scheduler.NewWorker(schedSvc, execSvc, evidenceStore, verifySvc,
+		map[string]executors.Executor{"shell": fake}, clk, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker.WithRecovery(func(ctx context.Context) error {
+		_, err := wakeSvc.RecoverExpiredLeases(ctx)
+		return err
+	})
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(runCtx, capacity, time.Millisecond) }()
+	deadline := time.After(10 * time.Second)
+	for {
+		reloaded, err := execSvc.Task(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reloaded.State == domain.TaskAwaitingVerification {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("task stuck in %s: tick did not recover the expired lease", reloaded.State)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v, want nil", err)
+	}
+}
+
+func TestWorkerSurfacesRecoveryError(t *testing.T) {
+	ctx := context.Background()
+	store := testutil.OpenStore(t)
+	clk := testutil.NewClock(time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC))
+	purposes := purpose.New(store, clk)
+	execSvc := execution.New(store, clk, purposes)
+	schedSvc := scheduler.New(store, clk, purposes, execSvc, resources.New(store, clk), time.Minute)
+	evidenceStore, err := evidence.New(store, t.TempDir(), clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := scheduler.NewWorker(schedSvc, execSvc, evidenceStore, verification.New(store, clk, execSvc),
+		map[string]executors.Executor{"shell": &fakeExecutor{}}, clk, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("recovery boom")
+	worker.WithRecovery(func(context.Context) error { return boom })
+	err = worker.Run(ctx, scheduler.CapacitySnapshot{}, time.Millisecond)
+	if !errors.Is(err, boom) {
+		t.Fatalf("Run = %v, want the recovery error", err)
 	}
 }

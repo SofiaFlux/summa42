@@ -40,6 +40,14 @@ type Worker struct {
 	executors     map[string]executors.Executor
 	clock         clock.Clock
 	workspaceRoot string
+	recover       func(context.Context) error
+}
+
+// WithRecovery makes Run call fn before every tick so expired leases and
+// unsettled operations are recovered continuously; its error stops Run.
+func (w *Worker) WithRecovery(fn func(context.Context) error) *Worker {
+	w.recover = fn
+	return w
 }
 
 func NewWorker(schedulerSvc *Service, executionSvc *execution.Service, evidenceStore *evidence.Store, verificationSvc *verification.Service, registry map[string]executors.Executor, clk clock.Clock, workspaceRoot string) (*Worker, error) {
@@ -236,7 +244,13 @@ func (w *Worker) stepGuarded(ctx context.Context, capacity CapacitySnapshot) err
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
-	_, err := w.StepOnce(ctx, capacity)
+	var err error
+	if w.recover != nil {
+		err = w.recover(ctx)
+	}
+	if err == nil {
+		_, err = w.StepOnce(ctx, capacity)
+	}
 	if err != nil && ctx.Err() != nil {
 		return nil
 	}

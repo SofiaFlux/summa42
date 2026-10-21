@@ -3,6 +3,7 @@ package feedbackgithub
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/fieldfeedback"
@@ -41,6 +42,7 @@ func (p *Provider) Capability() string { return p.inner.Capability() }
 func (p *Provider) EnforcementLevel() domain.EnforcementLevel { return p.inner.EnforcementLevel() }
 func (p *Provider) AdapterVersion() string { return p.inner.AdapterVersion() }
 func (p *Provider) AdapterVersionSemanticallyRelevant() bool { return p.inner.AdapterVersionSemanticallyRelevant() }
+func (p *Provider) SettleWindow() time.Duration { return p.inner.SettleWindow() }
 func (p *Provider) CanonicalIntent(intent operations.IntentDescriptor) ([]byte,error) { return p.inner.CanonicalIntent(intent) }
 func (p *Provider) CostProfile(intent operations.IntentDescriptor) (operations.CostProfile,error) { return p.inner.CostProfile(intent) }
 func (p *Provider) Dispatch(ctx context.Context, req operations.ProviderDispatchRequest) (operations.ProviderOutcome,error) { return p.inner.Dispatch(ctx,req) }
