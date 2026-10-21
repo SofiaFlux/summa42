@@ -48,6 +48,9 @@ type PublishPayload struct {
 	Repo     string `json:"repo"`
 	PR       int64  `json:"pr"`
 	Revision string `json:"revision"`
+	// ReviewerID is the service principal's ADO reviewer id; the vote intent
+	// binds to it. Optional here so comment-only cases need none.
+	ReviewerID string `json:"reviewerID,omitempty"`
 }
 
 type Publisher struct {
@@ -201,6 +204,7 @@ func decodePublishPayload(raw json.RawMessage) (PublishPayload, error) {
 	payload.Project = strings.TrimSpace(payload.Project)
 	payload.Repo = strings.TrimSpace(payload.Repo)
 	payload.Revision = strings.TrimSpace(payload.Revision)
+	payload.ReviewerID = strings.TrimSpace(payload.ReviewerID)
 	if payload.Decision == "" || payload.CaseID == "" || payload.WorkID == "" || payload.Project == "" ||
 		payload.Repo == "" || payload.Revision == "" || payload.PR <= 0 {
 		return PublishPayload{}, errors.New("publish payload requires decision, caseID, workID, project, repo, positive pr, and revision")
@@ -211,6 +215,10 @@ func decodePublishPayload(raw json.RawMessage) (PublishPayload, error) {
 func buildPublishIntents(payload PublishPayload, decision ReviewDecision) ([]publishIntent, error) {
 	if err := validatePublishDecision(decision); err != nil {
 		return nil, err
+	}
+	sourceCommit, targetCommit, ok := strings.Cut(payload.Revision, ":")
+	if !ok || sourceCommit == "" || targetCommit == "" {
+		return nil, fmt.Errorf("publish revision %q is not source:target commits", payload.Revision)
 	}
 	intents := make([]publishIntent, 0, len(decision.Comments)+1)
 	for index, comment := range decision.Comments {
@@ -225,7 +233,8 @@ func buildPublishIntents(payload PublishPayload, decision ReviewDecision) ([]pub
 			intent: adoeffects.CommentIntent{
 				Project: payload.Project, Repository: payload.Repo, PR: payload.PR,
 				Path: path, Line: comment.Line, Body: body,
-				Marker: fmt.Sprintf("[summa42:%s:%s:%d]", payload.CaseID, payload.WorkID, index),
+				Marker:       fmt.Sprintf("[summa42:%s:%s:%d]", payload.CaseID, payload.WorkID, index),
+				SourceCommit: sourceCommit, TargetCommit: targetCommit,
 			},
 		})
 	}
@@ -235,6 +244,7 @@ func buildPublishIntents(payload PublishPayload, decision ReviewDecision) ([]pub
 			provider: voteProviderName,
 			intent: adoeffects.VoteIntent{
 				Project: payload.Project, Repository: payload.Repo, PR: payload.PR, Vote: 10,
+				SourceCommit: sourceCommit, TargetCommit: targetCommit, ReviewerID: strings.TrimSpace(payload.ReviewerID),
 			},
 		})
 	}

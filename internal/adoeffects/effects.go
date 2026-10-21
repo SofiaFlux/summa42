@@ -54,15 +54,25 @@ type CommentIntent struct {
 	Line       int64  `json:"line"`
 	Body       string `json:"body"`
 	Marker     string `json:"marker"`
+	// SourceCommit and TargetCommit pin the reviewed revision: Dispatch
+	// refuses to write when the PR's source commit has moved.
+	SourceCommit string `json:"sourceCommit"`
+	TargetCommit string `json:"targetCommit"`
 }
 
 // VoteIntent describes an approval vote. Only the approve vote (10) is
-// supported; anything else is rejected in CanonicalIntent.
+// supported; anything else is rejected in CanonicalIntent. SourceCommit and
+// TargetCommit pin the reviewed revision and ReviewerID is the service
+// principal's ADO reviewer id that LookupOutcome matches; all three are
+// required and part of the canonical intent (and so the approval digest).
 type VoteIntent struct {
-	Project    string `json:"project"`
-	Repository string `json:"repository"`
-	PR         int64  `json:"pr"`
-	Vote       int64  `json:"vote"`
+	Project      string `json:"project"`
+	Repository   string `json:"repository"`
+	PR           int64  `json:"pr"`
+	Vote         int64  `json:"vote"`
+	SourceCommit string `json:"sourceCommit"`
+	TargetCommit string `json:"targetCommit"`
+	ReviewerID   string `json:"reviewerId"`
 }
 
 // approveVote is the only vote value this package will ever cast.
@@ -180,9 +190,11 @@ func (p *CommentProvider) CanonicalIntent(descriptor operations.IntentDescriptor
 	intent.Path = strings.TrimSpace(intent.Path)
 	intent.Body = strings.TrimSpace(intent.Body)
 	intent.Marker = strings.TrimSpace(intent.Marker)
+	intent.SourceCommit = strings.TrimSpace(intent.SourceCommit)
+	intent.TargetCommit = strings.TrimSpace(intent.TargetCommit)
 	if intent.Project == "" || intent.Repository == "" || intent.PR <= 0 ||
-		intent.Body == "" || intent.Marker == "" {
-		return nil, errors.New("ADO comment intent requires project, repository, PR, body, and marker")
+		intent.Body == "" || intent.Marker == "" || intent.SourceCommit == "" || intent.TargetCommit == "" {
+		return nil, errors.New("ADO comment intent requires project, repository, PR, body, marker, and source and target commits")
 	}
 	return json.Marshal(intent)
 }
@@ -204,8 +216,12 @@ func (p *VoteProvider) CanonicalIntent(descriptor operations.IntentDescriptor) (
 	}
 	intent.Project = strings.TrimSpace(intent.Project)
 	intent.Repository = strings.TrimSpace(intent.Repository)
-	if intent.Project == "" || intent.Repository == "" || intent.PR <= 0 {
-		return nil, errors.New("ADO vote intent requires project, repository, and PR")
+	intent.SourceCommit = strings.TrimSpace(intent.SourceCommit)
+	intent.TargetCommit = strings.TrimSpace(intent.TargetCommit)
+	intent.ReviewerID = strings.TrimSpace(intent.ReviewerID)
+	if intent.Project == "" || intent.Repository == "" || intent.PR <= 0 ||
+		intent.SourceCommit == "" || intent.TargetCommit == "" || intent.ReviewerID == "" {
+		return nil, errors.New("ADO vote intent requires project, repository, PR, source and target commits, and reviewer id")
 	}
 	if intent.Vote != approveVote {
 		return nil, fmt.Errorf("ADO vote intent rejects vote %d: only the approve vote (%d) is supported", intent.Vote, approveVote)
@@ -247,17 +263,32 @@ func (p *CommentProvider) Dispatch(ctx context.Context, request operations.Provi
 	}
 	callCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	defer cancel()
+	if moved, err := sourceCommitMoved(callCtx, p.read, intent.Project, intent.Repository, intent.PR, intent.SourceCommit); err != nil {
+		return operations.ProviderOutcome{}, err
+	} else if moved {
+		return operations.ProviderOutcome{State: domain.OperationConfirmedNoEffect}, nil
+	}
 	call, err := p.dial(callCtx)
 	if err != nil {
 		return operations.ProviderOutcome{}, fmt.Errorf("connect ADO MCP: %w", err)
 	}
 	body := intent.Body + "\n" + intent.Marker
-	result, err := call(callCtx, "repo_pull_request_thread_write", map[string]any{
+	args := map[string]any{
 		"action": "create", "project": intent.Project, "repositoryId": intent.Repository,
 		"pullRequestId": intent.PR,
 		"content":       body,
 		"status":        "Active",
-	})
+	}
+	if intent.Path != "" {
+		threadContext := map[string]any{"filePath": "/" + strings.TrimPrefix(intent.Path, "/")}
+		if intent.Line > 0 {
+			position := map[string]any{"line": intent.Line, "offset": 1}
+			threadContext["rightFileStart"] = position
+			threadContext["rightFileEnd"] = position
+		}
+		args["threadContext"] = threadContext
+	}
+	result, err := call(callCtx, "repo_pull_request_thread_write", args)
 	if err != nil {
 		return operations.ProviderOutcome{}, err
 	}
@@ -280,17 +311,20 @@ func (p *VoteProvider) Dispatch(ctx context.Context, request operations.Provider
 	}
 	callCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	defer cancel()
+	// The check precedes the write, so a NoEffect here is truthful: nothing
+	// has been sent yet.
+	if moved, err := sourceCommitMoved(callCtx, p.read, intent.Project, intent.Repository, intent.PR, intent.SourceCommit); err != nil {
+		return operations.ProviderOutcome{}, err
+	} else if moved {
+		return operations.ProviderOutcome{State: domain.OperationConfirmedNoEffect}, nil
+	}
 	call, err := p.dial(callCtx)
 	if err != nil {
 		return operations.ProviderOutcome{}, fmt.Errorf("connect ADO MCP: %w", err)
 	}
-	voteValue, err := adoVoteEnum(intent.Vote)
-	if err != nil {
-		return operations.ProviderOutcome{}, err
-	}
 	result, err := call(callCtx, "repo_pull_request_write", map[string]any{
 		"action": "vote", "project": intent.Project, "repositoryId": intent.Repository,
-		"pullRequestId": intent.PR, "vote": voteValue,
+		"pullRequestId": intent.PR, "vote": adoApprovedVote,
 	})
 	if err != nil {
 		return operations.ProviderOutcome{}, err
@@ -328,9 +362,10 @@ func (p *CommentProvider) LookupOutcome(ctx context.Context, request operations.
 }
 
 // LookupOutcome reconciles an approval vote via the existing ado.pr.get
-// reviewers array: any reviewer carrying the intended vote confirms the
-// effect (server-identity-agnostic: the write executes as one identity),
-// otherwise unknown. A read error yields OUTCOME_UNKNOWN with nil error.
+// reviewers array: only the reviewer whose id equals the intent's ReviewerID
+// (the service principal) carrying the intended vote confirms the effect;
+// another reviewer's vote, or an absent identity, stays unknown. A read error
+// yields OUTCOME_UNKNOWN with nil error.
 func (p *VoteProvider) LookupOutcome(ctx context.Context, request operations.ProviderDispatchRequest) (operations.ProviderOutcome, error) {
 	intent, err := decodeVoteIntent(request.CanonicalIntent)
 	if err != nil {
@@ -340,33 +375,38 @@ func (p *VoteProvider) LookupOutcome(ctx context.Context, request operations.Pro
 	if err != nil {
 		return operations.ProviderOutcome{State: domain.OperationOutcomeUnknown}, nil
 	}
-	if reviewersContainVote(raw, intent.Vote) {
+	if reviewerHasVote(raw, intent.ReviewerID, intent.Vote) {
 		return operations.ProviderOutcome{State: domain.OperationConfirmedEffect, ProviderReference: voteReference(intent)}, nil
 	}
 	return operations.ProviderOutcome{State: domain.OperationOutcomeUnknown}, nil
 }
 
-// adoVoteEnum maps Azure DevOps' numeric vote codes to the string enum the
-// real repo_pull_request_write "vote" action requires (confirmed against
-// the live tool schema: Approved/ApprovedWithSuggestions/NoVote/
-// WaitingForAuthor/Rejected — never a raw integer). CanonicalIntent already
-// only accepts approveVote (10), so this always resolves to "Approved"
-// today; the full table is kept for when a future intent needs the others.
-func adoVoteEnum(vote int64) (string, error) {
-	switch vote {
-	case 10:
-		return "Approved", nil
-	case 5:
-		return "ApprovedWithSuggestions", nil
-	case 0:
-		return "NoVote", nil
-	case -5:
-		return "WaitingForAuthor", nil
-	case -10:
-		return "Rejected", nil
-	default:
-		return "", fmt.Errorf("ADO vote %d has no known enum mapping", vote)
+// adoApprovedVote is the string enum the real repo_pull_request_write "vote"
+// action requires for the only vote this package casts (approveVote, 10).
+const adoApprovedVote = "Approved"
+
+// sourceCommitMoved re-reads the PR and reports whether its current source
+// commit differs from the one the intent was reviewed and approved at. An
+// unreadable PR or one without a source commit is an error (fail closed).
+func sourceCommitMoved(ctx context.Context, read ReadFunc, project, repository string, pr int64, want string) (bool, error) {
+	raw, err := read(ctx, "ado.pr.get", map[string]any{"action": "get", "project": project, "repositoryId": repository, "pullRequestId": pr})
+	if err != nil {
+		return false, fmt.Errorf("re-read PR before write: %w", err)
 	}
+	payload, ok := raw.(map[string]any)
+	if !ok {
+		return false, errors.New("re-read PR before write: unexpected payload")
+	}
+	current, _ := payload["sourceCommit"].(string)
+	if current == "" {
+		if last, ok := payload["lastMergeSourceCommit"].(map[string]any); ok {
+			current, _ = last["commitId"].(string)
+		}
+	}
+	if current = strings.TrimSpace(current); current == "" {
+		return false, errors.New("re-read PR before write: no source commit in payload")
+	}
+	return current != want, nil
 }
 
 // commentReference unifies the ProviderReference for Dispatch and
@@ -441,11 +481,12 @@ func threadIdentity(thread map[string]any) string {
 	return ""
 }
 
-// reviewersContainVote reports whether any reviewer in a reviewers payload
-// ({"reviewers": [{"vote": N}]}) carries the intended vote.
-func reviewersContainVote(raw any, vote int64) bool {
+// reviewerHasVote reports whether the reviewer with the given id in a
+// reviewers payload ({"reviewers": [{"id": "...", "vote": N}]}) carries the
+// intended vote. Reviewers with other ids are ignored.
+func reviewerHasVote(raw any, reviewerID string, vote int64) bool {
 	payload, ok := raw.(map[string]any)
-	if !ok {
+	if !ok || reviewerID == "" {
 		return false
 	}
 	for _, reviewer := range anySlice(payload["reviewers"]) {
@@ -453,7 +494,7 @@ func reviewersContainVote(raw any, vote int64) bool {
 		if !ok {
 			continue
 		}
-		if voteEquals(reviewerMap["vote"], vote) {
+		if id, _ := reviewerMap["id"].(string); id == reviewerID && voteEquals(reviewerMap["vote"], vote) {
 			return true
 		}
 	}

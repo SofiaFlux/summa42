@@ -549,3 +549,23 @@ func TestPublishRejectsBadPayload(t *testing.T) {
 	}
 	assertPublishEvidence(t, result, `{"slot":"hold","recorded-only":true}`)
 }
+
+func TestApproveIntentCarriesCommitsAndReviewer(t *testing.T) {
+	payload := PublishPayload{CaseID: "case-1", WorkID: "work-1", Project: "proj", Repo: "shop", PR: 1, Revision: "srcsha:tgtsha", ReviewerID: "svc-1"}
+	intents, err := buildPublishIntents(payload, ReviewDecision{Action: DecisionApproveAction, Vote: "approve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vote, ok := intents[0].intent.(adoeffects.VoteIntent)
+	if !ok || vote.SourceCommit != "srcsha" || vote.TargetCommit != "tgtsha" || vote.ReviewerID != "svc-1" {
+		t.Fatalf("vote intent = %+v", intents[0].intent)
+	}
+	provider, err := adoeffects.NewVoteProvider(adoeffects.Config{Command: "/bin/true", Organization: "Contoso"}, func(context.Context, string, any) (any, error) { return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	vote.ReviewerID = ""
+	if _, err := provider.CanonicalIntent(vote); err == nil {
+		t.Fatal("vote intent without reviewer id was accepted")
+	}
+}

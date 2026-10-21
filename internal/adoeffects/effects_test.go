@@ -45,11 +45,11 @@ func (f *fakeDial) dial(context.Context) (callToolFunc, error) {
 
 func TestCommentIntentCanonicalStable(t *testing.T) {
 	p := &CommentProvider{}
-	a, err := p.CanonicalIntent(CommentIntent{Project: "proj", Repository: "shop", PR: 7, Path: "main.go", Line: 3, Body: "nit", Marker: "[summa42:c:w]"})
+	a, err := p.CanonicalIntent(CommentIntent{Project: "proj", Repository: "shop", PR: 7, Path: "main.go", Line: 3, Body: "nit", Marker: "[summa42:c:w]", SourceCommit: "src1", TargetCommit: "tgt1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := p.CanonicalIntent(CommentIntent{Project: "proj", Repository: "shop", PR: 7, Path: "main.go", Line: 3, Body: "nit", Marker: "[summa42:c:w]"})
+	b, err := p.CanonicalIntent(CommentIntent{Project: "proj", Repository: "shop", PR: 7, Path: "main.go", Line: 3, Body: "nit", Marker: "[summa42:c:w]", SourceCommit: "src1", TargetCommit: "tgt1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,14 +64,14 @@ func TestCommentIntentCanonicalStable(t *testing.T) {
 
 func TestProvidersRejectForeignIntents(t *testing.T) {
 	comment := &CommentProvider{}
-	if _, err := comment.CanonicalIntent(VoteIntent{PR: 1, Vote: 10}); err == nil {
+	if _, err := comment.CanonicalIntent(VoteIntent{PR: 1, Vote: 10, SourceCommit: "s", TargetCommit: "t", ReviewerID: "me"}); err == nil {
 		t.Fatal("comment provider accepted vote intent")
 	}
 	vote := &VoteProvider{}
 	if _, err := vote.CanonicalIntent(CommentIntent{Body: "x"}); err == nil {
 		t.Fatal("vote provider accepted comment intent")
 	}
-	if _, err := vote.CanonicalIntent(VoteIntent{PR: 1, Vote: -10}); err == nil {
+	if _, err := vote.CanonicalIntent(VoteIntent{Project: "p", Repository: "r", PR: 1, Vote: -10, SourceCommit: "s", TargetCommit: "t", ReviewerID: "me"}); err == nil {
 		t.Fatal("vote provider accepted rejection vote")
 	}
 	if vote.Capability() != "ado.pr.approve" || comment.Capability() != "ado.pr.comment" {
@@ -80,7 +80,7 @@ func TestProvidersRejectForeignIntents(t *testing.T) {
 }
 
 func stubRead(context.Context, string, any) (any, error) {
-	return nil, errors.New("no reads in dispatch test")
+	return map[string]any{"sourceCommit": "src1"}, nil
 }
 
 func TestDispatchCallsWriteTools(t *testing.T) {
@@ -90,7 +90,7 @@ func TestDispatchCallsWriteTools(t *testing.T) {
 		dial:   commentDial.dial,
 		read:   stubRead,
 	}
-	canonical, err := comment.CanonicalIntent(CommentIntent{Project: "proj", Repository: "shop", PR: 7, Path: "main.go", Line: 3, Body: "nit", Marker: "[summa42:c:w]"})
+	canonical, err := comment.CanonicalIntent(CommentIntent{Project: "proj", Repository: "shop", PR: 7, Path: "main.go", Line: 3, Body: "nit", Marker: "[summa42:c:w]", SourceCommit: "src1", TargetCommit: "tgt1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestDispatchCallsWriteTools(t *testing.T) {
 		dial:   voteDial.dial,
 		read:   stubRead,
 	}
-	voteCanonical, err := vote.CanonicalIntent(VoteIntent{Project: "proj", Repository: "shop", PR: 7, Vote: 10})
+	voteCanonical, err := vote.CanonicalIntent(VoteIntent{Project: "proj", Repository: "shop", PR: 7, Vote: 10, SourceCommit: "src1", TargetCommit: "tgt1", ReviewerID: "me"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func mustVoteProvider(t *testing.T, read ReadFunc) *VoteProvider {
 
 func TestCommentLookupFindsMarker(t *testing.T) {
 	marker := "[summa42:c:w]"
-	intent := CommentIntent{Project: "proj", Repository: "shop", PR: 7, Path: "main.go", Line: 3, Body: "nit", Marker: marker}
+	intent := CommentIntent{Project: "proj", Repository: "shop", PR: 7, Path: "main.go", Line: 3, Body: "nit", Marker: marker, SourceCommit: "src1", TargetCommit: "tgt1"}
 
 	found := mustCommentProvider(t, func(context.Context, string, any) (any, error) {
 		return threadsPayload("nit\n" + marker), nil
@@ -205,7 +205,7 @@ func TestCommentLookupFindsMarker(t *testing.T) {
 }
 
 func TestVoteLookupConfirmsMatchingVote(t *testing.T) {
-	intent := VoteIntent{Project: "proj", Repository: "shop", PR: 7, Vote: 10}
+	intent := VoteIntent{Project: "proj", Repository: "shop", PR: 7, Vote: 10, SourceCommit: "src1", TargetCommit: "tgt1", ReviewerID: "me"}
 	assertVoteRead := func(t *testing.T, capability string, request any) {
 		t.Helper()
 		if capability != "ado.pr.get" {
@@ -221,7 +221,7 @@ func TestVoteLookupConfirmsMatchingVote(t *testing.T) {
 	}
 	matching := mustVoteProvider(t, func(_ context.Context, capability string, request any) (any, error) {
 		assertVoteRead(t, capability, request)
-		return map[string]any{"reviewers": []any{map[string]any{"vote": float64(10)}}}, nil
+		return map[string]any{"sourceCommit": "src1", "reviewers": []any{map[string]any{"id": "me", "vote": float64(10)}}}, nil
 	})
 	canonical, err := matching.CanonicalIntent(intent)
 	if err != nil {
@@ -241,7 +241,7 @@ func TestVoteLookupConfirmsMatchingVote(t *testing.T) {
 
 	zero := mustVoteProvider(t, func(_ context.Context, capability string, request any) (any, error) {
 		assertVoteRead(t, capability, request)
-		return map[string]any{"reviewers": []any{map[string]any{"vote": float64(0)}}}, nil
+		return map[string]any{"reviewers": []any{map[string]any{"id": "me", "vote": float64(0)}}}, nil
 	})
 	outcome, err = zero.LookupOutcome(context.Background(), request)
 	if err != nil {
@@ -293,7 +293,9 @@ func TestCommentHarnessRoundTripWithSlotDedup(t *testing.T) {
 	marker := "[summa42:c:w]"
 	commentDial := &fakeDial{pages: []map[string]any{{"threadId": 42}}}
 	provider, err := NewCommentProvider(Config{Command: "/bin/true", Organization: "Contoso"}, func(context.Context, string, any) (any, error) {
-		return threadsPayload("nit\n" + marker), nil
+		payload := threadsPayload("nit\n" + marker)
+		payload["sourceCommit"] = "src1"
+		return payload, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -334,7 +336,7 @@ func TestCommentHarnessRoundTripWithSlotDedup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	intent := CommentIntent{Project: "proj", Repository: "shop", PR: 7, Path: "main.go", Line: 3, Body: "nit", Marker: marker}
+	intent := CommentIntent{Project: "proj", Repository: "shop", PR: 7, Path: "main.go", Line: 3, Body: "nit", Marker: marker, SourceCommit: "src1", TargetCommit: "tgt1"}
 	op, err := svc.Prepare(ctx, operations.PrepareRequest{
 		AttemptID:      attempt.ID,
 		Provider:       provider.Name(),
@@ -389,7 +391,7 @@ func TestVoteHarnessRoundTripWithSlotDedup(t *testing.T) {
 
 	voteDial := &fakeDial{pages: []map[string]any{{"id": "vote-1"}}}
 	provider, err := NewVoteProvider(Config{Command: "/bin/true", Organization: "Contoso"}, func(context.Context, string, any) (any, error) {
-		return map[string]any{"reviewers": []any{map[string]any{"vote": float64(10)}}}, nil
+		return map[string]any{"sourceCommit": "src1", "reviewers": []any{map[string]any{"id": "me", "vote": float64(10)}}}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -430,7 +432,7 @@ func TestVoteHarnessRoundTripWithSlotDedup(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	intent := VoteIntent{Project: "proj", Repository: "shop", PR: 7, Vote: 10}
+	intent := VoteIntent{Project: "proj", Repository: "shop", PR: 7, Vote: 10, SourceCommit: "src1", TargetCommit: "tgt1", ReviewerID: "me"}
 	op, err := svc.Prepare(ctx, operations.PrepareRequest{
 		AttemptID:      attempt.ID,
 		Provider:       provider.Name(),
@@ -471,5 +473,84 @@ func TestVoteHarnessRoundTripWithSlotDedup(t *testing.T) {
 	}
 	if len(voteDial.calls) != 1 {
 		t.Fatalf("dial calls = %d, want exactly 1 (slot dedup)", len(voteDial.calls))
+	}
+}
+
+func voteTestRequest(t *testing.T, p *VoteProvider, intent VoteIntent) operations.ProviderDispatchRequest {
+	t.Helper()
+	canonical, err := p.CanonicalIntent(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return operations.ProviderDispatchRequest{OperationID: "op-1", TaskID: "task-1", EffectSlotID: "slot-1",
+		IntentFingerprint: "fp", IntentRevision: 1, CanonicalIntent: canonical}
+}
+
+func TestVoteLookupIgnoresOtherReviewersApproval(t *testing.T) {
+	intent := VoteIntent{Project: "proj", Repository: "shop", PR: 7, Vote: 10, SourceCommit: "src1", TargetCommit: "tgt1", ReviewerID: "me"}
+	other := mustVoteProvider(t, func(context.Context, string, any) (any, error) {
+		return map[string]any{"reviewers": []any{
+			map[string]any{"id": "someone-else", "vote": float64(10)},
+			map[string]any{"id": "me", "vote": float64(0)},
+		}}, nil
+	})
+	outcome, err := other.LookupOutcome(context.Background(), voteTestRequest(t, other, intent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.State != domain.OperationOutcomeUnknown {
+		t.Fatalf("state = %q, want OUTCOME_UNKNOWN when only another reviewer approved", outcome.State)
+	}
+}
+
+func TestVoteDispatchRefusesMovedSourceCommit(t *testing.T) {
+	dial := &fakeDial{}
+	vote := mustVoteProvider(t, func(context.Context, string, any) (any, error) {
+		return map[string]any{"sourceCommit": "moved"}, nil
+	})
+	vote.dial = dial.dial
+	request := voteTestRequest(t, vote, VoteIntent{Project: "proj", Repository: "shop", PR: 7, Vote: 10, SourceCommit: "src1", TargetCommit: "tgt1", ReviewerID: "me"})
+	outcome, err := vote.Dispatch(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.State != domain.OperationConfirmedNoEffect || len(dial.calls) != 0 {
+		t.Fatalf("state = %q calls = %d, want CONFIRMED_NO_EFFECT with no write", outcome.State, len(dial.calls))
+	}
+}
+
+func TestVoteIntentRejectsOldShape(t *testing.T) {
+	vote := mustVoteProvider(t, stubRead)
+	old := []byte(`{"project":"proj","repository":"shop","pr":7,"vote":10}`)
+	request := operations.ProviderDispatchRequest{CanonicalIntent: old}
+	if _, err := vote.Dispatch(context.Background(), request); err == nil {
+		t.Fatal("dispatch accepted an old-shape vote intent")
+	}
+	if _, err := vote.LookupOutcome(context.Background(), request); err == nil {
+		t.Fatal("lookup accepted an old-shape vote intent")
+	}
+}
+
+func TestCommentSendsThreadContext(t *testing.T) {
+	dial := &fakeDial{pages: []map[string]any{{"threadId": 9}}}
+	comment := mustCommentProvider(t, stubRead)
+	comment.dial = dial.dial
+	canonical, err := comment.CanonicalIntent(CommentIntent{Project: "proj", Repository: "shop", PR: 7, Path: "main.go", Line: 3, Body: "nit", Marker: "[m]", SourceCommit: "src1", TargetCommit: "tgt1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := comment.Dispatch(context.Background(), operations.ProviderDispatchRequest{CanonicalIntent: canonical}); err != nil {
+		t.Fatal(err)
+	}
+	if len(dial.calls) != 1 {
+		t.Fatalf("calls = %d", len(dial.calls))
+	}
+	ctxArg, ok := dial.calls[0].args["threadContext"].(map[string]any)
+	if !ok || ctxArg["filePath"] != "/main.go" {
+		t.Fatalf("threadContext = %#v", dial.calls[0].args["threadContext"])
+	}
+	start, _ := ctxArg["rightFileStart"].(map[string]any)
+	if start["line"] != int64(3) {
+		t.Fatalf("rightFileStart = %#v", ctxArg["rightFileStart"])
 	}
 }

@@ -1258,6 +1258,7 @@ func parseDriverFlags(args []string) (adoreview.DriverConfig, time.Duration, err
 	flags.StringVar(&mission, "mission", "", "mission ID for driver cases")
 	flags.StringVar(&envelope, "envelope", "", "resource envelope ID for materialized publish tasks")
 	flags.StringVar(&cfg.Project, "project", "", "ADO project fallback for PR project resolution")
+	flags.StringVar(&cfg.ReviewerID, "reviewer", "", "service principal's ADO reviewer id, bound into approval votes")
 	flags.DurationVar(&pollInterval, "poll-interval", 30*time.Second, "interval between driver polls")
 	if err := flags.Parse(args); err != nil {
 		return adoreview.DriverConfig{}, 0, err
@@ -1274,6 +1275,7 @@ func parseDriverFlags(args []string) (adoreview.DriverConfig, time.Duration, err
 	cfg.MissionID = domain.ID(strings.TrimSpace(mission))
 	cfg.ResourceEnvelopeID = domain.ID(strings.TrimSpace(envelope))
 	cfg.Project = strings.TrimSpace(cfg.Project)
+	cfg.ReviewerID = strings.TrimSpace(cfg.ReviewerID)
 	return cfg, pollInterval, nil
 }
 
@@ -1343,6 +1345,7 @@ func runDriver(ctx context.Context, args []string) error {
 		Vote:               operationProviders[1],
 		Caller:             adoProvider,
 		Project:            driverCfg.Project,
+		ReviewerID:         driverCfg.ReviewerID,
 	})
 	if err != nil {
 		return fmt.Errorf("construct ADO workflow driver: %w", err)

@@ -35,6 +35,9 @@ type DriverConfig struct {
 	Vote               LookupProvider
 	Caller             PRCaller
 	Project            string
+	// ReviewerID is the service principal's ADO reviewer id, bound into vote
+	// intents. Empty makes approve decisions fail closed (held).
+	ReviewerID string
 }
 
 type DriverResult struct {
@@ -85,6 +88,7 @@ func NewDriver(cases *workflowcase.Service, executionSvc *execution.Service, evi
 	config.MissionID = domain.ID(strings.TrimSpace(string(config.MissionID)))
 	config.ResourceEnvelopeID = domain.ID(strings.TrimSpace(string(config.ResourceEnvelopeID)))
 	config.Project = strings.TrimSpace(config.Project)
+	config.ReviewerID = strings.TrimSpace(config.ReviewerID)
 	if config.MissionID == "" || config.ResourceEnvelopeID == "" {
 		return nil, errors.New("driver mission and resource envelope are required")
 	}
@@ -181,7 +185,7 @@ func (d *Driver) stepCase(ctx context.Context, c workflowcase.Case, result *Driv
 		}
 		publishPayload = PublishPayload{
 			Decision: string(assessment.decisionID), CaseID: string(c.ID), WorkID: string(c.CurrentWorkID),
-			Project: project, Repo: payload.Repo, PR: payload.PR, Revision: c.RevisionID,
+			Project: project, Repo: payload.Repo, PR: payload.PR, Revision: c.RevisionID, ReviewerID: d.config.ReviewerID,
 		}
 		payloadJSON, err := json.Marshal(publishPayload)
 		if err != nil {
