@@ -48,6 +48,13 @@ func newInspectOperationCommand(api control.API, jsonOutput *bool) *cobra.Comman
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(operation)
 			}
 			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Operation %s for Task %s: %s\n", operation.ID, operation.TaskID, operation.State)
+			if err != nil {
+				return err
+			}
+			if len(operation.CanonicalIntent) > 0 {
+				pretty, _ := json.MarshalIndent(operation.CanonicalIntent, "", "  ")
+				_, err = fmt.Fprintf(cmd.OutOrStdout(), "Provider: %s\nIntent: %s\n", operation.Provider, pretty)
+			}
 			return err
 		},
 	}

@@ -18,6 +18,7 @@ func newApprovalsCommand(api control.API, jsonOutput *bool) *cobra.Command {
 			for _,item:=range items{
 				if _,err=fmt.Fprintf(cmd.OutOrStdout(),"%s\t%s\t%s/%s\texpires %s\n",
 					item.ApprovalID,item.Status,item.SubjectKind,item.SubjectID,item.ExpiresAt.Format("2006-01-02T15:04:05Z07:00"));err!=nil{return err}
+				describeApproval(cmd.OutOrStdout(),item)
 			}
 			return nil
 		},

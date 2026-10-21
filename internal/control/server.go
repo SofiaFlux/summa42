@@ -102,6 +102,8 @@ type OperationDTO struct {
 	Provider          string                `json:"provider,omitempty"`
 	ProviderReference string                `json:"provider_reference,omitempty"`
 	ReservationID     domain.ID             `json:"reservation_id,omitempty"`
+	CanonicalIntent   json.RawMessage       `json:"canonical_intent,omitempty"`
+	Attributes        map[string]any        `json:"attributes,omitempty"`
 	CreatedAt         time.Time             `json:"created_at,omitempty"`
 	DispatchedAt      time.Time             `json:"dispatched_at,omitempty"`
 	SettledAt         time.Time             `json:"settled_at,omitempty"`
@@ -129,6 +131,12 @@ type ApprovalDTO struct {
 	ExpiresAt         time.Time            `json:"expires_at,omitempty"`
 	ApprovedBy        domain.ID            `json:"approved_by,omitempty"`
 	Status            string               `json:"status"`
+	// Provider, EffectSlotID, CanonicalIntent and Attributes describe the bound
+	// operation so the Owner sees what the signed digest covers.
+	Provider        string          `json:"provider,omitempty"`
+	EffectSlotID    domain.ID       `json:"effect_slot_id,omitempty"`
+	CanonicalIntent json.RawMessage `json:"canonical_intent,omitempty"`
+	Attributes      map[string]any  `json:"attributes,omitempty"`
 }
 
 type StatusProvider interface {
@@ -440,7 +448,7 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]ApprovalDTO, 0, len(records))
 	for _, record := range records {
-		result = append(result, approvalDTO(record))
+		result = append(result, s.approvalDTO(r.Context(), record))
 	}
 	writeJSON(w, http.StatusOK, result)
 }
@@ -455,7 +463,7 @@ func (s *Server) handleApprovalGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, approvalDTO(record))
+	writeJSON(w, http.StatusOK, s.approvalDTO(r.Context(), record))
 }
 
 func (s *Server) handleApprovalChallenge(w http.ResponseWriter, r *http.Request) {
@@ -562,7 +570,7 @@ func (s *Server) handleApprovalDecision(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, approvalDTO(record))
+	writeJSON(w, http.StatusOK, s.approvalDTO(r.Context(), record))
 }
 
 func (s *Server) handleAttempt(w http.ResponseWriter, r *http.Request) {
@@ -653,16 +661,24 @@ func operationDTO(operation domain.ExternalOperation) OperationDTO {
 		State: operation.State, IntentFingerprint: operation.IntentFingerprint, IntentRevision: operation.IntentRevision,
 		Provider: operation.Provider, ProviderReference: operation.ProviderReference, ReservationID: operation.ReservationID,
 		CreatedAt: operation.CreatedAt, DispatchedAt: operation.DispatchedAt, SettledAt: operation.SettledAt,
+		CanonicalIntent: json.RawMessage(operation.CanonicalIntent), Attributes: operation.Attributes,
 	}
 }
 
-func approvalDTO(record domain.ApprovalRequestRecord) ApprovalDTO {
-	return ApprovalDTO{
+func (s *Server) approvalDTO(ctx context.Context, record domain.ApprovalRequestRecord) ApprovalDTO {
+	dto := ApprovalDTO{
 		ApprovalID: record.ID, SubjectKind: record.SubjectKind, SubjectID: record.SubjectID,
 		RequestDigest: record.RequestDigest, RequiredApprovers: append([]domain.ID(nil), record.RequiredApprovers...),
 		RequestedBy: record.RequestedBy, State: record.State, ExpiresAt: record.ExpiresAt,
 		ApprovedBy: record.ApproverID, Status: string(record.State),
 	}
+	if record.SubjectKind == "EXTERNAL_OPERATION" {
+		if operation, err := s.deps.Operations.Operation(ctx, record.SubjectID); err == nil {
+			dto.Provider, dto.EffectSlotID = operation.Provider, operation.EffectSlotID
+			dto.CanonicalIntent, dto.Attributes = json.RawMessage(operation.CanonicalIntent), operation.Attributes
+		}
+	}
+	return dto
 }
 
 func approvalRequires(required []domain.ID, principal domain.ID) bool {

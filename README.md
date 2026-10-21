@@ -115,6 +115,12 @@ Bootstrap installs one active, persisted OPA policy profile. Its safe capability
 
 The local control API verifies Owner approval signatures with the public key stored in canonical state. Durable approval requests are persisted and exact-bound to their subject and digest. Multi-principal approvals use AND semantics, and current policy/authority is rechecked immediately before consequential dispatch.
 
+`summa42 approvals` and `summa42 approve` show the provider, effect slot, canonical intent and caller attributes that the signed digest covers. `approve` requires typing `yes` on a TTY; `--yes` is accepted only when stdin is not a TTY and `SUMMA42_APPROVE_NONINTERACTIVE=1`. Limits to know:
+
+- With `LOCAL_DEV_FILE` custody the Owner key and the control token live in `~/.summa42`, so approval is not a boundary against UNENFORCED executors running as the same OS user: such an executor can approve its own request.
+- Only the Owner can approve. Requests that require any other approver are unsupported, so the AND semantics can only ever be satisfied by the Owner's single signature.
+- An approval expires with its lease; a new lease needs a new approval, and a rejection is not sticky per slot.
+
 ## Enforcement levels
 
 Every execution path must describe what it can actually enforce:

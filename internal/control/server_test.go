@@ -573,3 +573,27 @@ func TestOwnerCannotChallengeApprovalThatDoesNotRequireOwner(t *testing.T) {
 		t.Fatalf("challenge status = %d, want 403", response.StatusCode)
 	}
 }
+
+func TestApprovalDTOIncludesCanonicalIntent(t *testing.T) {
+	server, _, _, _, _, operations, _ := newTestServer(t)
+	operations.operation.Provider = "github"
+	operations.operation.EffectSlotID = "slot-1"
+	operations.operation.CanonicalIntent = []byte(`{"branch":"fix/x"}`)
+	operations.operation.Attributes = map[string]any{"caller": "cube"}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	response := doRequest(t, http.MethodGet, httpServer.URL+"/approvals/approval-1", "control-secret", nil)
+	var approval ApprovalDTO
+	decodeJSON(t, response, &approval)
+	if approval.Provider != "github" || approval.EffectSlotID != "slot-1" ||
+		string(approval.CanonicalIntent) != `{"branch":"fix/x"}` || approval.Attributes["caller"] != "cube" {
+		t.Fatalf("approval DTO lacks bound intent: %+v", approval)
+	}
+	response = doRequest(t, http.MethodGet, httpServer.URL+"/inspect/operations/operation-1", "control-secret", nil)
+	var operation OperationDTO
+	decodeJSON(t, response, &operation)
+	if string(operation.CanonicalIntent) != `{"branch":"fix/x"}` || operation.Attributes["caller"] != "cube" {
+		t.Fatalf("operation DTO lacks intent: %+v", operation)
+	}
+}

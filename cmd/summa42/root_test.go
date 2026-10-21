@@ -199,7 +199,10 @@ func TestTaskCreateAndApproveCallControlAPI(t *testing.T) {
 	if _, err := identity.NewLocalEd25519(keyPath, "owner"); err != nil {
 		t.Fatal(err)
 	}
-	output = executeCommand(t, newRootCommandWithClient(api), "--json", "approve", "approval-1", "--owner-key", keyPath)
+	stdinIsTTY = func() bool { return false }
+	t.Cleanup(func() { stdinIsTTY = func() bool { return false } })
+	t.Setenv("SUMMA42_APPROVE_NONINTERACTIVE", "1")
+	output = executeCommand(t, newRootCommandWithClient(api), "--json", "approve", "approval-1", "--owner-key", keyPath, "--yes")
 	if api.approveCalls != 1 || !strings.Contains(output, `"status":"APPROVED"`) {
 		t.Fatalf("approve calls=%d output=%s", api.approveCalls, output)
 	}
@@ -240,4 +243,55 @@ func findCommand(t *testing.T, root *cobra.Command, path ...string) *cobra.Comma
 		t.Fatal(err)
 	}
 	return command
+}
+
+func approveWith(t *testing.T, api *fakeControlAPI, tty bool, stdin string, args ...string) (string, error) {
+	t.Helper()
+	keyPath := filepath.Join(t.TempDir(), "owner.pem")
+	if _, err := identity.NewLocalEd25519(keyPath, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	prev := stdinIsTTY
+	stdinIsTTY = func() bool { return tty }
+	t.Cleanup(func() { stdinIsTTY = prev })
+	root := newRootCommandWithClient(api)
+	var out, errOut bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&errOut)
+	root.SetIn(strings.NewReader(stdin))
+	root.SetArgs(append([]string{"approve", "approval-1", "--owner-key", keyPath}, args...))
+	err := root.Execute()
+	return errOut.String(), err
+}
+
+func TestApproveRequiresConfirmation(t *testing.T) {
+	api := &fakeControlAPI{}
+	if _, err := approveWith(t, api, true, "no\n"); err == nil || api.approveCalls != 0 {
+		t.Fatalf("unconfirmed approve: err=%v calls=%d", err, api.approveCalls)
+	}
+	shown, err := approveWith(t, api, true, "yes\n")
+	if err != nil || api.approveCalls != 1 {
+		t.Fatalf("confirmed approve: err=%v calls=%d", err, api.approveCalls)
+	}
+	if !strings.Contains(shown, "approval-1") {
+		t.Fatalf("approval not displayed: %s", shown)
+	}
+	if _, err := approveWith(t, api, true, "yes\n", "--yes"); err == nil || api.approveCalls != 1 {
+		t.Fatalf("--yes accepted on a TTY: err=%v calls=%d", err, api.approveCalls)
+	}
+}
+
+func TestApproveNonInteractiveNeedsExplicitEnv(t *testing.T) {
+	api := &fakeControlAPI{}
+	t.Setenv("SUMMA42_APPROVE_NONINTERACTIVE", "")
+	if _, err := approveWith(t, api, false, "", "--yes"); err == nil || api.approveCalls != 0 {
+		t.Fatalf("--yes without env: err=%v calls=%d", err, api.approveCalls)
+	}
+	if _, err := approveWith(t, api, false, ""); err == nil || api.approveCalls != 0 {
+		t.Fatalf("non-TTY without --yes: err=%v calls=%d", err, api.approveCalls)
+	}
+	t.Setenv("SUMMA42_APPROVE_NONINTERACTIVE", "1")
+	if _, err := approveWith(t, api, false, "", "--yes"); err != nil || api.approveCalls != 1 {
+		t.Fatalf("explicit non-interactive: err=%v calls=%d", err, api.approveCalls)
+	}
 }

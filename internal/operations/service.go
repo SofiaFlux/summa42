@@ -870,14 +870,15 @@ func loadOperationQuery(ctx context.Context, q operationQuery, operationID domai
 	var op domain.ExternalOperation
 	var createdAt string
 	var dispatched, settled sql.NullString
-	var providerReference string
+	var providerReference, canonical, attributes string
 	err := q.QueryRowContext(ctx, `
-		SELECT operation_id, task_id, attempt_id, effect_slot_id, state, intent_fingerprint, intent_revision,
-		       provider, COALESCE(provider_reference, ''), reservation_id, COALESCE(approval_id, ''),
-		       created_at, dispatched_at, settled_at
-		FROM external_operations WHERE operation_id = ?`, operationID,
+		SELECT o.operation_id, o.task_id, o.attempt_id, o.effect_slot_id, o.state, o.intent_fingerprint, o.intent_revision,
+		       o.provider, COALESCE(o.provider_reference, ''), o.reservation_id, COALESCE(o.approval_id, ''),
+		       o.created_at, o.dispatched_at, o.settled_at, s.canonical_intent_json, o.caller_attributes_json
+		FROM external_operations o JOIN effect_slots s ON s.effect_slot_id = o.effect_slot_id
+		WHERE o.operation_id = ?`, operationID,
 	).Scan(&op.ID, &op.TaskID, &op.AttemptID, &op.EffectSlotID, &op.State, &op.IntentFingerprint, &op.IntentRevision,
-		&op.Provider, &providerReference, &op.ReservationID, &op.ApprovalID, &createdAt, &dispatched, &settled)
+		&op.Provider, &providerReference, &op.ReservationID, &op.ApprovalID, &createdAt, &dispatched, &settled, &canonical, &attributes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ExternalOperation{}, fmt.Errorf("operation %q not found", operationID)
 	}
@@ -888,6 +889,10 @@ func loadOperationQuery(ctx context.Context, q operationQuery, operationID domai
 		return domain.ExternalOperation{}, fmt.Errorf("parse operation created_at: %w", err)
 	}
 	op.ProviderReference = providerReference
+	op.CanonicalIntent = []byte(canonical)
+	if op.Attributes, err = decodeCallerAttributes(attributes); err != nil {
+		return domain.ExternalOperation{}, fmt.Errorf("decode operation caller attributes: %w", err)
+	}
 	if dispatched.Valid {
 		if op.DispatchedAt, err = time.Parse(time.RFC3339Nano, dispatched.String); err != nil {
 			return domain.ExternalOperation{}, fmt.Errorf("parse operation dispatched_at: %w", err)

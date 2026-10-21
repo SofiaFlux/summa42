@@ -14,7 +14,10 @@ type ExternalOperation struct {
 	ProviderReference string
 	ReservationID     ID
 	ApprovalID        ID
-	CreatedAt         time.Time
-	DispatchedAt      time.Time
-	SettledAt         time.Time
+	// CanonicalIntent is the effect slot's canonical intent JSON; Attributes are the persisted caller policy attributes.
+	CanonicalIntent []byte
+	Attributes      map[string]any
+	CreatedAt       time.Time
+	DispatchedAt    time.Time
+	SettledAt       time.Time
 }
