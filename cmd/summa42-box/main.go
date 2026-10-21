@@ -724,7 +724,7 @@ func installTriageExecutor(registry map[string]executors.Executor, evidenceStore
 	if adapter == nil {
 		return false
 	}
-	registry[ghtriage.ExecutorKind] = ghtriage.NewExecutor(evidenceStore, adapter)
+	registry[ghtriage.ExecutorKind] = ghtriage.NewExecutor(evidenceStore, adapter).WithModelTimeout(adapter.Timeout())
 	return true
 }
 

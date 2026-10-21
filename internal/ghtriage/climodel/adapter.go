@@ -45,6 +45,9 @@ func New(config Config) (*Adapter, error) {
 	return &Adapter{binary: config.Binary, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist}, nil
 }
 
+// Timeout is the per-call model timeout.
+func (a *Adapter) Timeout() time.Duration { return a.timeout }
+
 func (a *Adapter) Classify(ctx context.Context, input ghtriage.Stage2Input) (ghtriage.Stage2Output, error) {
 	prompt, err := json.Marshal(input)
 	if err != nil {

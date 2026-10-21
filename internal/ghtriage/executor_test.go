@@ -468,3 +468,27 @@ func TestLoadSnapshotRejectsRevisionMismatch(t *testing.T) {
 		t.Fatalf("a snapshot of another revision was accepted: %v", err)
 	}
 }
+
+func TestStage2RetrySkippedWhenDeadlineTooClose(t *testing.T) {
+	exec, model, evidenceStore := newExecutorFixture(t)
+	exec.WithModelTimeout(time.Hour)
+	model.Scripted = []ghtriage.Stage2Output{
+		{Scope: "enormous", Rationale: "x"},
+		{IsActionable: true, Scope: ghtriage.ScopeSmall, Rationale: "enough detail",
+			SuggestedType: ghtriage.SuggestedTypeBug},
+	}
+	snap := ghtriage.Snapshot{
+		Repo: "o/r", Issue: 42, Title: "Crash", Body: "boom",
+		Triage: "bug", Labels: []string{"bug"}, UpdatedAt: "2026-09-28T10:00:00Z",
+	}
+	envelope := envelopeFor(t, putSnapshot(t, evidenceStore, snap))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	if _, err := exec.Start(ctx, envelope); err == nil {
+		t.Fatal("a retry that cannot fit before the deadline was attempted")
+	}
+	if len(model.ClassifyInputs) != 1 {
+		t.Fatalf("classifier calls = %d, want 1", len(model.ClassifyInputs))
+	}
+}

@@ -102,7 +102,7 @@ func (w *Worker) executeAttempt(ctx context.Context, executor executors.Executor
 		Workspace:          workspace, VisibleCapabilities: append([]string(nil), task.RequiredCapabilities...),
 		ResourceEnvelopeID: task.ResourceEnvelopeID,
 	}
-	execCtx, cancel := context.WithTimeout(ctx, w.scheduler.leaseDuration)
+	execCtx, cancel := context.WithTimeout(ctx, attemptBudget(ctx, w.scheduler.leaseDuration))
 	defer cancel()
 	outcome, execErr := w.runExecutor(execCtx, executor, envelope)
 	if execErr != nil || outcome.ExitCode != 0 {
@@ -241,4 +241,24 @@ func (w *Worker) stepGuarded(ctx context.Context, capacity CapacitySnapshot) err
 		return nil
 	}
 	return err
+}
+
+// attemptMargin keeps the executor's own deadline inside the lease and the
+// caller's deadline, so it fails the attempt itself instead of being killed.
+const attemptMargin = 10 * time.Second
+
+// attemptBudget is min(lease, time left on ctx) - attemptMargin.
+// ponytail: a budget at or under the margin is left whole, so a sub-margin
+// test lease is not born expired; production leases are minutes.
+func attemptBudget(ctx context.Context, lease time.Duration) time.Duration {
+	budget := lease
+	if deadline, ok := ctx.Deadline(); ok {
+		if left := time.Until(deadline); left < budget {
+			budget = left
+		}
+	}
+	if budget > attemptMargin {
+		budget -= attemptMargin
+	}
+	return budget
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
@@ -39,6 +40,16 @@ type triagePayload struct {
 type Executor struct {
 	evidence *evidence.Store
 	model    ClassifierModel
+	// modelTimeout is the classifier's per-call timeout; zero means unknown and
+	// leaves the retry unguarded.
+	modelTimeout time.Duration
+}
+
+// WithModelTimeout tells the executor how long one classifier call may take, so
+// the stage-2 retry can be skipped when the attempt deadline could not cover it.
+func (e *Executor) WithModelTimeout(d time.Duration) *Executor {
+	e.modelTimeout = d
+	return e
 }
 
 func NewExecutor(store *evidence.Store, model ClassifierModel) *Executor {
@@ -111,6 +122,13 @@ func (e *Executor) Start(ctx context.Context, envelope executors.AttemptEnvelope
 func (e *Executor) classify(ctx context.Context, input Stage2Input) (Stage2Output, error) {
 	var lastErr error
 	for attempt := 0; attempt < stage2Attempts; attempt++ {
+		if attempt > 0 && e.modelTimeout > 0 {
+			if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= e.modelTimeout {
+				return Stage2Output{}, fmt.Errorf(
+					"stage 2 retry skipped, %s left is not more than the %s model timeout: %w",
+					time.Until(deadline).Round(time.Second), e.modelTimeout, lastErr)
+			}
+		}
 		out, err := e.model.Classify(ctx, input)
 		if err == nil {
 			raw, marshalErr := json.Marshal(out)
