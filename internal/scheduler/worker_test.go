@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -921,7 +922,7 @@ func TestWorkerTickRecoversExpiredLease(t *testing.T) {
 	}
 }
 
-func TestWorkerSurfacesRecoveryError(t *testing.T) {
+func TestWorkerKeepsRunningAfterRecoveryError(t *testing.T) {
 	ctx := context.Background()
 	store := testutil.OpenStore(t)
 	clk := testutil.NewClock(time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC))
@@ -937,10 +938,24 @@ func TestWorkerSurfacesRecoveryError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	boom := errors.New("recovery boom")
-	worker.WithRecovery(func(context.Context) error { return boom })
-	err = worker.Run(ctx, scheduler.CapacitySnapshot{}, time.Millisecond)
-	if !errors.Is(err, boom) {
-		t.Fatalf("Run = %v, want the recovery error", err)
+	var calls atomic.Int32
+	worker.WithRecovery(func(context.Context) error { calls.Add(1); return errors.New("recovery boom") })
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(runCtx, scheduler.CapacitySnapshot{}, time.Millisecond) }()
+	deadline := time.After(10 * time.Second)
+	for calls.Load() < 3 {
+		select {
+		case err := <-done:
+			t.Fatalf("Run stopped after a recovery error: %v", err)
+		case <-deadline:
+			t.Fatal("recovery hook not called repeatedly")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v, want nil", err)
 	}
 }

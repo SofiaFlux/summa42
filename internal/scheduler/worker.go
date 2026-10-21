@@ -44,7 +44,7 @@ type Worker struct {
 }
 
 // WithRecovery makes Run call fn before every tick so expired leases and
-// unsettled operations are recovered continuously; its error stops Run.
+// unsettled operations are recovered continuously; its error is logged and the tick continues.
 func (w *Worker) WithRecovery(fn func(context.Context) error) *Worker {
 	w.recover = fn
 	return w
@@ -244,13 +244,12 @@ func (w *Worker) stepGuarded(ctx context.Context, capacity CapacitySnapshot) err
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
-	var err error
 	if w.recover != nil {
-		err = w.recover(ctx)
+		if rerr := w.recover(ctx); rerr != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "recovery failed (continuing): %v\n", rerr)
+		}
 	}
-	if err == nil {
-		_, err = w.StepOnce(ctx, capacity)
-	}
+	_, err := w.StepOnce(ctx, capacity)
 	if err != nil && ctx.Err() != nil {
 		return nil
 	}

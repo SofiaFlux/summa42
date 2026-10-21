@@ -499,6 +499,10 @@ func (s *Service) DispatchWithGuard(ctx context.Context, operationID, attemptID 
 	return s.SettleOutcome(ctx, operationID, outcome)
 }
 
+// ErrProviderNotRegistered means this process has no Provider for an operation,
+// so it can neither dispatch nor look it up.
+var ErrProviderNotRegistered = errors.New("operation provider is not registered")
+
 // settlementTimeout bounds post-dispatch bookkeeping, which must outlive the
 // caller's cancellation: the effect has already left the process.
 const settlementTimeout = 30 * time.Second
@@ -565,9 +569,16 @@ func (s *Service) reconcile(ctx context.Context, operationID domain.ID) (domain.
 	if err != nil {
 		return domain.ExternalOperation{}, err
 	}
-	switch op.State {
-	case domain.OperationConfirmedEffect, domain.OperationConfirmedNoEffect:
+	if op.State == domain.OperationConfirmedEffect || op.State == domain.OperationConfirmedNoEffect {
 		return op, nil
+	}
+	// Resolve the provider before mutating anything: a process without it must
+	// leave the operation exactly as it found it.
+	provider, err := s.providerFor(op.Provider)
+	if err != nil {
+		return op, err
+	}
+	switch op.State {
 	case domain.OperationCancelled:
 		return op, errors.New("cancelled operation has no outcome to reconcile")
 	case domain.OperationPrepared:
@@ -583,10 +594,6 @@ func (s *Service) reconcile(ctx context.Context, operationID domain.ID) (domain.
 		return op, fmt.Errorf("unsupported reconciliation state %s", op.State)
 	}
 
-	provider, err := s.providerFor(op.Provider)
-	if err != nil {
-		return op, err
-	}
 	request, err := s.providerRequest(ctx, operationID)
 	if err != nil {
 		return op, err
@@ -803,7 +810,7 @@ func (s *Service) validatePrepareRequest(request PrepareRequest) (Provider, erro
 func (s *Service) providerFor(name string) (Provider, error) {
 	provider := s.providers[strings.TrimSpace(name)]
 	if provider == nil {
-		return nil, fmt.Errorf("provider %q is not registered", name)
+		return nil, fmt.Errorf("%w: %q", ErrProviderNotRegistered, name)
 	}
 	return provider, nil
 }

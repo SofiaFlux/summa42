@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -843,15 +844,21 @@ func runWorker(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
+	var skippedLogged sync.Once
 	recoverBox := func(ctx context.Context) error {
 		report, err := box.Recover(ctx)
 		if report.ExpiredLeases > 0 || report.ReconciledOperations > 0 {
 			fmt.Fprintf(os.Stderr, "recovered %d expired task lease(s), reconciled %d operation(s)\n", report.ExpiredLeases, report.ReconciledOperations)
 		}
+		if report.SkippedOperations > 0 {
+			skippedLogged.Do(func() {
+				fmt.Fprintf(os.Stderr, "skipped %d pending operation(s): no provider in this process or dispatched too recently\n", report.SkippedOperations)
+			})
+		}
 		return err
 	}
 	if err := recoverBox(ctx); err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "startup recovery failed (continuing): %v\n", err)
 	}
 	if adoProvider != nil {
 		publisher, err := adoreview.NewPublisher(adoreview.PublishConfig{

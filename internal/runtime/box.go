@@ -84,6 +84,7 @@ type Box struct {
 	TEBProfile    teb.Profile
 	CollectiveID  domain.ID
 
+	leaseDuration time.Duration
 	shutdown     chan struct{}
 	shutdownOnce sync.Once
 	closeOnce    sync.Once
@@ -257,6 +258,7 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		TEBProfile:    cfg.TEBProfile,
 		CollectiveID:  cfg.CollectiveID,
 		shutdown:      make(chan struct{}),
+		leaseDuration: cfg.LeaseDuration,
 	}
 	closeStore = false
 	return box, nil
@@ -266,6 +268,9 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 type RecoveryReport struct {
 	ExpiredLeases        int
 	ReconciledOperations int
+	// SkippedOperations were left untouched: no provider here, or dispatched
+	// too recently to rule out a live dispatch in another process.
+	SkippedOperations int
 }
 
 // Recover expires stale leases and reconciles DISPATCHED / unresolved
@@ -280,7 +285,9 @@ func (b *Box) Recover(ctx context.Context) (RecoveryReport, error) {
 	if report.ExpiredLeases, err = b.Wake.RecoverExpiredLeases(ctx); err != nil {
 		return report, fmt.Errorf("recover expired leases: %w", err)
 	}
-	if report.ReconciledOperations, err = operations.NewReconciler(b.Operations).ReconcilePending(ctx); err != nil {
+	result, err := operations.NewReconciler(b.Operations).ReconcilePending(ctx, b.leaseDuration)
+	report.ReconciledOperations, report.SkippedOperations = result.Reconciled, result.Skipped
+	if err != nil {
 		return report, fmt.Errorf("reconcile pending operations: %w", err)
 	}
 	return report, nil

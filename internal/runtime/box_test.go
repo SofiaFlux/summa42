@@ -84,7 +84,7 @@ func TestBoxStartupReconcilesDispatchedOperation(t *testing.T) {
 		t.Fatalf("Dispatch = %v, want ErrOutcomeUnknown", err)
 	}
 	// Simulate a crash between the commit boundary and settlement.
-	if _, err := db.ExecContext(ctx, `UPDATE external_operations SET state = 'DISPATCHED', reconciliation_required = 0 WHERE operation_id = ?`, op.ID); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE external_operations SET state = 'DISPATCHED', reconciliation_required = 0, dispatched_at = ? WHERE operation_id = ?`, time.Now().Add(-24*time.Hour).UTC().Format(time.RFC3339Nano), op.ID); err != nil {
 		t.Fatal(err)
 	}
 
