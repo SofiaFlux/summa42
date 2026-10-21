@@ -99,12 +99,9 @@ func publishedFixture(t *testing.T) (*driverFixture, ghtriage.GroundingConfig, d
 	if err != nil || pubResult.Record == nil {
 		t.Fatalf("publish failed: %v", err)
 	}
-	// Publication now ends the case at READY_FOR_VERIFICATION, but the merge stack (deleted in
-	// Task 16) still requires an ACTIVE case: restore the pre-publication state for it.
-	nextWork, _ := json.Marshal(before.NextWork)
-	if _, err = f.store.DB().ExecContext(f.ctx, `UPDATE workflow_cases SET state='ACTIVE', current_work_id=?, next_work_json=? WHERE case_id=?`, before.CurrentWorkID, string(nextWork), id); err != nil {
-		t.Fatal(err)
-	}
+	// ponytail: Publication now ends the case at READY_FOR_VERIFICATION, but the merge stack still
+	// needs an ACTIVE case. Remove this reset when Task 16 deletes the merge stack.
+	restoreActive(t, f, id, before)
 	return f, cfg, id, ops, pubResult.Record
 }
 

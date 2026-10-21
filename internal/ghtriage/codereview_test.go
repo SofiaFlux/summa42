@@ -3,6 +3,7 @@ package ghtriage_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -121,16 +122,42 @@ func TestCodeReviewAcceptsOnlyPassingReviewedImplementation(t *testing.T) {
 	}
 }
 func TestCodeReviewFailedTestsCannotBeAccepted(t *testing.T) {
-	f, cfg, id, impl := implementedFixture(t, []string{"git", "diff", "--invalid-flag"})
+	f, cfg, id := readyImplementation(t, []string{"git", "diff", "--invalid-flag"})
+	before, _ := f.cases.Get(f.ctx, id)
+	impl, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &implementationModel{}).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	if err != nil || impl.Record == nil || impl.Record.AllPassed {
+		t.Fatalf("%+v %v", impl, err)
+	}
+	// The hold normally stops review; restore ACTIVE to test the accept guard itself.
+	restoreActive(t, f, id, before)
 	m := &codeReviewModel{verdict: "ACCEPT"}
 	got, err := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).Review(f.ctx, id, cfg.Source.LocalPath)
-	if err == nil || got.Accepted || m.calls.Load() != 0 {
+	if err != nil || got.Accepted {
 		t.Fatalf("%+v %v", got, err)
 	}
 	task, _ := f.execSvc.Task(f.ctx, impl.Record.TaskID)
 	if task.State != domain.TaskAwaitingVerification {
 		t.Fatal(task.State)
 	}
+}
+func TestCodeReviewReplayAfterCrashPerformsTheMove(t *testing.T) {
+	f, cfg, id, _ := implementedFixture(t)
+	before, _ := f.cases.Get(f.ctx, id)
+	m := &codeReviewModel{verdict: "REVISE"}
+	r := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m)
+	first, err := r.Review(f.ctx, id, cfg.Source.LocalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = r.Review(f.ctx, id, cfg.Source.LocalPath); !errors.Is(err, ghtriage.ErrCaseNotAtStage) {
+		t.Fatalf("want ErrCaseNotAtStage, got %v", err)
+	}
+	restoreActive(t, f, id, before)
+	replay, err := r.Review(f.ctx, id, cfg.Source.LocalPath)
+	if err != nil || !replay.Reused || replay.EvidenceID != first.EvidenceID || m.calls.Load() != 1 {
+		t.Fatalf("replay %+v %v calls=%d", replay, err, m.calls.Load())
+	}
+	assertAssessed(t, f, id, workflowcase.Blocked, "code-review:REVISE: independent assessment")
 }
 func TestCodeReviewReviseHoldsCase(t *testing.T) {
 	for _, verdict := range []string{"REVISE", "BLOCK"} {

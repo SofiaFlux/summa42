@@ -4,12 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/workflow"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
+
+// ErrCaseNotAtStage reports that the case is no longer ACTIVE on implementation work: it has
+// already moved past (held, or ready for verification) the stage the caller asked to run.
+var ErrCaseNotAtStage = errors.New("case is not at this stage")
+
+func atImplementationStage(c workflowcase.Case) bool {
+	return c.State == workflowcase.Active && c.NextWork.Kind == ImplementationWorkKind
+}
 
 func implementationAuthorized(c workflowcase.Case) bool {
 	if c.State != workflowcase.Active || c.Source != SourceGitHub || c.NextWork.Kind != ImplementationWorkKind {
@@ -25,6 +34,9 @@ func implementationAuthorized(c workflowcase.Case) bool {
 func (i *Implementer) loadInput(ctx context.Context, c workflowcase.Case) (ImplementationInput, domain.ID, domain.ID, domain.Task, error) {
 	fail := func(err error) (ImplementationInput, domain.ID, domain.ID, domain.Task, error) {
 		return ImplementationInput{}, "", "", domain.Task{}, err
+	}
+	if !atImplementationStage(c) {
+		return fail(fmt.Errorf("%w: case is %s", ErrCaseNotAtStage, c.State))
 	}
 	if !implementationAuthorized(c) {
 		return fail(errors.New("current work lacks implementation authority"))

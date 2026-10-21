@@ -84,6 +84,9 @@ func (p *Publisher) Publish(ctx context.Context, id domain.ID, source, baseBranc
 	if err != nil {
 		return PublicationResult{}, err
 	}
+	if !atImplementationStage(c) {
+		return PublicationResult{}, fmt.Errorf("%w: case is %s", ErrCaseNotAtStage, c.State)
+	}
 	if !publicationAuthorized(c) {
 		return PublicationResult{}, errors.New("current Case lacks explicit publication capabilities/actions")
 	}

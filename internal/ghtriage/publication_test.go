@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"github.com/SofiaFlux/summa42/internal/approvals"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghpublish"
@@ -356,5 +357,49 @@ func assertAssessed(t *testing.T, f *driverFixture, id domain.ID, state workflow
 	var result workflowcase.AssessmentResult
 	if err := json.Unmarshal([]byte(records[len(records)-1].ResultJSON), &result); err != nil || !strings.HasPrefix(result.Decision.Reason, reason) {
 		t.Fatalf("reason %q want prefix %q (%v)", result.Decision.Reason, reason, err)
+	}
+}
+
+// restoreActive puts a moved case back to ACTIVE with its pre-move work, simulating a crash after
+// the stage's record was saved but before the case move was committed. Assess commits the state
+// and its assessment row together, so the move's assessment row is removed as well.
+func restoreActive(t *testing.T, f *driverFixture, id domain.ID, before workflowcase.Case) {
+	t.Helper()
+	if _, err := f.store.DB().ExecContext(f.ctx, `DELETE FROM workflow_assessments WHERE case_id=? AND work_id=?`, id, before.CurrentWorkID); err != nil {
+		t.Fatal(err)
+	}
+	nextWork, _ := json.Marshal(before.NextWork)
+	if _, err := f.store.DB().ExecContext(f.ctx, `UPDATE workflow_cases SET state='ACTIVE', current_work_id=?, next_work_json=? WHERE case_id=?`, before.CurrentWorkID, string(nextWork), id); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestPublicationReplayAfterCrashPerformsTheMove(t *testing.T) {
+	f, cfg, id, _ := implementedFixture(t)
+	if r, err := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &codeReviewModel{verdict: "ACCEPT"}).Review(f.ctx, id, cfg.Source.LocalPath); err != nil || !r.Accepted {
+		t.Fatal(err)
+	}
+	grantPublication(t, f, id)
+	before, _ := f.cases.Get(f.ctx, id)
+	ops, b, p := publicationOps(t, f)
+	pub := ghtriage.NewPublisher(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, ops)
+	got, err := pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main")
+	if err != nil || got.Record == nil {
+		t.Fatalf("%+v %v", got, err)
+	}
+	// A repeat on the READY case reports that it is past the stage.
+	if _, err = pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main"); !errors.Is(err, ghtriage.ErrCaseNotAtStage) {
+		t.Fatalf("want ErrCaseNotAtStage, got %v", err)
+	}
+	restoreActive(t, f, id, before)
+	replay, err := pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main")
+	if err != nil || !replay.Reused || replay.EvidenceID != got.EvidenceID || b.writes != 1 || p.writes != 1 {
+		t.Fatalf("replay %+v %v writes=%d/%d", replay, err, b.writes, p.writes)
+	}
+	assertAssessed(t, f, id, workflowcase.ReadyForVerification, "published:"+got.Record.PRReference)
+	// Revoked authority is still checked on the replay path.
+	restoreActive(t, f, id, before)
+	f.store.DB().ExecContext(f.ctx, `UPDATE workflow_cases SET grant_json='{"Capabilities":[],"Actions":[]}' WHERE case_id=?`, id)
+	if _, err = pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main"); err == nil {
+		t.Fatal("revoked receipt replay")
 	}
 }
