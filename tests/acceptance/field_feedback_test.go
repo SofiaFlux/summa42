@@ -351,7 +351,11 @@ func (f *feedbackAcceptanceFixture) signedApprove(t *testing.T, approvalID domai
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 	client := control.NewClient(httpServer.URL, "acceptance-control-token", httpServer.Client())
-	approved, err := client.Approve(f.ctx, approvalID, f.owner)
+	pending, err := client.Approval(f.ctx, approvalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := client.Approve(f.ctx, approvalID, f.owner, pending.RequestDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

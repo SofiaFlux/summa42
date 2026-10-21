@@ -105,7 +105,9 @@ func newExperienceAcceptanceFixture(t *testing.T, withGrant bool) *experienceAcc
 
 func signedApproveExperience(t *testing.T, f *experienceAcceptanceFixture, approvalID domain.ID) {
 	t.Helper()
-	if _,err:=f.client.Approve(f.ctx,approvalID,f.owner);err!=nil{t.Fatal(err)}
+	pending,err:=f.client.Approval(f.ctx,approvalID)
+	if err!=nil{t.Fatal(err)}
+	if _,err:=f.client.Approve(f.ctx,approvalID,f.owner,pending.RequestDigest);err!=nil{t.Fatal(err)}
 }
 
 func (f *experienceAcceptanceFixture) verifiedSuccess(t *testing.T, name, executor string) domain.Task {
