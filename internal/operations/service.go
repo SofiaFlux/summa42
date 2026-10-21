@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -83,6 +84,14 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 		return domain.ExternalOperation{}, err
 	}
 	callerRequired := normalizeApprovalIDs(request.RequiredApprovals)
+	risk, err := effectiveRisk(provider, request.Risk)
+	if err != nil {
+		return domain.ExternalOperation{}, err
+	}
+	callerAttributes, callerAttributesJSON, err := normalizeCallerAttributes(request.Attributes)
+	if err != nil {
+		return domain.ExternalOperation{}, err
+	}
 	canonical, fingerprint, err := canonicalIntent(provider, request.Intent)
 	if err != nil {
 		return domain.ExternalOperation{}, err
@@ -102,9 +111,9 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 	now := s.clock.Now().UTC()
 	authorityValid := hasString(control.AuthorityCeiling, provider.Capability()) && enforcementSatisfies(provider.EnforcementLevel(), control.RequiredEnforcement)
 	decision, err := s.evaluatePolicy(ctx, policyContext{
-		Now: now, Risk: request.Risk, AuthorityValid: authorityValid,
+		Now: now, Risk: risk, AuthorityValid: authorityValid,
 		TaskID: control.TaskID, AttemptID: request.AttemptID, Provider: provider,
-		DescriptorType: request.Intent.DescriptorType(), Phase: "PREPARE", Attributes: request.Attributes,
+		DescriptorType: request.Intent.DescriptorType(), Phase: "PREPARE", CallerAttributes: callerAttributes,
 	})
 	if err != nil {
 		return domain.ExternalOperation{}, err
@@ -164,7 +173,11 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 				result = latest
 				return nil
 			case domain.OperationPrepared:
-				if latest.AttemptID == request.AttemptID {
+				_, storedAttributes, attrErr := preparedPolicyInput(ctx, tx, latest.ID)
+				if attrErr != nil {
+					return attrErr
+				}
+				if latest.AttemptID == request.AttemptID && reflect.DeepEqual(storedAttributes, callerAttributes) {
 					matches, matchErr := s.preparedApprovalMatchesInTx(
 						ctx, tx, latest, decision, callerRequired, provider,
 						request.Intent.DescriptorType(), canonical,
@@ -223,12 +236,12 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 				operation_id, task_id, attempt_id, effect_slot_id, operation_sequence, state,
 				intent_fingerprint, intent_revision, provider, adapter_version, reservation_id, risk,
 				prepare_policy_decision_id, prepare_policy_set_id, prepare_policy_set_hash,
-				prepare_policy_capabilities_hash, approval_id, caller_required_approvers_json, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				prepare_policy_capabilities_hash, approval_id, caller_required_approvers_json, caller_attributes_json, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			result.ID, result.TaskID, result.AttemptID, result.EffectSlotID, sequence, result.State,
 			result.IntentFingerprint, result.IntentRevision, result.Provider, provider.AdapterVersion(), result.ReservationID,
-			strings.TrimSpace(request.Risk), decision.ID, decision.PolicySetID, decision.PolicySetHash,
-			decision.PolicyCapabilitiesHash, approvalValue, callerJSON, formatTime(now),
+			risk, decision.ID, decision.PolicySetID, decision.PolicySetHash,
+			decision.PolicyCapabilitiesHash, approvalValue, callerJSON, callerAttributesJSON, formatTime(now),
 		)
 		if err != nil {
 			return err
@@ -356,14 +369,20 @@ func (s *Service) DispatchWithGuard(ctx context.Context, operationID, attemptID 
 	if err != nil {
 		return op, err
 	}
-	risk, err := controlRisk(ctx, s.store.DB(), operationID)
+	preparedRisk, callerAttributes, err := preparedPolicyInput(ctx, s.store.DB(), operationID)
+	if err != nil {
+		return op, err
+	}
+	// Operations prepared before providers declared a floor carry the caller's
+	// risk; re-applying the floor keeps them from dispatching under it.
+	risk, err := effectiveRisk(provider, preparedRisk)
 	if err != nil {
 		return op, err
 	}
 	decision, evalErr := s.evaluatePolicy(ctx, policyContext{
 		Now: now, Risk: risk, AuthorityValid: authorityValid,
 		TaskID: op.TaskID, AttemptID: attemptID, Provider: provider,
-		DescriptorType: descriptorType, Phase: "DISPATCH",
+		DescriptorType: descriptorType, Phase: "DISPATCH", CallerAttributes: callerAttributes,
 	})
 	if evalErr != nil {
 		return op, evalErr
@@ -744,7 +763,9 @@ type policyContext struct {
 	Provider       Provider
 	DescriptorType string
 	Phase          string
-	Attributes     map[string]any
+	// CallerAttributes are untrusted caller assertions, exposed to the policy
+	// only as input.attributes.caller.
+	CallerAttributes map[string]any
 }
 
 func (s *Service) evaluatePolicy(ctx context.Context, pc policyContext) (domain.PolicyDecision, error) {
@@ -752,12 +773,15 @@ func (s *Service) evaluatePolicy(ctx context.Context, pc policyContext) (domain.
 		"task_id": pc.TaskID, "attempt_id": pc.AttemptID, "provider": pc.Provider.Name(),
 		"capability": pc.Provider.Capability(), "enforcement": pc.Provider.EnforcementLevel(),
 		"descriptor_type": pc.DescriptorType, "phase": pc.Phase,
+		"caller": pc.CallerAttributes,
 	}
-	for key, value := range pc.Attributes {
-		attrs[key] = value
+	owner, err := s.ownerPrincipalID(ctx)
+	if err != nil {
+		return domain.PolicyDecision{}, err
 	}
 	decision, err := s.policy.Evaluate(ctx, policy.PolicyInput{
-		Risk: strings.TrimSpace(pc.Risk), AuthorityValid: pc.AuthorityValid, Now: pc.Now, Attributes: attrs,
+		Risk: strings.TrimSpace(pc.Risk), AuthorityValid: pc.AuthorityValid, OwnerPrincipalID: owner,
+		Now: pc.Now, Attributes: attrs,
 	})
 	if err != nil {
 		return domain.PolicyDecision{}, fmt.Errorf("policy evaluation: %w", err)
@@ -910,12 +934,89 @@ func appendOperationEvent(ctx context.Context, tx *sql.Tx, taskID, attemptID dom
 	return err
 }
 
-func controlRisk(ctx context.Context, q operationQuery, operationID domain.ID) (string, error) {
-	var risk string
-	if err := q.QueryRowContext(ctx, `SELECT risk FROM external_operations WHERE operation_id = ?`, operationID).Scan(&risk); err != nil {
-		return "", fmt.Errorf("load operation risk for %q: %w", operationID, err)
+// preparedPolicyInput returns the effective risk and caller attributes the
+// operation was prepared with, so DISPATCH evaluates the same input as PREPARE.
+func preparedPolicyInput(ctx context.Context, q operationQuery, operationID domain.ID) (string, map[string]any, error) {
+	var risk, rawAttributes string
+	if err := q.QueryRowContext(ctx,
+		`SELECT risk, caller_attributes_json FROM external_operations WHERE operation_id = ?`, operationID,
+	).Scan(&risk, &rawAttributes); err != nil {
+		return "", nil, fmt.Errorf("load operation policy input for %q: %w", operationID, err)
 	}
-	return risk, nil
+	attributes, err := decodeCallerAttributes(rawAttributes)
+	if err != nil {
+		return "", nil, fmt.Errorf("decode caller attributes for %q: %w", operationID, err)
+	}
+	return risk, attributes, nil
+}
+
+// normalizeCallerAttributes round-trips caller attributes through their
+// persisted JSON form, so PREPARE sees exactly what DISPATCH will replay.
+func normalizeCallerAttributes(attributes map[string]any) (map[string]any, string, error) {
+	if attributes == nil {
+		attributes = map[string]any{}
+	}
+	encoded, err := json.Marshal(attributes)
+	if err != nil {
+		return nil, "", fmt.Errorf("encode caller attributes: %w", err)
+	}
+	decoded, err := decodeCallerAttributes(string(encoded))
+	if err != nil {
+		return nil, "", err
+	}
+	return decoded, string(encoded), nil
+}
+
+func decodeCallerAttributes(raw string) (map[string]any, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	var attributes map[string]any
+	if err := decoder.Decode(&attributes); err != nil {
+		return nil, err
+	}
+	if attributes == nil {
+		attributes = map[string]any{}
+	}
+	return attributes, nil
+}
+
+var riskRank = map[string]int{"LOW": 1, "MEDIUM": 2, "HIGH": 3}
+
+// effectiveRisk is max(provider floor, caller hint). An empty caller hint
+// takes the provider floor; an unknown class on either side is refused.
+func effectiveRisk(provider Provider, callerRisk string) (string, error) {
+	floor := provider.MinimumRisk()
+	if riskRank[floor] == 0 {
+		return "", fmt.Errorf("provider %s declares unknown minimum risk %q", provider.Name(), floor)
+	}
+	callerRisk = strings.TrimSpace(callerRisk)
+	if callerRisk == "" {
+		return floor, nil
+	}
+	if riskRank[callerRisk] == 0 {
+		return "", fmt.Errorf("unknown risk class %q", callerRisk)
+	}
+	if riskRank[callerRisk] > riskRank[floor] {
+		return callerRisk, nil
+	}
+	return floor, nil
+}
+
+// ownerPrincipalID is the Collective Owner from canonical state. A store with
+// no collective metadata yields an empty owner, which no shipped policy names
+// as an approver.
+func (s *Service) ownerPrincipalID(ctx context.Context) (domain.ID, error) {
+	var owner domain.ID
+	err := s.store.DB().QueryRowContext(ctx,
+		`SELECT owner_principal_id FROM collective_metadata WHERE collective_id = ?`, s.collectiveID,
+	).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("load Collective owner: %w", err)
+	}
+	return owner, nil
 }
 
 func controlDescriptorType(ctx context.Context, q operationQuery, slotID domain.ID) (string, error) {

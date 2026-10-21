@@ -12,7 +12,7 @@ import (
 func TestDispatchPolicyLookupsFailWhenRecordsAreMissing(t *testing.T) {
 	store := testutil.OpenStore(t)
 	ctx := context.Background()
-	if _, err := controlRisk(ctx, store.DB(), "missing-operation"); !errors.Is(err, sql.ErrNoRows) {
+	if _, _, err := preparedPolicyInput(ctx, store.DB(), "missing-operation"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("risk lookup error = %v, want sql.ErrNoRows", err)
 	}
 	if _, err := controlDescriptorType(ctx, store.DB(), "missing-slot"); !errors.Is(err, sql.ErrNoRows) {

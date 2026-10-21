@@ -54,4 +54,8 @@ type Provider interface {
 	// distrusted and the operation stays OUTCOME_UNKNOWN. Zero means the
 	// provider can prove absence.
 	SettleWindow() time.Duration
+	// MinimumRisk is the provider's risk class floor: LOW, MEDIUM or HIGH. The
+	// policy sees max(MinimumRisk, PrepareRequest.Risk), so a caller can raise
+	// the risk of an effect but never lower it.
+	MinimumRisk() string
 }

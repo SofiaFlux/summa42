@@ -24,11 +24,13 @@ type mutablePolicy struct {
 	hash              string
 	requiredApprovals []domain.ID
 	limits            map[string]any
+	inputs            []policy.PolicyInput
 }
 
 func (p *mutablePolicy) Evaluate(_ context.Context, in policy.PolicyInput) (domain.PolicyDecision, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.inputs = append(p.inputs, in)
 	return domain.PolicyDecision{
 		ID:                     domain.NewID("decision"),
 		Outcome:                p.outcome,

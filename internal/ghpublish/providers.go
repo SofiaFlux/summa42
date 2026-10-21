@@ -175,6 +175,10 @@ func (*PRProvider) AdapterVersionSemanticallyRelevant() bool      { return true 
 func (*BranchProvider) SettleWindow() time.Duration { return settleWindow }
 func (*PRProvider) SettleWindow() time.Duration     { return settleWindow }
 
+// Publishing a branch or opening a PR is visible on the upstream repository.
+func (*BranchProvider) MinimumRisk() string { return "MEDIUM" }
+func (*PRProvider) MinimumRisk() string     { return "MEDIUM" }
+
 const settleWindow = 10 * time.Minute
 func (p *BranchProvider) validate(v BranchIntent) error {
 	if v.Repository != p.c.repo || !validRef(v.BaseBranch) || !managedHead.MatchString(v.HeadBranch) || v.BaseBranch == v.HeadBranch {

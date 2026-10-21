@@ -73,6 +73,9 @@ func (p *Provider) AdapterVersionSemanticallyRelevant() bool { return false }
 // not prove a delayed issue-create cannot still land.
 func (p *Provider) SettleWindow() time.Duration { return providerSettleWindow }
 
+// MinimumRisk: a feedback issue carries only redacted, Owner-configured content.
+func (p *Provider) MinimumRisk() string { return "LOW" }
+
 const providerSettleWindow = 10 * time.Minute
 
 func (p *Provider) CanonicalIntent(descriptor operations.IntentDescriptor) ([]byte, error) {

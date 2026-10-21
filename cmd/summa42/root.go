@@ -28,6 +28,7 @@ func newRootCommandWithClient(api control.API) *cobra.Command {
 	command.PersistentFlags().BoolVar(&jsonOutput, "json", false, "emit stable JSON DTO output")
 	command.AddCommand(
 		NewInitCommand(),
+		newPolicyCommand(),
 		newStatusCommand(api, &jsonOutput),
 		newMissionCommand(api, &jsonOutput),
 		newTaskCommand(api, &jsonOutput),

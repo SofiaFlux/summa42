@@ -24,6 +24,7 @@ type fakeProvider struct {
 	onDispatch          func()
 	lookupNoEffect      bool
 	settleWindow        time.Duration
+	minimumRisk         string
 }
 
 func newFakeProvider(name string) *fakeProvider {
@@ -36,6 +37,12 @@ func (p *fakeProvider) EnforcementLevel() domain.EnforcementLevel { return domai
 func (p *fakeProvider) AdapterVersion() string                    { return "fake-v1" }
 func (p *fakeProvider) AdapterVersionSemanticallyRelevant() bool  { return false }
 func (p *fakeProvider) SettleWindow() time.Duration              { return p.settleWindow }
+func (p *fakeProvider) MinimumRisk() string {
+	if p.minimumRisk == "" {
+		return "LOW"
+	}
+	return p.minimumRisk
+}
 
 func (p *fakeProvider) CanonicalIntent(descriptor operations.IntentDescriptor) ([]byte, error) {
 	intent, ok := descriptor.(testutil.PurchaseIntent)

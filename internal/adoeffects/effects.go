@@ -154,6 +154,10 @@ func (p *VoteProvider) AdapterVersionSemanticallyRelevant() bool { return false 
 func (p *CommentProvider) SettleWindow() time.Duration { return settleWindow }
 func (p *VoteProvider) SettleWindow() time.Duration    { return settleWindow }
 
+// A comment is reversible discussion; a vote changes the PR's review state.
+func (p *CommentProvider) MinimumRisk() string { return "LOW" }
+func (p *VoteProvider) MinimumRisk() string    { return "MEDIUM" }
+
 const settleWindow = 10 * time.Minute
 
 // CanonicalIntent accepts CommentIntent by value or pointer, trims and

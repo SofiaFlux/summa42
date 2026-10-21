@@ -72,6 +72,7 @@ func (p *fakeOperationProvider) EnforcementLevel() domain.EnforcementLevel { ret
 func (p *fakeOperationProvider) AdapterVersion() string { return "acceptance-v1" }
 func (p *fakeOperationProvider) AdapterVersionSemanticallyRelevant() bool { return false }
 func (p *fakeOperationProvider) SettleWindow() time.Duration              { return 0 }
+func (p *fakeOperationProvider) MinimumRisk() string                      { return "LOW" }
 
 func (p *fakeOperationProvider) CanonicalIntent(descriptor operations.IntentDescriptor) ([]byte, error) {
 	intent, ok := descriptor.(testutil.PurchaseIntent)
