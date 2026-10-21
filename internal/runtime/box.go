@@ -47,7 +47,6 @@ type Config struct {
 	PolicyEngine        policy.PolicyEngine
 	OperationProviders  []operations.Provider
 	CapabilityProviders []capabilities.Provider
-	CapabilitySources   []capabilities.DiscoverySource
 	Executors           map[string]executors.Executor
 	ExecutorPreference  scheduler.ExecutorPreference
 	TaskClassRouting    map[string]string
@@ -73,7 +72,6 @@ type Box struct {
 	Experience          *experience.Service
 	Operations          *operations.Service
 	Capabilities        *capabilities.Registry
-	CapabilityDiscovery *capabilities.DiscoveryEngine
 	Scheduler     *scheduler.Service
 	Wake          *wake.Service
 	Memory        *memory.Service
@@ -177,7 +175,6 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	}
 	operationsSvc := operations.New(store, cfg.Clock, executionSvc, cfg.PolicyEngine, resourceSvc, approvalSvc, cfg.CollectiveID, operationProviders...)
 	capabilityRegistry := capabilities.NewRegistry(store, cfg.Clock, executionSvc, cfg.CapabilityProviders...)
-	capabilityDiscovery := capabilities.NewDiscoveryEngine(store, cfg.Clock, capabilityRegistry, approvalSvc, cfg.OwnerPrincipalID, cfg.CapabilitySources...)
 	var schedulerSvc *scheduler.Service
 	var wakeSvc *wake.Service
 	memorySvc := memory.New(store, cfg.Clock)
@@ -247,7 +244,6 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		Experience:    experienceSvc,
 		Operations:          operationsSvc,
 		Capabilities:        capabilityRegistry,
-		CapabilityDiscovery: capabilityDiscovery,
 		Scheduler:           schedulerSvc,
 		Wake:          wakeSvc,
 		Memory:        memorySvc,

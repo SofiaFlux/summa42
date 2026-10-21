@@ -183,29 +183,6 @@ func (s *Service) Reject(ctx context.Context, id, approver domain.ID, requestDig
 	return s.decide(ctx, id, approver, requestDigest, "REJECT")
 }
 
-func (s *Service) IsApproved(ctx context.Context, id domain.ID, requestDigest string) (bool, error) {
-	record, err := s.Get(ctx, id)
-	if err != nil {
-		return false, err
-	}
-	if !sameDigest(record.RequestDigest, requestDigest) {
-		return false, nil
-	}
-	if !record.ExpiresAt.After(s.clock.Now().UTC()) {
-		return false, nil
-	}
-	return record.State == domain.ApprovalApproved, nil
-}
-
-func (s *Service) Consume(ctx context.Context, id domain.ID, requestDigest string) error {
-	if err := s.configured(); err != nil {
-		return err
-	}
-	return s.store.WithTx(ctx, func(tx *sql.Tx) error {
-		return s.ConsumeInTx(ctx, tx, id, requestDigest)
-	})
-}
-
 func (s *Service) ConsumeInTx(ctx context.Context, tx *sql.Tx, id domain.ID, requestDigest string) error {
 	if err := s.configured(); err != nil {
 		return err

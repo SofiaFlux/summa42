@@ -69,16 +69,9 @@ func TestApprovalIsBoundToExactDigestAndRequiredApprover(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ok, err := svc.IsApproved(ctx, record.ID, "digest-a")
-	if err != nil || !ok {
-		t.Fatalf("exact approved digest ok=%v err=%v", ok, err)
-	}
-	ok, err = svc.IsApproved(ctx, record.ID, "digest-b")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok {
-		t.Fatal("different digest reported approved")
+	got, err := svc.Get(ctx, record.ID)
+	if err != nil || got.State != domain.ApprovalApproved {
+		t.Fatalf("exact approved digest state=%s err=%v", got.State, err)
 	}
 }
 
@@ -108,34 +101,6 @@ func TestExpiredAndRejectedApprovalsFailClosed(t *testing.T) {
 	}
 	if err := svc.Approve(ctx, rejected.ID, owner, "grant-digest"); err == nil {
 		t.Fatal("rejected request became approved")
-	}
-}
-
-func TestConsumeIsExactAndTerminal(t *testing.T) {
-	svc, clk, owner := newHarness(t)
-	ctx := context.Background()
-	record, err := svc.Create(ctx, request(owner, "dispatch-digest", clk.Now().Add(time.Hour)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.Approve(ctx, record.ID, owner, "dispatch-digest"); err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.Consume(ctx, record.ID, "other-digest"); err == nil {
-		t.Fatal("consume accepted mismatched digest")
-	}
-	if err := svc.Consume(ctx, record.ID, "dispatch-digest"); err != nil {
-		t.Fatal(err)
-	}
-	ok, err := svc.IsApproved(ctx, record.ID, "dispatch-digest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok {
-		t.Fatal("consumed approval still reported active")
-	}
-	if err := svc.Consume(ctx, record.ID, "dispatch-digest"); err == nil {
-		t.Fatal("consumed approval was consumed twice")
 	}
 }
 
@@ -179,13 +144,6 @@ func TestAllRequiredApproversMustApprove(t *testing.T) {
 	if err := svc.Approve(ctx, record.ID, owner, "multi-digest"); err != nil {
 		t.Fatal(err)
 	}
-	ok, err := svc.IsApproved(ctx, record.ID, "multi-digest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ok {
-		t.Fatal("one of two required approvers made request APPROVED")
-	}
 	partial, err := svc.Get(ctx, record.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -196,10 +154,6 @@ func TestAllRequiredApproversMustApprove(t *testing.T) {
 
 	if err := svc.Approve(ctx, record.ID, security, "multi-digest"); err != nil {
 		t.Fatal(err)
-	}
-	ok, err = svc.IsApproved(ctx, record.ID, "multi-digest")
-	if err != nil || !ok {
-		t.Fatalf("all required approvers completed ok=%v err=%v", ok, err)
 	}
 	complete, err := svc.Get(ctx, record.ID)
 	if err != nil {

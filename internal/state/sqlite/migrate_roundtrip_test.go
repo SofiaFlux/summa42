@@ -502,3 +502,58 @@ func TestMigration00021RollsBackNonPreferenceRulesAndEnforcesKind(t *testing.T) 
 		t.Fatalf("kind triggers after down: %d err=%v", n, err)
 	}
 }
+
+func TestMigrationsApplyOverLegacyRows(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "legacy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB().Close()
+	db := store.DB() // single pooled connection: PRAGMA below applies to every statement
+	migrations, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations, goose.WithTableName("schema_migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, 19); err != nil {
+		t.Fatalf("down to v19: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	// Legacy shapes written by the retired Python reconciler in production.
+	const ts = "2026-09-24T10:00:00Z"
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO workflow_cases(case_id,mission_id,source,object_id,revision_id,observation_evidence_id,
+			initial_request_json,grant_json,state,current_work_id,next_work_json,completed_steps,max_steps,
+			remaining_budget,progress_signature,created_at,updated_at)
+		VALUES ('case-legacy','m','ado','i','r','o','{}','{"priority": 1000}','ACTIVE','w','{}',0,3,2,'p',?,?)`, ts, ts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO experience_outcomes(outcome_id,task_id,generic_task_class,scope_key,executor_kind,accepted,
+			human_intervention,retry_count,recorded_at)
+		VALUES ('outcome-legacy','t','REVIEW','s','codex',1,0,0,'2026-10-19 14:41:15')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE issue_hierarchy (id TEXT PRIMARY KEY, parent_id TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("migrate legacy DB to head: %v", err)
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE name IN ('capability_acquisition_proposals','idx_capability_acquisitions_semantic_state')`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("capability acquisition objects after head: %d err=%v", n, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM workflow_cases WHERE grant_json='{"priority": 1000}'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("legacy workflow case lost: %d err=%v", n, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE name='issue_hierarchy'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("issue_hierarchy must be left alone: %d err=%v", n, err)
+	}
+}

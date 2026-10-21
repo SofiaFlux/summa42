@@ -104,37 +104,6 @@ func NewRegistry(store *state.Store, clk clock.Clock, executionSvc *execution.Se
 	return &Registry{store: store, clock: clk, execution: executionSvc, providers: registered}
 }
 
-func (r *Registry) RegisterProvider(provider Provider) error {
-	if err := r.configured(); err != nil {
-		return err
-	}
-	if provider == nil {
-		return errors.New("provider cannot be nil")
-	}
-	name := strings.TrimSpace(provider.Name())
-	if name == "" {
-		return errors.New("provider name cannot be empty")
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.providers[name] = provider
-	return nil
-}
-
-func (r *Registry) UnregisterProvider(providerName string) error {
-	if err := r.configured(); err != nil {
-		return err
-	}
-	name := strings.TrimSpace(providerName)
-	if name == "" {
-		return errors.New("provider name cannot be empty")
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.providers, name)
-	return nil
-}
-
 func (r *Registry) Provider(name string) (Provider, bool) {
 	if r == nil {
 		return nil, false
@@ -143,19 +112,6 @@ func (r *Registry) Provider(name string) (Provider, bool) {
 	defer r.mu.RUnlock()
 	p, ok := r.providers[strings.TrimSpace(name)]
 	return p, ok
-}
-
-func (r *Registry) Providers() []string {
-	if r == nil {
-		return nil
-	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	names := make([]string, 0, len(r.providers))
-	for name := range r.providers {
-		names = append(names, name)
-	}
-	return names
 }
 
 func (r *Registry) Register(ctx context.Context, definition Definition) error {
