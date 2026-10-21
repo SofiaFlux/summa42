@@ -610,3 +610,46 @@ func TestBotCommentDoesNotCreateRevision(t *testing.T) {
 		t.Fatalf("human comment must still create a revision: %s", got)
 	}
 }
+
+func TestBotCommentRevisionEdgeCases(t *testing.T) {
+	const prefix = `{"number":7,"title":"t","body":"","state":"open","user":{"login":"maint"},"assignees":[],"labels":[],"comments":1,"created_at":"2026-09-24T08:00:00Z",`
+	const suffix = `,"html_url":"https://github.com/o/r/issues/7"}`
+	run := func(updated, comments string, failComments bool) (string, int) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/comments") {
+				if failComments {
+					http.Error(w, "boom", http.StatusInternalServerError)
+					return
+				}
+				_, _ = w.Write([]byte(comments))
+				return
+			}
+			_, _ = w.Write([]byte("[" + prefix + `"updated_at":"` + updated + `"` + suffix + "]"))
+		}))
+		defer server.Close()
+		client, err := New(Config{BaseURL: server.URL, Repository: "o/r", TokenFile: tokenFile(t, "tok\n"), BotLogin: "app[bot]"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issues, bad, err := CollectIssues(context.Background(), client)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(issues) == 1 {
+			return issues[0].RevisionID(), len(bad)
+		}
+		return "", len(bad)
+	}
+	// (a) human-edited issue with no human comments, then a bot comment: plain updated_at, never created_at.
+	if got, _ := run("2026-09-24T10:00:00Z", `[{"user":{"login":"app[bot]"},"updated_at":"2026-09-24T10:00:00Z"}]`, false); got != "2026-09-24T10:00:00Z" {
+		t.Fatalf("no human comment: got %s, want plain updated_at", got)
+	}
+	// (b) human edit after the bot comment: updated_at is newer than the bot comment, so it is a new revision.
+	if got, _ := run("2026-09-24T11:00:00Z", `[{"user":{"login":"maint"},"updated_at":"2026-09-24T09:00:00Z"},{"user":{"login":"app[bot]"},"updated_at":"2026-09-24T10:00:00Z"}]`, false); got != "2026-09-24T11:00:00Z" {
+		t.Fatalf("human edit after bot comment hidden: got %s", got)
+	}
+	// comment-fetch failure excludes only that issue.
+	if got, bad := run("2026-09-24T10:00:00Z", "", true); got != "" || bad != 1 {
+		t.Fatalf("fetch failure: revision=%q bad=%d, want issue excluded", got, bad)
+	}
+}

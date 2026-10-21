@@ -173,7 +173,9 @@ func (c *Client) ListIssues(ctx context.Context, cursor string) ([]any, []Unpars
 		}
 		if c.botLogin != "" {
 			if err := c.discountBotComments(ctx, token, item.(map[string]any)); err != nil {
-				return nil, nil, "", err
+				// A comment-fetch failure excludes this issue only; the page goes on.
+				unparseable = append(unparseable, Unparseable{Raw: item})
+				continue
 			}
 		}
 		items = append(items, item)
@@ -325,10 +327,13 @@ func readTokenFile(path string) (string, error) {
 const maxCommentPages = 10
 
 // discountBotComments rewrites item["updated_at"] when the issue's latest update is
-// exactly the latest comment and that comment was written by the configured bot: the
-// revision then falls back to the latest non-bot comment, or the issue's creation time.
-// ponytail: a human edit made after the last human comment and before the bot's reply
-// is not seen as a new revision; the bot only replies to an already observed revision.
+// exactly the latest comment, that comment was written by the configured bot, and a
+// human comment exists: the revision then falls back to the last human comment's time.
+// With no human comment the previous revision cannot be derived, so plain updated_at is
+// kept (it may churn, but never hides a human edit).
+// ponytail: a human body/label edit made after the last human comment and before the
+// bot's reply is hidden (revision = last human comment); the bot normally replies to an
+// already observed revision, so the window is one poll interval.
 func (c *Client) discountBotComments(ctx context.Context, token string, item map[string]any) error {
 	if n, ok := item["comments"].(float64); ok && n == 0 {
 		return nil
@@ -339,10 +344,6 @@ func (c *Client) discountBotComments(ctx context.Context, token string, item map
 	}
 	updatedRaw, _ := item["updated_at"].(string)
 	updated, err := time.Parse(time.RFC3339, updatedRaw)
-	if err != nil {
-		return nil
-	}
-	created, err := time.Parse(time.RFC3339, fmt.Sprint(item["created_at"]))
 	if err != nil {
 		return nil
 	}
@@ -399,13 +400,9 @@ func (c *Client) discountBotComments(ctx context.Context, token string, item map
 			break
 		}
 	}
-	if latest.IsZero() || !latestByBot || !latest.Equal(updated) {
+	if latest.IsZero() || !latestByBot || !latest.Equal(updated) || latestHuman.IsZero() {
 		return nil
 	}
-	effective := created
-	if latestHuman.After(effective) {
-		effective = latestHuman
-	}
-	item["updated_at"] = effective.UTC().Format(time.RFC3339)
+	item["updated_at"] = latestHuman.UTC().Format(time.RFC3339)
 	return nil
 }
