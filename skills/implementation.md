@@ -22,7 +22,7 @@ Guide the automated software engineer in generating exact, verified code edits t
    - Add concise, meaningful docstrings for newly exported types and functions.
 5. **Exact Complete File Content**:
    - Each edit entry must provide the complete, valid new content of the target file.
-   - Ensure syntactically valid Go code that compiles cleanly with `go build` and passes `go test`.
+   - Ensure syntactically valid Go code that compiles and is expected to pass the validation commands.
 
 ---
 

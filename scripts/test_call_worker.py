@@ -373,7 +373,7 @@ class TestRulesBlockScope(unittest.TestCase):
     autonomous_engineering.md reaches a review prompt exactly once."""
 
     RULES_SENTINEL = "UNIQUE_RULE_SENTINEL_98765"
-    AUTONOMOUS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills", "autonomous_engineering.md"))
+    AUTONOMOUS = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "skills", "autonomous_engineering.md"))
     AUTONOMOUS_HEADING = "# Autonomous Engineering Principles"
 
     def _captured_prompt(self, schema):
@@ -408,6 +408,14 @@ class TestRulesBlockScope(unittest.TestCase):
             with self.subTest(schema=schema, check="autonomous once"):
                 prompt = self._captured_prompt(schema)
                 self.assertEqual(prompt.count(self.AUTONOMOUS_HEADING), 1)
+        # Verdict wording: triage returns {"plausible": bool}, so it must not
+        # mention REVISE/BLOCK; plan and code review keep the REVISE/BLOCK sentence.
+        triage = self._captured_prompt("github.issue.triage.review.v1")
+        self.assertIn("plausible must be false", triage)
+        self.assertNotIn("REVISE or BLOCK", triage)
+        for schema in review[:2]:
+            with self.subTest(schema=schema, check="verdict wording"):
+                self.assertIn("verdict must be REVISE or BLOCK", self._captured_prompt(schema))
 
 
 if __name__ == "__main__":

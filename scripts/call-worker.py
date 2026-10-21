@@ -853,8 +853,8 @@ def main():
 
     rules_text = ""
     # autonomous_engineering.md is already loaded as a skill; skip it as a rules file (S-I6).
-    autonomous_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills", "autonomous_engineering.md"))
-    if args.rules_file and os.path.exists(args.rules_file) and os.path.abspath(args.rules_file) != autonomous_path:
+    autonomous_path = os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "skills", "autonomous_engineering.md"))
+    if args.rules_file and os.path.exists(args.rules_file) and os.path.realpath(args.rules_file) != autonomous_path:
         try:
             with open(args.rules_file, "r") as f:
                 rules_text += f.read().strip() + "\n"
@@ -906,6 +906,11 @@ def main():
         "If any rule is violated, verdict must be REVISE or BLOCK, explaining the exact violation in reason.\n"
         if rules_text else ""
     )
+    triage_rules_block = (
+        f"\nEVALUATION RULES (STRICTLY ENFORCE):\n{rules_text}\n"
+        "If any rule is violated, plausible must be false.\n"
+        if rules_text else ""
+    )
 
     # Build the prompt.
     # ponytail: for plan, send the full grounding; compact_spec stripping removed (S-I1).
@@ -914,7 +919,7 @@ def main():
         prompt = (
             "You are an automated triage review verifier for Summa42. "
             "Evaluate if this issue triage decision is plausible and sound. "
-            f"{rules_block}"
+            f"{triage_rules_block}"
             'Output ONLY a raw JSON object with this exact format: {"plausible": true}.\n\n'
             f"INPUT:\n{raw_input}"
         )

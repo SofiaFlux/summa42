@@ -20,6 +20,7 @@ Autonomous workers (Summands) operate without human intervention. To ensure sove
 1. **Zero Hallucinated Success**: Never claim a task, step, or build passes without executing the verification command (`go test`).
 2. **Complete Verification**: Verify exit code 0 and 0 failures. A linter passing does not mean the compiler or tests pass.
 3. **No Speculation**: Avoid "should work", "probably passes", or "assumed clean". If it was not verified with evidence, it is incomplete.
+4. **Deterministic Verification**: Work is validated by evidence objects, test outputs, and cryptographic content hashes.
 
 ---
 
@@ -34,14 +35,7 @@ Autonomous workers (Summands) operate without human intervention. To ensure sove
 
 ---
 
-## 4. Autonomous Non-Blocking Operation (Human Attention Budget)
-> **Low-friction autonomous execution protects the Human Attention Budget.**
-
-1. Owner approval steps required by policy are correct and must not be removed.
-2. **Deterministic Verification**: Work is validated by evidence objects, test outputs, and cryptographic content hashes.
-
----
-
-## 5. Documentation & Architectural Integrity
+## 4. Documentation & Architectural Integrity
 1. **Preserve Existing Context**: Never delete unrelated comments, docstrings, licenses, or architectural invariants.
 2. **Canonical Alignment**: Respect the sovereign Collective / Box / Summand hierarchy, Least Cognitive Mechanism principle, and strict type safety (no untyped shortcuts or unhandled errors).
+3. Owner approval steps required by policy are correct and must not be removed.
