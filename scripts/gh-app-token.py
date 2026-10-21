@@ -7,6 +7,7 @@ Saves the token to ~/.summa42/github_token (mode 0600) and prints it.
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -15,6 +16,7 @@ import jwt
 CONFIG_DIR = os.path.expanduser("~/.summa42")
 APP_JSON_PATH = os.path.join(CONFIG_DIR, "gh-app.json")
 TOKEN_FILE_PATH = os.path.join(CONFIG_DIR, "github_token")
+EXPECTED_ACCOUNT = "sofiaflux"
 
 def generate_jwt(app_id: int, private_key_pem: str) -> str:
     now = int(time.time())
@@ -54,11 +56,27 @@ def get_installation_token(installation_id: int, app_jwt: str) -> dict:
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
+def parse_age(spec: str) -> int:
+    m = re.fullmatch(r"(\d+)([smh])", spec)
+    if not m:
+        raise argparse.ArgumentTypeError(f"invalid duration {spec!r}; use e.g. 50m, 3600s, 1h")
+    return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600}[m.group(2)]
+
 def main():
     parser = argparse.ArgumentParser(description="Generate GitHub App installation token for Summa42")
-    parser.add_argument("--output", "-o", default=TOKEN_FILE_PATH, help="Path to write the token file")
     parser.add_argument("--print-token", "-p", action="store_true", help="Print token to stdout")
+    parser.add_argument("--refresh-if-older-than", type=parse_age, default=None, metavar="DURATION",
+                        help="Do nothing if the token file is younger than DURATION (e.g. 50m); for timers")
     args = parser.parse_args()
+
+    if args.refresh_if_older_than is not None and os.path.exists(TOKEN_FILE_PATH):
+        age = time.time() - os.path.getmtime(TOKEN_FILE_PATH)
+        if age < args.refresh_if_older_than:
+            print(f"Token file is {int(age)}s old (< {args.refresh_if_older_than}s); not refreshing.")
+            if args.print_token:
+                with open(TOKEN_FILE_PATH, "r") as f:
+                    print(f.read().strip())
+            return
 
     if not os.path.exists(APP_JSON_PATH):
         print(f"Error: {APP_JSON_PATH} not found. Please run scripts/register-gh-app.py first.", file=sys.stderr)
@@ -90,15 +108,18 @@ def main():
             print(f"  https://github.com/apps/{slug}/installations/new", file=sys.stderr)
             sys.exit(1)
 
-        # Look for SofiaFlux installation
+        # Only the expected account is acceptable; never fall back to an arbitrary installation.
         target_inst = None
         for inst in installations:
             account = inst.get("account", {}).get("login", "")
-            if account.lower() == "sofiaflux":
+            if account.lower() == EXPECTED_ACCOUNT:
                 target_inst = inst
                 break
         if not target_inst:
-            target_inst = installations[0]
+            accounts = [inst.get("account", {}).get("login", "?") for inst in installations]
+            print(f"Error: No installation of this App on account '{EXPECTED_ACCOUNT}'. "
+                  f"Found: {', '.join(accounts)}.", file=sys.stderr)
+            sys.exit(1)
 
         installation_id = target_inst["id"]
         meta["installation_id"] = installation_id
@@ -110,11 +131,12 @@ def main():
     token = token_data.get("token")
     expires_at = token_data.get("expires_at")
 
-    out_path = os.path.expanduser(args.output)
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w") as f:
+    os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+    # Mode is applied at open time, so the token is never world-readable, even briefly.
+    fd = os.open(TOKEN_FILE_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), 0o600)  # also tightens a pre-existing file
         f.write(token.strip())
-    os.chmod(out_path, 0o600)
 
     if args.print_token:
         print(token)
@@ -122,7 +144,7 @@ def main():
         print(f"[✓] Installation token generated successfully!")
         print(f"    Installation ID: {installation_id}")
         print(f"    Expires at:      {expires_at}")
-        print(f"    Token file:      {out_path} (mode 0600)")
+        print(f"    Token file:      {TOKEN_FILE_PATH} (mode 0600)")
 
 if __name__ == "__main__":
     main()

@@ -4,8 +4,10 @@ Register GitHub App for Summa42 via GitHub App Manifest Flow.
 """
 
 import http.server
+import hmac
 import json
 import os
+import secrets
 import sys
 import threading
 import urllib.parse
@@ -27,7 +29,6 @@ MANIFEST = {
         "issues": "write",
         "pull_requests": "write",
         "contents": "write",
-        "workflows": "write",
         "statuses": "read",
         "checks": "read"
     },
@@ -89,8 +90,8 @@ HTML_PAGE = f"""<!DOCTYPE html>
   <div class="card">
     <div class="badge">Summa42 Bot Setup</div>
     <h1>Register GitHub App</h1>
-    <p>Click below to register the GitHub App for <strong>SofiaFlux/summa42</strong> with fine-grained permissions (Issues, Pull Requests, Contents, Workflows).</p>
-    <form action="https://github.com/settings/apps/new" method="post">
+    <p>Click below to register the GitHub App for <strong>SofiaFlux/summa42</strong> with fine-grained permissions (Issues, Pull Requests, Contents).</p>
+    <form action="https://github.com/settings/apps/new?state=__STATE__" method="post">
       <input type="hidden" name="manifest" value='{json.dumps(MANIFEST)}'>
       <button type="submit">Create GitHub App from Manifest</button>
     </form>
@@ -110,10 +111,16 @@ class ManifestHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(HTML_PAGE.encode("utf-8"))
+            page = HTML_PAGE.replace("__STATE__", urllib.parse.quote(self.server.expected_state))
+            self.wfile.write(page.encode("utf-8"))
         elif parsed.path == "/callback":
             params = urllib.parse.parse_qs(parsed.query)
-            if "code" in params:
+            state = params.get("state", [""])[0]
+            if not hmac.compare_digest(state, self.server.expected_state):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"State mismatch; callback rejected.")
+            elif "code" in params:
                 captured_code = params["code"][0]
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -141,6 +148,20 @@ class ManifestHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # Quiet logging
 
+def make_server(expected_state, port=PORT):
+    """Loopback-only callback server that accepts only the expected state."""
+    http.server.HTTPServer.allow_reuse_address = True
+    server = http.server.HTTPServer(("127.0.0.1", port), ManifestHandler)
+    server.expected_state = expected_state
+    return server
+
+def write_private(path, text):
+    """Create/truncate a file with mode 0600 applied at open time."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        os.fchmod(f.fileno(), 0o600)
+        f.write(text)
+
 def convert_code(code):
     req_url = f"https://api.github.com/app-manifests/{code}/conversions"
     req = urllib.request.Request(
@@ -161,8 +182,8 @@ def main():
     config_dir = os.path.expanduser("~/.summa42")
     os.makedirs(config_dir, mode=0o700, exist_ok=True)
 
-    http.server.HTTPServer.allow_reuse_address = True
-    server = http.server.HTTPServer(("0.0.0.0", PORT), ManifestHandler)
+    state = secrets.token_urlsafe(32)
+    server = make_server(state)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
 
@@ -206,9 +227,7 @@ def main():
     pem_path = os.path.join(config_dir, "gh-app.pem")
     json_path = os.path.join(config_dir, "gh-app.json")
 
-    with open(pem_path, "w") as f:
-        f.write(pem_content)
-    os.chmod(pem_path, 0o600)
+    write_private(pem_path, pem_content)
 
     meta = {
         "app_id": app_id,
@@ -216,9 +235,7 @@ def main():
         "client_id": client_id,
         "pem_path": pem_path
     }
-    with open(json_path, "w") as f:
-        json.dump(meta, f, indent=2)
-    os.chmod(json_path, 0o600)
+    write_private(json_path, json.dumps(meta, indent=2))
 
     print(f"\n[✓] GitHub App created successfully!")
     print(f"    App Name:  {slug}")
