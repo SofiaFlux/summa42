@@ -1497,7 +1497,8 @@ func captureReviewerStderr(t *testing.T) func() string {
 	}
 }
 
-func TestReviewerAcceptsPostPlanReviewChain(t *testing.T) {
+func reviewerPastPlanReview(t *testing.T) *reviewerFixture {
+	t.Helper()
 	rf := newReviewerFixture(t)
 	f := rf.driver
 	if _, err := f.store.DB().ExecContext(f.ctx, `UPDATE workflow_cases SET grant_json=? WHERE case_id=?`, `{"Capabilities":["github.issue.read","workspace.repo.write","workspace.test"],"Actions":["github.issue.read","workspace.repo.write","workspace.test"]}`, f.casesByRev[fixtureRevision].ID); err != nil {
@@ -1515,11 +1516,32 @@ func TestReviewerAcceptsPostPlanReviewChain(t *testing.T) {
 	if out, err := pr.Tick(f.ctx, f.missionID); err != nil || out.Reviewed != 1 {
 		t.Fatalf("plan review %+v %v", out, err)
 	}
+	return rf
+}
+
+func TestReviewerAcceptsPostPlanReviewChain(t *testing.T) {
+	rf := reviewerPastPlanReview(t)
+	f := rf.driver
 	rf.model.ScriptedReview = []bool{true}
 	if _, err := rf.review.Tick(f.ctx, f.missionID); err != nil {
 		t.Fatal(err)
 	}
 	if verdict := rf.lastVerdict(t); !verdict.Structural.StateMatchesDisposition {
 		t.Fatalf("case past plan review reported as violation: %+v", verdict.Structural)
+	}
+}
+
+func TestReviewerReportsClosedCaseWithPlanReviewChain(t *testing.T) {
+	rf := reviewerPastPlanReview(t)
+	f := rf.driver
+	if _, err := f.store.DB().ExecContext(f.ctx, `UPDATE workflow_cases SET state='CLOSED' WHERE case_id=?`, f.casesByRev[fixtureRevision].ID); err != nil {
+		t.Fatal(err)
+	}
+	rf.model.ScriptedReview = []bool{true}
+	if _, err := rf.review.Tick(f.ctx, f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if verdict := rf.lastVerdict(t); verdict.Structural.StateMatchesDisposition {
+		t.Fatalf("a closed case after an accepted plan review was accepted: %+v", verdict.Structural)
 	}
 }

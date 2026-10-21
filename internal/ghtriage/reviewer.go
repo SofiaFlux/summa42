@@ -350,6 +350,14 @@ func (r *Reviewer) stateMatches(ctx context.Context, c workflowcase.Case, record
 				return false
 			}
 		}
+		if len(records) > 1 {
+			// An accepted review hands the case to implementation; every other
+			// outcome (verdict, missing grant, held failure) blocks it.
+			if strings.HasPrefix(reason, "plan-review:ACCEPT") {
+				return c.State == workflowcase.Active && c.NextWork.Kind == ImplementationWorkKind
+			}
+			return c.State == workflowcase.Blocked
+		}
 		var request workflowcase.AssessmentRequest
 		if err := json.Unmarshal([]byte(records[0].RequestJSON), &request); err != nil ||
 			request.CaseID != c.ID || request.Assessment.Verdict != workflow.Continue ||

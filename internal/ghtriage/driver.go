@@ -482,10 +482,13 @@ func (d *Driver) readDecision(ctx context.Context, refs []runmanifest.EvidenceRe
 	if found.SnapshotEvidenceID == "" {
 		return nil, domain.ID(""), errors.New("decision carries no snapshot evidence id")
 	}
-	// The driver acts on the recorded disposition, so it re-derives it rather
-	// than trusting the stored stage 3.
-	if found.Stage2 != nil && found.DispositionRulesVersion == DispositionRulesVersion &&
-		*found.Stage3 != Stage3(*found.Stage2) {
+	// The driver acts on the recorded disposition, so it only reads rules it can
+	// re-derive, and re-derives the stage 3 rather than trusting the stored one.
+	if found.DispositionRulesVersion != DispositionRulesVersion {
+		return nil, domain.ID(""), fmt.Errorf("decision %s has disposition rules version %q, want %q",
+			foundID, found.DispositionRulesVersion, DispositionRulesVersion)
+	}
+	if found.Stage2 != nil && *found.Stage3 != Stage3(*found.Stage2) {
 		return nil, domain.ID(""), fmt.Errorf("decision %s stage 3 does not follow from its stage 2", foundID)
 	}
 	return found, foundID, nil

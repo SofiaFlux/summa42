@@ -1591,14 +1591,41 @@ func TestReadDecisionRejectsStage3Mismatch(t *testing.T) {
 	decision.Stage3 = &ghtriage.Stage3Result{Disposition: ghtriage.DispositionNeedsHuman, Rule: "needs-repro-required"}
 	f.completeTaskWithDecision(t, fixtureRevision, decision)
 
-	result, err := f.driver.Tick(f.ctx, f.missionID)
-	if err == nil && len(result.Failures) == 0 {
-		t.Fatalf("a stage 3 that does not follow from stage 2 was accepted: %+v", result)
-	}
+	assertStage3Rejected(t, f)
 	if got := f.taskState(t, fixtureRevision); got != "AWAITING_VERIFICATION" {
 		t.Fatalf("task state = %q, want it left unaccepted", got)
 	}
 	if f.assessmentCount(t, fixtureRevision) != 0 {
 		t.Fatal("the recorded disposition was applied")
+	}
+}
+
+func assertStage3Rejected(t *testing.T, f *driverFixture) {
+	t.Helper()
+	result, err := f.driver.Tick(f.ctx, f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 1 || !strings.Contains(result.Failures[0], "stage 3 does not follow from its stage 2") {
+		t.Fatalf("failures = %q, want the stage 3 mismatch", result.Failures)
+	}
+}
+
+func TestReadDecisionRejectsNonCurrentDispositionRulesVersion(t *testing.T) {
+	f := newDriverFixture(t)
+	decision := readyToPlanDecision(42, fixtureRevision)
+	decision.DispositionRulesVersion = "ghtriage.dispositions.v99"
+	decision.Stage3 = &ghtriage.Stage3Result{Disposition: ghtriage.DispositionNeedsHuman, Rule: "doctored"}
+	f.completeTaskWithDecision(t, fixtureRevision, decision)
+
+	result, err := f.driver.Tick(f.ctx, f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 1 || !strings.Contains(result.Failures[0], "disposition rules version") {
+		t.Fatalf("failures = %q, want the rules version rejection", result.Failures)
+	}
+	if f.assessmentCount(t, fixtureRevision) != 0 {
+		t.Fatal("the doctored disposition was applied")
 	}
 }
