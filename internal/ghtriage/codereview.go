@@ -196,12 +196,14 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 			output, err := r.model.ReviewCode(callCtx, modelInput)
 			cancel()
 			if err == nil {
-				err = output.Validate()
+				if verr := output.Validate(); verr != nil {
+					err = &planFailure{"validation", verr}
+				}
 			}
 			if err != nil {
 				cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 				defer stop()
-				return CodeReviewResult{}, errors.Join(err, r.exec.FailAttempt(cleanup, attempt.ID, domain.FailureExecution, "code-review:"+string(c.CurrentWorkID), nil))
+				return CodeReviewResult{}, errors.Join(err, failStage(cleanup, r.cases, r.exec, r.evidence, c, task.ID, attempt.ID, "code-review", err))
 			}
 			if err := observe(); err != nil {
 				return CodeReviewResult{}, err

@@ -105,10 +105,10 @@ func decodeExactlyOne(raw []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("decode model response: %w", err)
+		return &parseError{fmt.Errorf("decode model response: %w", err)}
 	}
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return errors.New("model response must contain exactly one JSON object and nothing else")
+		return &parseError{errors.New("model response must contain exactly one JSON object and nothing else")}
 	}
 	return nil
 }

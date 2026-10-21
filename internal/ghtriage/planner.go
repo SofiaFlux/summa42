@@ -47,7 +47,7 @@ func (c PlannerConfig) withDefaults() PlannerConfig {
 	return c
 }
 
-// planFailure carries a failure class (timeout, model, validation, internal) in the hold reason.
+// planFailure carries a failure class (see failureClass) in the hold reason.
 type planFailure struct {
 	class string
 	err   error
@@ -55,17 +55,6 @@ type planFailure struct {
 
 func (f *planFailure) Error() string { return f.err.Error() }
 func (f *planFailure) Unwrap() error { return f.err }
-
-func failureClass(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "timeout"
-	}
-	var f *planFailure
-	if errors.As(err, &f) {
-		return f.class
-	}
-	return "internal"
-}
 
 type Planner struct {
 	cfg       PlannerConfig
@@ -242,7 +231,7 @@ func (p *Planner) planCase(ctx context.Context, candidate PlanningCandidate) err
 		Decision: candidate.Decision, DecisionEvidenceID: candidate.DecisionEvidenceID,
 	})
 	if err != nil {
-		return &planFailure{"model", fmt.Errorf("plan model: %w", err)}
+		return &planFailure{"model-exit", fmt.Errorf("plan model: %w", err)}
 	}
 	plan := Plan{
 		Schema: schema, Source: source, CaseID: c.ID, DecisionEvidenceID: candidate.DecisionEvidenceID,

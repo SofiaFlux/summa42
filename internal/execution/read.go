@@ -153,3 +153,14 @@ func (s *Service) Attempt(ctx context.Context, attemptID domain.ID) (domain.Atte
 	}
 	return attempt, nil
 }
+
+// CountFailures counts recorded attempt failures of a task whose signature starts with prefix.
+func (s *Service) CountFailures(ctx context.Context, taskID domain.ID, prefix string) (int, error) {
+	if err := s.configured(); err != nil {
+		return 0, err
+	}
+	var n int
+	err := s.store.DB().QueryRowContext(ctx,
+		`SELECT count(*) FROM attempt_failures WHERE task_id = ? AND substr(signature, 1, length(?)) = ?`, taskID, prefix, prefix).Scan(&n)
+	return n, err
+}

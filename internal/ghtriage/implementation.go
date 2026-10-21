@@ -166,7 +166,7 @@ func (i *Implementer) Prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 	fail := func(err error) (ImplementationResult, error) {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
-		cleanupErr := i.exec.FailAttempt(cleanup, attempt.ID, domain.FailureExecution, "implementation:"+string(c.CurrentWorkID), nil)
+		cleanupErr := failStage(cleanup, i.cases, i.exec, i.evidence, c, task.ID, attempt.ID, "implementation", err)
 		return ImplementationResult{}, errors.Join(err, cleanupErr)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, 14*time.Minute)
@@ -188,7 +188,7 @@ func (i *Implementer) Prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 		return fail(modelErr)
 	}
 	if err := output.Validate(); err != nil {
-		return fail(err)
+		return fail(&planFailure{"validation", err})
 	}
 	if _, _, _, _, err := i.loadInput(runCtx, c); err != nil {
 		return fail(err)

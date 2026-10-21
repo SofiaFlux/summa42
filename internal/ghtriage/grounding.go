@@ -199,7 +199,7 @@ func (p *Planner) selectFiles(ctx context.Context, cfg *GroundingConfig, issue S
 		AllowedPrefixes: append([]string(nil), cfg.AllowedPrefixes...), TrackedFiles: regular,
 	})
 	if err != nil {
-		return FileSelection{}, &planFailure{"model", fmt.Errorf("file selection model: %w", err)}
+		return FileSelection{}, &planFailure{"model-exit", fmt.Errorf("file selection model: %w", err)}
 	}
 	if err := checkSelection(selection, cfg, tracked); err != nil {
 		return FileSelection{}, &planFailure{"validation", fmt.Errorf("file selection: %w", err)}
