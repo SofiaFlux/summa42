@@ -12,27 +12,38 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
 	summa42runtime "github.com/SofiaFlux/summa42/internal/runtime"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
+
+// parseGHImplementFlags is run-gh-implement's flag parsing, without filesystem checks.
+func parseGHImplementFlags(args []string) (caseID, source, root string, modelConfig climodel.Config, err error) {
+	flags := flag.NewFlagSet("run-gh-implement", flag.ContinueOnError)
+	flags.StringVar(&caseID, "case", "", "active implementation case ID")
+	flags.StringVar(&source, "source-repo", "", "absolute local Git repository matching accepted plan")
+	flags.StringVar(&root, "workspace-root", "", "existing absolute directory outside source for isolated attempts")
+	registerTriageModelFlags(flags, "model binary returning strict complete-file edits for the accepted plan")
+	if err = flags.Parse(args); err != nil {
+		return
+	}
+	if strings.TrimSpace(caseID) == "" || !filepath.IsAbs(source) || !filepath.IsAbs(root) || flags.NArg() != 0 {
+		err = errors.New("run-gh-implement requires --case, absolute --source-repo and --workspace-root, and no positional arguments")
+		return
+	}
+	modelConfig, err = triageModelConfig(flags)
+	return
+}
 
 // One supervised local candidate; completion awaits independent code verification.
 func runGHImplement(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	var caseID, source, root string
-	flags := flag.NewFlagSet("run-gh-implement", flag.ContinueOnError)
-	flags.StringVar(&caseID, "case", "", "active implementation case ID")
-	flags.StringVar(&source, "source-repo", "", "absolute local Git repository matching accepted plan")
-	flags.StringVar(&root, "workspace-root", "", "existing absolute directory outside source for isolated attempts")
-	registerTriageModelFlags(flags, "model binary returning strict complete-file edits for the accepted plan")
-	if err := flags.Parse(args); err != nil {
+	caseID, source, root, modelConfig, err := parseGHImplementFlags(args)
+	if err != nil {
 		return err
-	}
-	if strings.TrimSpace(caseID) == "" || !filepath.IsAbs(source) || !filepath.IsAbs(root) || flags.NArg() != 0 {
-		return errors.New("run-gh-implement requires --case, absolute --source-repo and --workspace-root, and no positional arguments")
 	}
 	for _, path := range []string{source, root} {
 		info, err := os.Lstat(path)
@@ -43,10 +54,6 @@ func runGHImplement(ctx context.Context, args []string) error {
 	rel, err := filepath.Rel(source, root)
 	if err != nil || rel == "." || (!strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..") {
 		return errors.New("workspace root must be outside source")
-	}
-	modelConfig, err := triageModelConfig(flags)
-	if err != nil {
-		return err
 	}
 	adapter, usable := triageModelAdapter(modelConfig, os.Stderr)
 	if !usable {

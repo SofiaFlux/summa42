@@ -19,22 +19,30 @@ import (
 	"strings"
 )
 
-func runGHPublish(ctx context.Context, args []string) error {
-	if ctx == nil {
-		return errors.New("Box context required")
-	}
-	var id, source, base, repo, credential string
+// parseGHPublishFlags is run-gh-publish's flag parsing, without filesystem checks.
+func parseGHPublishFlags(args []string) (id, source, base, repo, credential string, err error) {
 	flags := flag.NewFlagSet("run-gh-publish", flag.ContinueOnError)
 	flags.StringVar(&id, "case", "", "active independently accepted implementation Case")
 	flags.StringVar(&source, "source-repo", "", "absolute source repository")
 	flags.StringVar(&base, "base-branch", "", "explicit pinned base branch")
 	flags.StringVar(&repo, "repository", "", "explicit owner/repository")
 	flags.StringVar(&credential, "credential-file", "", "absolute private GitHub token file")
-	if err := flags.Parse(args); err != nil {
-		return err
+	if err = flags.Parse(args); err != nil {
+		return
 	}
 	if strings.TrimSpace(id) == "" || !filepath.IsAbs(source) || !filepath.IsAbs(credential) || base == "" || repo == "" || flags.NArg() != 0 {
-		return errors.New("run-gh-publish requires --case, absolute --source-repo, --base-branch, --repository and absolute --credential-file")
+		err = errors.New("run-gh-publish requires --case, absolute --source-repo, --base-branch, --repository and absolute --credential-file")
+	}
+	return
+}
+
+func runGHPublish(ctx context.Context, args []string) error {
+	if ctx == nil {
+		return errors.New("Box context required")
+	}
+	id, source, base, repo, credential, err := parseGHPublishFlags(args)
+	if err != nil {
+		return err
 	}
 	if info, err := os.Lstat(source); err != nil || !info.IsDir() {
 		return errors.New("source must be an existing regular directory")

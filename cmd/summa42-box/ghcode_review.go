@@ -12,32 +12,39 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
 	summa42runtime "github.com/SofiaFlux/summa42/internal/runtime"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
 
-func runGHCodeReview(ctx context.Context, args []string) error {
-	if ctx == nil {
-		return errors.New("Box context required")
-	}
-	var caseID, source string
+// parseGHCodeReviewFlags is run-gh-code-review's flag parsing, without filesystem checks.
+func parseGHCodeReviewFlags(args []string) (caseID, source string, modelConfig climodel.Config, err error) {
 	flags := flag.NewFlagSet("run-gh-code-review", flag.ContinueOnError)
 	flags.StringVar(&caseID, "case", "", "active implementation case ID")
 	flags.StringVar(&source, "source-repo", "", "absolute source repository used for the implementation")
 	registerTriageModelFlags(flags, "independent reviewer wrapper returning ACCEPT, REVISE or BLOCK")
-	if err := flags.Parse(args); err != nil {
-		return err
+	if err = flags.Parse(args); err != nil {
+		return
 	}
 	if strings.TrimSpace(caseID) == "" || !filepath.IsAbs(source) || flags.NArg() != 0 {
-		return errors.New("run-gh-code-review requires --case and absolute --source-repo with no positional arguments")
+		err = errors.New("run-gh-code-review requires --case and absolute --source-repo with no positional arguments")
+		return
+	}
+	modelConfig, err = triageModelConfig(flags)
+	return
+}
+
+func runGHCodeReview(ctx context.Context, args []string) error {
+	if ctx == nil {
+		return errors.New("Box context required")
+	}
+	caseID, source, modelConfig, err := parseGHCodeReviewFlags(args)
+	if err != nil {
+		return err
 	}
 	if info, err := os.Lstat(source); err != nil || !info.IsDir() {
 		return errors.New("source must be an existing regular directory")
-	}
-	modelConfig, err := triageModelConfig(flags)
-	if err != nil {
-		return err
 	}
 	adapter, usable := triageModelAdapter(modelConfig, os.Stderr)
 	if !usable {

@@ -21,6 +21,7 @@ func validPipelineArgs(t *testing.T) []string {
 		"--base-branch", "main", "--credential-file", "/secret/token",
 		"--source-repo", "/src", "--source-repository", "o/r",
 		"--source-sha", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--allowed-prefix", "docs/",
+		"--validation-command-json", `["go","test","./..."]`,
 		"--model-binary", "/bin/producer", "--model-arg", "-p",
 		"--review-model-binary", "/bin/reviewer", "--review-model-arg", "--strict",
 		"--once",
@@ -146,7 +147,9 @@ func TestPipelineRequiresDistinctReviewModel(t *testing.T) {
 		t.Fatalf("identical review model: err = %v", err)
 	}
 	// Both left at their codex defaults is the same model too.
-	defaults := []string{"--mission", "m", "--once"}
+	defaults := slices.DeleteFunc(validPipelineArgs(t), func(s string) bool {
+		return strings.Contains(s, "model") || s == "/bin/producer" || s == "/bin/reviewer" || s == "-p" || s == "--strict"
+	})
 	if _, _, err := parsePipelineFlags(defaults); err == nil || !strings.Contains(err.Error(), "review model must differ") {
 		t.Fatalf("defaulted models: err = %v", err)
 	}
@@ -205,5 +208,105 @@ func TestRunGHImplementBusyExitsThree(t *testing.T) {
 	}
 	if err := implementOutcome(ghtriage.ImplementationResult{}); exitStatus(err, &bytes.Buffer{}) != 0 {
 		t.Fatalf("idle implement err = %v", err)
+	}
+}
+
+// Every stage's argv must pass that stage's own flag parser, so a flag rename
+// in a run-gh-* command fails here rather than at runtime every pass.
+func TestPipelineStageArgvParsesWithEachStageParser(t *testing.T) {
+	p, _ := parsedPipeline(t, validPipelineArgs(t))
+	modelIs := func(name, want, got string) {
+		if got != want {
+			t.Fatalf("%s model binary = %q, want %q", name, got, want)
+		}
+	}
+	parsers := map[string]func([]string) error{
+		"recover": func(args []string) error {
+			if len(args) != 0 {
+				return fmt.Errorf("recover takes no argv, got %v", args)
+			}
+			return nil
+		},
+		"triage-driver": func(args []string) error { _, err := parseGHTriageDriverFlags(args); return err },
+		"worker": func(args []string) error {
+			once, root, _, lease, model, err := parseWorkerArgs(args)
+			if err == nil && (!once || root != "/work" || lease != pipelineWorkerLease) {
+				err = fmt.Errorf("worker once=%v root=%q lease=%v", once, root, lease)
+			}
+			modelIs("worker", "/bin/producer", model.Binary)
+			return err
+		},
+		"triage-review": func(args []string) error {
+			_, model, err := parseGHTriageReviewFlags(args)
+			modelIs("triage-review", "/bin/reviewer", model.Binary)
+			return err
+		},
+		"plan": func(args []string) error {
+			_, grounding, model, err := parseGHPlanFlags(args)
+			if err == nil && grounding == nil {
+				err = errors.New("plan got no grounding")
+			}
+			modelIs("plan", "/bin/producer", model.Binary)
+			return err
+		},
+		"plan-review": func(args []string) error {
+			_, model, err := parseGHPlanReviewFlags(args)
+			modelIs("plan-review", "/bin/reviewer", model.Binary)
+			return err
+		},
+		"implement": func(args []string) error {
+			_, _, _, model, err := parseGHImplementFlags(args)
+			modelIs("implement", "/bin/producer", model.Binary)
+			return err
+		},
+		"code-review": func(args []string) error {
+			_, _, model, err := parseGHCodeReviewFlags(args)
+			modelIs("code-review", "/bin/reviewer", model.Binary)
+			return err
+		},
+		"publish": func(args []string) error { _, _, _, _, _, err := parseGHPublishFlags(args); return err },
+	}
+	check := func(s pipelineStage, args []string) {
+		parse, ok := parsers[s.name]
+		if !ok {
+			t.Fatalf("stage %s has no parser in this test", s.name)
+		}
+		if err := parse(args); err != nil {
+			t.Fatalf("stage %s argv %v: %v", s.name, args, err)
+		}
+		delete(parsers, s.name)
+	}
+	for _, s := range p.stages {
+		check(s, s.args)
+	}
+	for _, s := range p.perCase {
+		check(s, slices.Concat([]string{"--case", "case-1"}, s.args))
+	}
+	if len(parsers) != 0 {
+		t.Fatalf("stages missing from the pipeline: %v", parsers)
+	}
+	for _, s := range p.stages {
+		if s.name == "worker" && s.timeout >= pipelineWorkerLease {
+			t.Fatalf("worker stage timeout %v is not below its lease %v", s.timeout, pipelineWorkerLease)
+		}
+	}
+}
+
+func TestPipelineRequiresPublicationAndSourceFlagsAtStartup(t *testing.T) {
+	for flag, bad := range map[string]string{
+		"--source-repo": "relative", "--workspace-root": "relative", "--credential-file": "relative",
+		"--base-branch": "", "--repository": "",
+	} {
+		args := validPipelineArgs(t)
+		args[slices.Index(args, flag)+1] = bad
+		if _, _, err := parsePipelineFlags(args); err == nil || !strings.Contains(err.Error(), flag) {
+			t.Fatalf("%s=%q: err = %v", flag, bad, err)
+		}
+		missing := validPipelineArgs(t)
+		i := slices.Index(missing, flag)
+		missing = slices.Delete(missing, i, i+2)
+		if _, _, err := parsePipelineFlags(missing); err == nil {
+			t.Fatalf("missing %s accepted", flag)
+		}
 	}
 }

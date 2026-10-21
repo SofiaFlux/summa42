@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -86,6 +87,10 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 	mission = strings.TrimSpace(mission)
 	if mission == "" || flags.NArg() != 0 {
 		return nil, 0, errors.New("run-gh-pipeline requires --mission and no positional arguments")
+	}
+	if !filepath.IsAbs(grounding.local) || !filepath.IsAbs(root) || !filepath.IsAbs(credential) ||
+		strings.TrimSpace(base) == "" || strings.TrimSpace(repo) == "" {
+		return nil, 0, errors.New("run-gh-pipeline requires absolute --source-repo, --workspace-root and --credential-file, and --base-branch and --repository")
 	}
 	if once == (interval != 0) || interval < 0 {
 		return nil, 0, errors.New("run-gh-pipeline requires exactly one of --once or a positive --interval")

@@ -746,11 +746,9 @@ func workerCapacity(box *summa42runtime.Box) (scheduler.CapacitySnapshot, error)
 	return capacity, nil
 }
 
-func runWorker(ctx context.Context, args []string) error {
-	if ctx == nil {
-		return errors.New("Box context is required")
-	}
-	var once bool
+// parseWorkerArgs is run-worker's whole argument parsing: --once and
+// --workspace-root, then parseWorkerFlags.
+func parseWorkerArgs(args []string) (once bool, workspaceRoot string, pollInterval, leaseDuration time.Duration, modelConfig climodel.Config, err error) {
 	filteredArgs := make([]string, 0, len(args))
 	for _, a := range args {
 		if a == "--once" {
@@ -761,14 +759,24 @@ func runWorker(ctx context.Context, args []string) error {
 	}
 	workspaceRoot, rest, err := splitWorkspaceRootArg(filteredArgs)
 	if err != nil {
-		return err
+		return
 	}
-	pollInterval, leaseDuration, modelConfig, err := parseWorkerFlags(rest)
-	if err != nil {
-		return err
+	if pollInterval, leaseDuration, modelConfig, err = parseWorkerFlags(rest); err != nil {
+		return
 	}
 	if strings.TrimSpace(workspaceRoot) == "" {
-		return errors.New("run-worker requires --workspace-root")
+		err = errors.New("run-worker requires --workspace-root")
+	}
+	return
+}
+
+func runWorker(ctx context.Context, args []string) error {
+	if ctx == nil {
+		return errors.New("Box context is required")
+	}
+	once, workspaceRoot, pollInterval, leaseDuration, modelConfig, err := parseWorkerArgs(args)
+	if err != nil {
+		return err
 	}
 	home, err := localconfig.ResolveHome("")
 	if err != nil {
@@ -1473,26 +1481,32 @@ func plannerConfig(modelConfig climodel.Config) ghtriage.PlannerConfig {
 	return ghtriage.PlannerConfig{ModelTimeout: modelConfig.Timeout}
 }
 
-func runGHPlan(ctx context.Context, args []string) error {
-	if ctx == nil {
-		return errors.New("Box context is required")
-	}
-	var mission string
+// parseGHPlanFlags is run-gh-plan's flag parsing.
+func parseGHPlanFlags(args []string) (mission string, grounding *ghtriage.GroundingConfig, modelConfig climodel.Config, err error) {
 	flags := flag.NewFlagSet("run-gh-plan", flag.ContinueOnError)
 	sourceFlags := registerGroundingFlags(flags)
 	flags.StringVar(&mission, "mission", "", "mission ID whose ready GitHub issues are planned")
 	registerTriageModelFlags(flags, "model binary writing an issue plan")
-	if err := flags.Parse(args); err != nil {
-		return err
+	if err = flags.Parse(args); err != nil {
+		return
 	}
 	if strings.TrimSpace(mission) == "" || flags.NArg() != 0 {
-		return errors.New("run-gh-plan requires --mission and no positional arguments")
+		err = errors.New("run-gh-plan requires --mission and no positional arguments")
+		return
 	}
-	grounding, err := sourceFlags.config()
-	if err != nil {
-		return fmt.Errorf("source configuration: %w", err)
+	if grounding, err = sourceFlags.config(); err != nil {
+		err = fmt.Errorf("source configuration: %w", err)
+		return
 	}
-	modelConfig, err := triageModelConfig(flags)
+	modelConfig, err = triageModelConfig(flags)
+	return
+}
+
+func runGHPlan(ctx context.Context, args []string) error {
+	if ctx == nil {
+		return errors.New("Box context is required")
+	}
+	mission, grounding, modelConfig, err := parseGHPlanFlags(args)
 	if err != nil {
 		return err
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
 	summa42runtime "github.com/SofiaFlux/summa42/internal/runtime"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
@@ -15,22 +16,28 @@ import (
 	"strings"
 )
 
+// parseGHPlanReviewFlags is run-gh-plan-review's flag parsing.
+func parseGHPlanReviewFlags(args []string) (mission string, modelConfig climodel.Config, err error) {
+	flags := flag.NewFlagSet("run-gh-plan-review", flag.ContinueOnError)
+	flags.StringVar(&mission, "mission", "", "mission whose grounded plans are independently reviewed")
+	registerTriageModelFlags(flags, "model binary reviewing a grounded issue plan")
+	if err = flags.Parse(args); err != nil {
+		return
+	}
+	if strings.TrimSpace(mission) == "" || flags.NArg() != 0 {
+		err = errors.New("run-gh-plan-review requires --mission and no positional arguments")
+		return
+	}
+	modelConfig, err = triageModelConfig(flags)
+	return
+}
+
 // One supervised tick; callers may configure a different model from the planner.
 func runGHPlanReview(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	var mission string
-	flags := flag.NewFlagSet("run-gh-plan-review", flag.ContinueOnError)
-	flags.StringVar(&mission, "mission", "", "mission whose grounded plans are independently reviewed")
-	registerTriageModelFlags(flags, "model binary reviewing a grounded issue plan")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if strings.TrimSpace(mission) == "" || flags.NArg() != 0 {
-		return errors.New("run-gh-plan-review requires --mission and no positional arguments")
-	}
-	modelConfig, err := triageModelConfig(flags)
+	mission, modelConfig, err := parseGHPlanReviewFlags(args)
 	if err != nil {
 		return err
 	}
