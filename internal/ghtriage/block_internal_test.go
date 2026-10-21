@@ -17,6 +17,9 @@ import (
 // applyDisposition reach nothing else: a fixture that also built a mission, an
 // executor and an evidence store would be testing more machinery than the
 // guards these two tests exist for.
+// guardEvidenceID is registered by newGuardFixture: Assess verifies cited evidence exists.
+const guardEvidenceID domain.ID = "guard-evidence"
+
 func newGuardFixture(t *testing.T) (*Driver, workflowcase.Case) {
 	t.Helper()
 	ctx := context.Background()
@@ -26,6 +29,12 @@ func newGuardFixture(t *testing.T) (*Driver, workflowcase.Case) {
 	if _, err := store.DB().ExecContext(ctx,
 		`INSERT INTO missions(mission_id, statement, active, created_at) VALUES ('mission-guards', 'triage issues', 1, ?)`,
 		now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB().ExecContext(ctx,
+		`INSERT INTO evidence_objects(evidence_id, content_hash, media_type, kind, size_bytes, created_at) VALUES (?, 'h', 'application/json', 'TEST', 0, ?)`,
+		guardEvidenceID, now,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +104,7 @@ func TestApplyDispositionCountsOnlyTheBlocksItPerformed(t *testing.T) {
 	decision := Decision{Stage3: &Stage3Result{Disposition: DispositionNotActionable}}
 
 	var first DriverResult
-	if err := driver.applyDisposition(ctx, c, c.CurrentWorkID, decision, domain.NewID("evidence"), &first); err != nil {
+	if err := driver.applyDisposition(ctx, c, c.CurrentWorkID, decision, guardEvidenceID, &first); err != nil {
 		t.Fatal(err)
 	}
 	if first.Assessed != 1 {
@@ -110,7 +119,7 @@ func TestApplyDispositionCountsOnlyTheBlocksItPerformed(t *testing.T) {
 		t.Fatal(err)
 	}
 	var second DriverResult
-	if err := driver.applyDisposition(ctx, closed, closed.CurrentWorkID, decision, domain.NewID("evidence"), &second); err != nil {
+	if err := driver.applyDisposition(ctx, closed, closed.CurrentWorkID, decision, guardEvidenceID, &second); err != nil {
 		t.Fatal(err)
 	}
 	if second.Assessed != 0 {

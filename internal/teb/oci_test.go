@@ -433,3 +433,40 @@ func procStatus() (bool, bool) {
     return noCaps, noNewPrivs
 }
 `
+
+func TestDockerArgsRejectsRootWorkspace(t *testing.T) {
+	req := teb.OCIRequest{
+		Image:     "img",
+		Workspace: "/",
+		Profile:   teb.EnforcedOfflineProfile(),
+		Limits:    teb.ResourceLimits{PIDs: 1, MemoryBytes: 1, CPUs: 1},
+	}
+	if _, err := teb.DockerArgs(req); err == nil {
+		t.Fatal("expected root workspace to be rejected")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "docker.sock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req.Workspace = dir
+	if _, err := teb.DockerArgs(req); err == nil {
+		t.Fatal("expected workspace containing docker.sock to be rejected")
+	}
+}
+
+func TestProxyBindsGatewayOnly(t *testing.T) {
+	proxy := teb.NewConnectProxyOn("0.0.0.0:0")
+	if _, err := proxy.Start(context.Background(), teb.EgressPolicy{}); err == nil {
+		t.Fatal("wildcard bind must be refused")
+	}
+	proxy = teb.NewConnectProxy()
+	endpoint, err := proxy.Start(context.Background(), teb.EgressPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+	host, _, err := net.SplitHostPort(endpoint.Address)
+	if err != nil || host != "127.0.0.1" {
+		t.Fatalf("default proxy must bind loopback only, got %q (%v)", endpoint.Address, err)
+	}
+}

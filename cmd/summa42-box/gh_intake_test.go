@@ -197,7 +197,7 @@ func TestGHIntakeClientConfigReadsTokenFileAndKeepsGitHubBase(t *testing.T) {
 	}
 	t.Setenv("SUMMA42_GITHUB_TOKEN_FILE", "  "+token+"  ")
 	t.Setenv("SUMMA42_GITHUB_BASE_URL", "http://127.0.0.1:8080")
-	cfg := ghIntakeClientConfig("o/r")
+	cfg := ghIntakeClientConfig("o/r", "")
 	if cfg.Repository != "o/r" || cfg.TokenFile != token {
 		t.Fatalf("cfg = %+v", cfg)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -239,4 +240,35 @@ func TestValidationFailureHoldsCase(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 	assertAssessed(t, f, id, workflowcase.Blocked, "implementation-failed:validation")
+}
+
+func TestImplementationInputUsesTypedVerdict(t *testing.T) {
+	for _, mode := range []string{"typed-reject", "legacy-prefix"} {
+		t.Run(mode, func(t *testing.T) {
+			f, cfg, id := readyImplementation(t)
+			var requestJSON string
+			if err := f.store.DB().QueryRowContext(f.ctx, `SELECT request_json FROM workflow_assessments WHERE request_json LIKE '%"PlanReviewVerdict":"ACCEPT"%'`).Scan(&requestJSON); err != nil {
+				t.Fatalf("accepted review request must carry the typed verdict: %v", err)
+			}
+			replacement := `"PlanReviewVerdict":"REJECT"`
+			if mode == "legacy-prefix" {
+				replacement = `"PlanReviewVerdict":""`
+			}
+			rewritten := strings.Replace(requestJSON, `"PlanReviewVerdict":"ACCEPT"`, replacement, 1)
+			if mode == "legacy-prefix" {
+				rewritten = strings.Replace(rewritten, `,"PlanReviewVerdict":""`, "", 1)
+			}
+			if _, err := f.store.DB().ExecContext(f.ctx, `UPDATE workflow_assessments SET request_json=? WHERE request_json=?`, rewritten, requestJSON); err != nil {
+				t.Fatal(err)
+			}
+			m := &implementationModel{}
+			_, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+			if mode == "typed-reject" && (err == nil || m.calls.Load() != 0) {
+				t.Fatalf("typed REJECT with ACCEPT reason prefix authorized implementation: err=%v calls=%d", err, m.calls.Load())
+			}
+			if mode == "legacy-prefix" && err != nil {
+				t.Fatalf("legacy row with reason prefix only was refused: %v", err)
+			}
+		})
+	}
 }

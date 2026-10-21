@@ -17,6 +17,8 @@ import (
 	"github.com/SofiaFlux/summa42/internal/execution"
 )
 
+// Session is a primitive: Registry.OpenSession and Session have no production
+// caller yet (only tests and the unwired MCP adapter use them).
 type Session struct {
 	registry *Registry
 	token    string

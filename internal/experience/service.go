@@ -195,7 +195,10 @@ func (s *Service) ActivateGrant(ctx context.Context, requestID domain.ID) (domai
 			return err
 		}
 
-		allowedJSON, _ := json.Marshal(normalized.AllowedExecutors)
+		allowedJSON, err := json.Marshal(normalized.AllowedExecutors)
+		if err != nil {
+			return fmt.Errorf("encode allowed executors: %w", err)
+		}
 		out = domain.AdaptationGrant{
 			ID: domain.NewID("grant"), RequestID: requestID, Kind: normalized.Kind, ScopeKey: normalized.ScopeKey,
 			AllowedExecutors:           append([]string(nil), normalized.AllowedExecutors...),
@@ -217,10 +220,12 @@ func (s *Service) ActivateGrant(ctx context.Context, requestID domain.ID) (domai
 	if err != nil {
 		return domain.AdaptationGrant{}, err
 	}
-	_, _ = s.audit.Append(ctx, audit.Event{
+	if _, err := s.audit.Append(ctx, audit.Event{
 		Kind: "ADAPTATION_GRANT_ACTIVATED", ActorID: s.ownerID, SubjectID: out.ID,
 		Payload: map[string]any{"grant_request_id": out.RequestID, "kind": out.Kind, "scope_key": out.ScopeKey},
-	})
+	}); err != nil {
+		return domain.AdaptationGrant{}, fmt.Errorf("audit grant activation: %w", err)
+	}
 	return out, nil
 }
 

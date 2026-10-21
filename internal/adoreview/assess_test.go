@@ -33,6 +33,10 @@ func setupAssess(t *testing.T, grant workflow.Grant) (context.Context, *state.St
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Assess verifies cited evidence exists; newReviewInput cites this fixed id.
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO evidence_objects(evidence_id, content_hash, media_type, kind, size_bytes, created_at) VALUES ('ev-review-1', 'h', 'application/json', 'ado.review.result', 0, '2026-09-24T08:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
 	return ctx, store, cases, evidenceStore, mission
 }
 
@@ -690,4 +694,22 @@ func TestAssessReviewCleanMismatchBeatsUncoveredFinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertBlocked(t, ctx, cases, c, result, "verdict-findings-mismatch")
+}
+
+func TestAssessDoesNotAliasCallerSlices(t *testing.T) {
+	ctx, _, cases, evidenceStore, mission := setupAssess(t, defaultReviewGrant())
+	c := ensureReviewCase(t, ctx, cases, mission, defaultReviewGrant())
+	required := make([]string, 1, 4)
+	required[0] = "read"
+	ceiling := make([]string, 1, 4)
+	ceiling[0] = "read"
+	c.NextWork.RequiredCapabilities = required
+	c.NextWork.AuthorityCeiling = ceiling
+	review := executors.ReviewResult{Verdict: executors.ReviewClean, ReviewedCommits: []string{"a"}, ReviewedFiles: []string{"main.go"}}
+	if _, _, err := AssessReview(ctx, cases, evidenceStore, newReviewInput(c, greenGateCaller(), review)); err != nil {
+		t.Fatal(err)
+	}
+	if required[:2][1] != "" || ceiling[:2][1] != "" {
+		t.Fatalf("caller backing arrays were written: %q %q", required[:2], ceiling[:2])
+	}
 }

@@ -34,7 +34,7 @@ func TestOCIEnforcedProxyTopologyHasNoDirectProviderRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy := teb.NewConnectProxy()
+	proxy := teb.NewConnectProxyOn(net.JoinHostPort(executorGateway, "0"))
 	endpoint, err := proxy.Start(context.Background(), teb.EgressPolicy{AllowedHosts: map[string]struct{}{providerHost: {}}})
 	if err != nil {
 		t.Fatal(err)

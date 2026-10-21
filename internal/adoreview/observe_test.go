@@ -295,7 +295,10 @@ func TestCanonicalEvidenceUsesSpecKeys(t *testing.T) {
 // Trigger: partial case advanced to READY via Assess, so the Find-first repair
 // path calls MaterializeTask on a non-active case and deterministically fails.
 func TestObserveOnceMaterializeFailureAfterAssessmentSurfacesFailedAndReusesCase(t *testing.T) {
-	ctx, _, cases, execSvc, evidenceStore, cfg := setupObserve(t)
+	ctx, store, cases, execSvc, evidenceStore, cfg := setupObserve(t)
+	if _, err := store.DB().ExecContext(ctx, `INSERT INTO evidence_objects(evidence_id, content_hash, media_type, kind, size_bytes, created_at) VALUES ('reviewed', 'h', 'application/json', 'TEST', 0, '2026-09-23T12:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
 	partial, err := cases.Ensure(ctx, workflowcase.Observation{
 		MissionID: cfg.MissionID, Source: "ado", ObjectID: "shop#1", RevisionID: "a:b",
 		EvidenceID: "ev-partial",

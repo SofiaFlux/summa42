@@ -139,10 +139,8 @@ func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 	if err != nil {
 		return ImplementationResult{}, err
 	}
-	raw, _ := source.Canonical()
-	expectedRaw, _ := input.Context.Canonical()
-	if !bytes.Equal(raw, expectedRaw) {
-		return ImplementationResult{}, errors.New("local repository differs from cited source context")
+	if err := snapshotMatches(source, input.Context); err != nil {
+		return ImplementationResult{}, fmt.Errorf("local repository differs from cited source context: %w", err)
 	}
 	sourceState, err := repoworkspace.SourceState(ctx, sourceRepo)
 	if err != nil {
@@ -336,4 +334,21 @@ func (i *Implementer) resumeStaged(ctx context.Context, task domain.Task, expect
 		return ImplementationResult{}, true, fmt.Errorf("staged execution retained; completion requires a live current fence or operator recovery: %w", err)
 	}
 	return result, true, nil
+}
+
+// snapshotMatches compares canonical forms and fails when either side cannot be
+// canonicalized (two failed encodings must never compare equal).
+func snapshotMatches(actual, expected repoworkspace.Snapshot) error {
+	raw, err := actual.Canonical()
+	if err != nil {
+		return fmt.Errorf("canonicalize actual context: %w", err)
+	}
+	expectedRaw, err := expected.Canonical()
+	if err != nil {
+		return fmt.Errorf("canonicalize cited context: %w", err)
+	}
+	if !bytes.Equal(raw, expectedRaw) {
+		return errors.New("contexts differ")
+	}
+	return nil
 }

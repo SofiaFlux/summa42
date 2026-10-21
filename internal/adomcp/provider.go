@@ -137,8 +137,8 @@ func (p *Provider) Call(ctx context.Context, capability string, request any) (an
 		if _, bypass := m["tool"]; bypass {
 			return nil, errors.New("MCP tool override is forbidden")
 		}
-		for key, value := range m {
-			args[key] = value
+		if err := copyAllowedParams(capability, m, args); err != nil {
+			return nil, err
 		}
 	case "ado.pr.list", "ado.pr.get":
 		m, ok := request.(map[string]any)
@@ -152,8 +152,8 @@ func (p *Provider) Call(ctx context.Context, capability string, request any) (an
 		if _, bypass := m["tool"]; bypass {
 			return nil, errors.New("MCP tool override is forbidden")
 		}
-		for key, value := range m {
-			args[key] = value
+		if err := copyAllowedParams(capability, m, args); err != nil {
+			return nil, err
 		}
 	case "ado.pr.org_active":
 		if request != nil {
@@ -167,8 +167,8 @@ func (p *Provider) Call(ctx context.Context, capability string, request any) (an
 			if _, bypass := m["tool"]; bypass {
 				return nil, errors.New("MCP tool override is forbidden")
 			}
-			for key, value := range m {
-				args[key] = value
+			if err := copyAllowedParams(capability, m, args); err != nil {
+				return nil, err
 			}
 		}
 		// Azure DevOps has no organization-wide active-PR listing: the real
@@ -199,8 +199,8 @@ func (p *Provider) Call(ctx context.Context, capability string, request any) (an
 		if _, bypass := m["tool"]; bypass {
 			return nil, errors.New("MCP tool override is forbidden")
 		}
-		for key, value := range m {
-			args[key] = value
+		if err := copyAllowedParams(capability, m, args); err != nil {
+			return nil, err
 		}
 	}
 	if capability == "ado.pr.list" && args["action"] == "list" {
@@ -506,6 +506,31 @@ var allowedActions = map[string]map[string]bool{
 	"ado.pr.threads":   {"list": true, "list_comments": true},
 	"ado.pr.file":      {"get_content": true, "list_directory": true},
 	"ado.build.status": {"get_status": true},
+}
+
+// allowedParams lists, per capability, every request key the provider will
+// forward to the MCP tool. The PR/build entries mirror the call sites in
+// internal/adoreview (source.go, assess.go, driver.go) and internal/adoeffects
+// (effects.go); ado.work_item.read and ado.pr.file have no in-repo caller yet,
+// so their lists name only the documented read parameters.
+var allowedParams = map[string]map[string]bool{
+	"ado.work_item.read": {"action": true, "project": true, "id": true, "ids": true, "type": true},
+	"ado.pr.list":        {"action": true, "project": true, "repositoryId": true, "continuationToken": true},
+	"ado.pr.get":         {"action": true, "project": true, "repositoryId": true, "pullRequestId": true},
+	"ado.pr.org_active":  {"project": true, "repositoryId": true, "continuationToken": true},
+	"ado.pr.threads":     {"action": true, "project": true, "repositoryId": true, "pullRequestId": true, "threadId": true},
+	"ado.pr.file":        {"action": true, "project": true, "repositoryId": true, "path": true, "version": true},
+	"ado.build.status":   {"action": true, "project": true, "buildId": true},
+}
+
+func copyAllowedParams(capability string, from, to map[string]any) error {
+	for key, value := range from {
+		if !allowedParams[capability][key] {
+			return fmt.Errorf("parameter %q is not allowed for %q", key, capability)
+		}
+		to[key] = value
+	}
+	return nil
 }
 
 func allowedAction(capability, action string) bool {

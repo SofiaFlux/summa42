@@ -28,6 +28,7 @@ func TestCaseSurvivesStoreReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedFixtureEvidence(t, ctx, store, clk)
 	svc := New(store, clk, purposes)
 	observation := sampleObservation(missionID)
 	observation.Grant = workflow.Grant{Capabilities: []string{"read", "write"}, Actions: []string{"comment"}}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -65,6 +66,9 @@ func DockerArgs(request OCIRequest) ([]string, error) {
 	workspace, err := filepath.Abs(request.Workspace)
 	if err != nil {
 		return nil, fmt.Errorf("resolve OCI workspace: %w", err)
+	}
+	if err := validateWorkspace(workspace); err != nil {
+		return nil, err
 	}
 
 	args := []string{"run", "--rm"}
@@ -140,4 +144,30 @@ func dockerExitCode(err error) int {
 		return exitErr.ExitCode()
 	}
 	return -1
+}
+
+// validateWorkspace refuses a bind-mount source that would hand the container
+// the host root or a container-runtime socket.
+func validateWorkspace(workspace string) error {
+	if filepath.Dir(workspace) == workspace {
+		return errors.New("OCI workspace must not be the filesystem root")
+	}
+	var found string
+	_ = filepath.WalkDir(workspace, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		if d.Name() == "docker.sock" {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if found != "" {
+		return fmt.Errorf("OCI workspace contains a container socket: %s", found)
+	}
+	return nil
 }

@@ -81,6 +81,7 @@ func concurrentCloseFixture(t *testing.T) (*Service, *Service, context.Context, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedFixtureEvidence(t, ctx, firstStore, clk)
 	first := New(firstStore, clk, firstPurposes)
 	initial, err := first.Ensure(ctx, sampleObservation(missionID))
 	if err != nil {

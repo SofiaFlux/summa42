@@ -38,6 +38,9 @@ type ObserveConfig struct {
 	ResourceEnvelopeID domain.ID
 	MaxSteps           int
 	RemainingBudget    int64
+	// BotLogin is the GitHub App bot login whose comments must not create new revisions.
+	// Empty disables the filter.
+	BotLogin string
 	// Once makes RunReporting run a single observe pass and return its result.
 	Once bool
 }
@@ -55,6 +58,7 @@ func (c ObserveConfig) normalized() ObserveConfig {
 		MaxSteps:           c.MaxSteps,
 		RemainingBudget:    c.RemainingBudget,
 		Once:               c.Once,
+		BotLogin:           strings.TrimSpace(c.BotLogin),
 	}
 	return normalized
 }

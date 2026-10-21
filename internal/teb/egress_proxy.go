@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type EgressPolicy struct {
@@ -112,10 +113,18 @@ type ConnectProxy struct {
 	mu       sync.Mutex
 	server   *http.Server
 	listener net.Listener
+	bindAddr string
 }
 
+// NewConnectProxy returns a proxy bound to the loopback interface only.
 func NewConnectProxy() *ConnectProxy {
-	return &ConnectProxy{}
+	return &ConnectProxy{bindAddr: "127.0.0.1:0"}
+}
+
+// NewConnectProxyOn returns a proxy bound to exactly gatewayAddr (host:port),
+// typically the executor network gateway. Wildcard addresses are refused at Start.
+func NewConnectProxyOn(gatewayAddr string) *ConnectProxy {
+	return &ConnectProxy{bindAddr: gatewayAddr}
 }
 
 func (p *ConnectProxy) Start(ctx context.Context, policy EgressPolicy) (ProxyEndpoint, error) {
@@ -127,13 +136,24 @@ func (p *ConnectProxy) Start(ctx context.Context, policy EgressPolicy) (ProxyEnd
 	if p.server != nil {
 		return ProxyEndpoint{}, errors.New("egress proxy is already started")
 	}
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	host, _, err := net.SplitHostPort(p.bindAddr)
+	if err != nil {
+		return ProxyEndpoint{}, fmt.Errorf("egress proxy bind address: %w", err)
+	}
+	if ip, perr := netip.ParseAddr(host); perr != nil || ip.IsUnspecified() {
+		return ProxyEndpoint{}, fmt.Errorf("egress proxy must bind a specific gateway address, got %q", p.bindAddr)
+	}
+	ln, err := net.Listen("tcp", p.bindAddr)
 	if err != nil {
 		return ProxyEndpoint{}, err
 	}
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleConnect(w, r, policy)
-	})}
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handleConnect(w, r, policy)
+		}),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       time.Minute,
+	}
 	p.listener = ln
 	p.server = server
 	go func() {

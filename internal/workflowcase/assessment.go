@@ -18,6 +18,10 @@ type AssessmentRequest struct {
 	RemainingBudget       int64
 	ProgressSignature     string
 	RequireLatestRevision bool `json:"RequireLatestRevision,omitempty"`
+	// PlanReviewVerdict is the typed plan-review verdict ("ACCEPT") that authorizes
+	// implementation. Rows written before this field existed carry only the reason
+	// prefix, which readers still accept when the field is absent.
+	PlanReviewVerdict string `json:"PlanReviewVerdict,omitempty"`
 }
 
 type AssessmentResult struct {
@@ -68,6 +72,15 @@ func (s *Service) Assess(ctx context.Context, request AssessmentRequest) (Assess
 		}
 		if err := s.purposes.ValidatePurposeTx(ctx, tx, domain.PurposeRef{Kind: domain.PurposeMission, ID: current.MissionID}); err != nil {
 			return err
+		}
+		for _, id := range request.Assessment.EvidenceIDs {
+			var found int
+			if err := tx.QueryRowContext(ctx, `SELECT 1 FROM evidence_objects WHERE evidence_id = ?`, id).Scan(&found); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return fmt.Errorf("assessment cites unknown evidence %q", id)
+				}
+				return err
+			}
 		}
 		if request.RemainingBudget < 0 || request.RemainingBudget > current.RemainingBudget {
 			return errors.New("remaining budget must be nonnegative and cannot increase")

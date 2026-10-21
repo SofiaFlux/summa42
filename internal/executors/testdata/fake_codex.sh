@@ -1,11 +1,11 @@
 #!/bin/sh
 set -eu
 
-if [ "$#" -ne 6 ] || [ "$1" != "exec" ] || [ "$2" != "--ephemeral" ] || [ "$3" != "--json" ] || [ "$4" != "--cd" ] || [ "$6" != "-" ]; then
+if [ "$#" -ne 8 ] || [ "$1" != "exec" ] || [ "$2" != "--ephemeral" ] || [ "$3" != "--json" ] || [ "$4" != "--sandbox" ] || [ "$5" != "workspace-write" ] || [ "$6" != "--cd" ] || [ "$8" != "-" ]; then
   echo "unexpected argv: $*" >&2
   exit 41
 fi
-workspace="$5"
+workspace="$7"
 prompt="$(cat)"
 printf '%s' "$prompt" > "$workspace/.fake_codex_prompt"
 

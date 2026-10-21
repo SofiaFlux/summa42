@@ -411,3 +411,46 @@ func TestProviderForwardsThreadFileAndBuildCalls(t *testing.T) {
 		}
 	}
 }
+
+func TestADOProviderRejectsUnlistedParameter(t *testing.T) {
+	p, _ := New(Config{Command: "/bin/true", Organization: "Contoso", DefaultProject: "P"})
+	session := &fakeSession{tools: []string{"repo_pull_request"}}
+	p.dial = func(context.Context) (mcpSession, error) { return session, nil }
+	if _, err := p.Call(t.Context(), "ado.pr.get", map[string]any{"action": "get", "pullRequestId": 1, "$expand": "all"}); err == nil {
+		t.Fatal("unlisted parameter accepted")
+	}
+	if _, err := p.Call(t.Context(), "ado.pr.org_active", map[string]any{"bogus": 1}); err == nil {
+		t.Fatal("unlisted org_active parameter accepted")
+	}
+	if len(session.called) != 0 {
+		t.Fatalf("rejected calls reached MCP: %v", session.called)
+	}
+}
+
+// The parameter sets below are exactly what adoreview (source.go, assess.go,
+// driver.go) and adoeffects (effects.go) send today.
+func TestAllowlistAcceptsCallSiteParameters(t *testing.T) {
+	p, _ := New(Config{Command: "/bin/true", Organization: "Contoso"})
+	session := &fakeSession{tools: []string{"repo_pull_request", "repo_pull_request_thread", "pipelines_build"}}
+	session.result = structuredCallResult(map[string]any{})
+	p.dial = func(context.Context) (mcpSession, error) { return session, nil }
+	for _, tc := range []struct {
+		capability string
+		args       map[string]any
+	}{
+		{"ado.pr.get", map[string]any{"action": "get", "repositoryId": "r", "pullRequestId": 1, "project": "p"}},
+		{"ado.pr.threads", map[string]any{"action": "list", "project": "p", "repositoryId": "r", "pullRequestId": 1}},
+		{"ado.build.status", map[string]any{"action": "get_status", "buildId": 7}},
+	} {
+		if _, err := p.Call(t.Context(), tc.capability, tc.args); err != nil {
+			t.Fatalf("%s rejected call-site parameters %v: %v", tc.capability, tc.args, err)
+		}
+	}
+	session.result = &mcp.CallToolResult{StructuredContent: []any{}}
+	if _, err := p.Call(t.Context(), "ado.pr.org_active", map[string]any{"project": "p", "continuationToken": "t"}); err != nil {
+		t.Fatalf("ado.pr.org_active rejected call-site parameters: %v", err)
+	}
+	if _, err := p.Call(t.Context(), "ado.pr.list", map[string]any{"action": "list", "project": "p", "repositoryId": "r", "continuationToken": "t"}); err != nil {
+		t.Fatalf("ado.pr.list rejected call-site parameters: %v", err)
+	}
+}

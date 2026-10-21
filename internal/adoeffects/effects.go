@@ -229,6 +229,7 @@ func (p *VoteProvider) CanonicalIntent(descriptor operations.IntentDescriptor) (
 	return json.Marshal(intent)
 }
 
+// CostProfile: CostTechnicallyCapped is provider-declared, not verified.
 func (p *CommentProvider) CostProfile(descriptor operations.IntentDescriptor) (operations.CostProfile, error) {
 	if _, err := p.CanonicalIntent(descriptor); err != nil {
 		return operations.CostProfile{}, err
@@ -238,6 +239,7 @@ func (p *CommentProvider) CostProfile(descriptor operations.IntentDescriptor) (o
 	}}, nil
 }
 
+// CostProfile: CostTechnicallyCapped is provider-declared, not verified.
 func (p *VoteProvider) CostProfile(descriptor operations.IntentDescriptor) (operations.CostProfile, error) {
 	if _, err := p.CanonicalIntent(descriptor); err != nil {
 		return operations.CostProfile{}, err

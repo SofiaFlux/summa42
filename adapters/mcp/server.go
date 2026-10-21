@@ -9,7 +9,7 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Server is a transport-facing MCP view over one capability Session.
+// Server is a primitive with no production caller. It is a transport-facing MCP view over one capability Session.
 // It deliberately owns no policy, authority, budget, or operation semantics.
 type Server struct {
 	inner *sdkmcp.Server

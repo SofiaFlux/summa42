@@ -3,6 +3,7 @@ package workflowcase
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -201,5 +202,20 @@ func TestAssessRejectsInactiveMission(t *testing.T) {
 	}
 	if assessmentCount(t, svc, ctx, initial.ID) != 0 {
 		t.Fatal("inactive Mission assessment was recorded")
+	}
+}
+
+func TestAssessRejectsUnknownEvidence(t *testing.T) {
+	svc, _, missionID, ctx := setupEnsure(t)
+	c, err := svc.Ensure(ctx, sampleObservation(missionID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = svc.Assess(ctx, AssessmentRequest{
+		CaseID: c.ID, WorkID: c.CurrentWorkID, RemainingBudget: 5, ProgressSignature: "s",
+		Assessment: workflow.Assessment{Verdict: workflow.Unknown, Reason: "r", EvidenceIDs: []string{"does-not-exist"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown evidence") {
+		t.Fatalf("got %v, want unknown evidence error", err)
 	}
 }

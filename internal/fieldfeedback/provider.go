@@ -61,6 +61,8 @@ func (p *Provider) Capability() string {
 	return "feedback." + p.name + ".issue.create"
 }
 
+// EnforcementLevel and the CostProfile below are provider-declared constants,
+// not values measured at runtime.
 func (p *Provider) EnforcementLevel() domain.EnforcementLevel {
 	return domain.EnforcementEnforced
 }
@@ -102,6 +104,7 @@ func (p *Provider) CanonicalIntent(descriptor operations.IntentDescriptor) ([]by
 	return json.Marshal(intent)
 }
 
+// CostProfile: CostTechnicallyCapped is provider-declared, not verified.
 func (p *Provider) CostProfile(descriptor operations.IntentDescriptor) (operations.CostProfile, error) {
 	if _, err := p.CanonicalIntent(descriptor); err != nil {
 		return operations.CostProfile{}, err

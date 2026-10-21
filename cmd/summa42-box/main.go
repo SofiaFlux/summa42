@@ -1094,6 +1094,7 @@ func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, er
 	var remainingBudget int64
 	var pollInterval time.Duration
 	var once bool
+	var botLogin string
 
 	flags := flag.NewFlagSet("run-gh-intake", flag.ContinueOnError)
 	flags.StringVar(&mission, "mission", "", "mission ID for GitHub issue cases")
@@ -1102,6 +1103,7 @@ func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, er
 	flags.Var(&grantCaps, "grant-capability", "capability granted to issue cases (repeatable; must include github.issue.read)")
 	flags.Var(&grantActions, "grant-action", "action granted to issue cases (repeatable; must also be a --grant-capability)")
 	flags.Var(&workCaps, "work-capability", "additional work capability (repeatable)")
+	flags.StringVar(&botLogin, "bot-login", "", "GitHub App bot login whose comments must not create new issue revisions (optional)")
 	flags.BoolVar(&once, "once", false, "run one observe pass and exit")
 	flags.StringVar(&envelope, "envelope", "", "resource envelope ID for triage tasks")
 	flags.IntVar(&maxSteps, "max-steps", 3, "maximum workflow steps per issue case")
@@ -1183,6 +1185,7 @@ func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, er
 	cfg.Maintainers = logins
 	cfg.Grant = workflow.Grant{Capabilities: capabilities, Actions: actions}
 	cfg.Once = once
+	cfg.BotLogin = strings.TrimSpace(botLogin)
 	cfg.WorkCapabilities = work
 	cfg.ResourceEnvelopeID = domain.ID(strings.TrimSpace(envelope))
 	cfg.MaxSteps = maxSteps
@@ -1209,9 +1212,10 @@ func openGHIntakeBox(ctx context.Context, cfg summa42runtime.Config) (*summa42ru
 // resolved repository and the environment. BaseURL stays unset so the client
 // applies its api.github.com default: the loopback override is a test seam the
 // CLI cannot reach.
-func ghIntakeClientConfig(repository string) ghissue.Config {
+func ghIntakeClientConfig(repository, botLogin string) ghissue.Config {
 	return ghissue.Config{
 		Repository: repository,
+		BotLogin:   botLogin,
 		TokenFile:  strings.TrimSpace(os.Getenv("SUMMA42_GITHUB_TOKEN_FILE")),
 	}
 }
@@ -1290,7 +1294,7 @@ func runGHIntake(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	client, err := ghissue.New(ghIntakeClientConfig(observerCfg.Repository))
+	client, err := ghissue.New(ghIntakeClientConfig(observerCfg.Repository, observerCfg.BotLogin))
 	if err != nil {
 		return fmt.Errorf("construct read-only GitHub issues client: %w", err)
 	}

@@ -258,6 +258,7 @@ func (r *PlanReviewer) reviewCase(ctx context.Context, c workflowcase.Case) (boo
 		return false, err
 	}
 	output := record.PlanReviewOutput
+	typedVerdict := ""
 	assessment := workflow.Assessment{Verdict: workflow.Unknown, Reason: "plan-review:" + output.Verdict + ": " + output.Reason, EvidenceIDs: []string{string(object.ID)}}
 	if output.Verdict == "ACCEPT" {
 		caps := []string{"workspace.repo.write", "workspace.test"}
@@ -269,12 +270,13 @@ func (r *PlanReviewer) reviewCase(ctx context.Context, c workflowcase.Case) (boo
 		}
 		if authorized {
 			assessment.Verdict = workflow.Continue
+			typedVerdict = "ACCEPT"
 			assessment.Next = &workflow.WorkProposal{Kind: ImplementationWorkKind, RequiredCapabilities: append([]string(nil), caps...), AuthorityCeiling: append([]string(nil), caps...), ProposedActions: append([]string(nil), caps...)}
 		} else {
 			assessment.Reason = "plan-review:implementation-grant-missing"
 		}
 	}
-	result, err := r.cases.Assess(ctx, workflowcase.AssessmentRequest{CaseID: c.ID, WorkID: c.CurrentWorkID, Assessment: assessment, RemainingBudget: c.RemainingBudget, ProgressSignature: object.ContentHash, RequireLatestRevision: true})
+	result, err := r.cases.Assess(ctx, workflowcase.AssessmentRequest{CaseID: c.ID, WorkID: c.CurrentWorkID, Assessment: assessment, RemainingBudget: c.RemainingBudget, ProgressSignature: object.ContentHash, RequireLatestRevision: true, PlanReviewVerdict: typedVerdict})
 	if err != nil {
 		return false, err
 	}

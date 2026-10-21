@@ -203,8 +203,8 @@ func AssessReview(ctx context.Context, cases *workflowcase.Service, evidenceStor
 		if !contains(input.Case.Grant.Capabilities, effectApproveCapability) {
 			return hold("grant-denies-capability:ado.pr.approve: grant does not permit approving the PR")
 		}
-		input.Case.NextWork.RequiredCapabilities = append(input.Case.NextWork.RequiredCapabilities, effectApproveCapability)
-		input.Case.NextWork.AuthorityCeiling = append(input.Case.NextWork.AuthorityCeiling, effectApproveCapability)
+		input.Case.NextWork.RequiredCapabilities = append(append([]string(nil), input.Case.NextWork.RequiredCapabilities...), effectApproveCapability)
+		input.Case.NextWork.AuthorityCeiling = append(append([]string(nil), input.Case.NextWork.AuthorityCeiling...), effectApproveCapability)
 		return finish(workflow.Continue, []string{effectApproveCapability}, ReviewDecision{
 			Action: DecisionApproveAction, Vote: "approve",
 			Reason: fmt.Sprintf("review CLEAN for %s %s; approving PR", objectID, revisionID),
@@ -216,8 +216,8 @@ func AssessReview(ctx context.Context, cases *workflowcase.Service, evidenceStor
 		if !contains(input.Case.Grant.Capabilities, effectCommentCapability) {
 			return hold("grant-denies-capability:ado.pr.comment: grant does not permit commenting on the PR")
 		}
-		input.Case.NextWork.RequiredCapabilities = append(input.Case.NextWork.RequiredCapabilities, effectCommentCapability)
-		input.Case.NextWork.AuthorityCeiling = append(input.Case.NextWork.AuthorityCeiling, effectCommentCapability)
+		input.Case.NextWork.RequiredCapabilities = append(append([]string(nil), input.Case.NextWork.RequiredCapabilities...), effectCommentCapability)
+		input.Case.NextWork.AuthorityCeiling = append(append([]string(nil), input.Case.NextWork.AuthorityCeiling...), effectCommentCapability)
 		comments := make([]DecisionComment, 0, len(input.Review.Findings))
 		for _, finding := range input.Review.Findings {
 			comments = append(comments, renderComment(finding))

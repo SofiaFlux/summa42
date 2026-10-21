@@ -575,3 +575,38 @@ func TestClientExposesOnlyReadOperations(t *testing.T) {
 		t.Fatalf("probed methods = %v, want only ListIssues and Name", probed)
 	}
 }
+
+func TestBotCommentDoesNotCreateRevision(t *testing.T) {
+	issue := `{"number":7,"title":"t","body":"","state":"open","user":{"login":"maint"},"assignees":[],"labels":[],"comments":2,` +
+		`"created_at":"2026-09-24T08:00:00Z","updated_at":"2026-09-24T10:00:00Z","html_url":"https://github.com/o/r/issues/7"}`
+	comments := `[{"user":{"login":"maint"},"updated_at":"2026-09-24T09:00:00Z"},{"user":{"login":"my-app[bot]"},"updated_at":"2026-09-24T10:00:00Z"}]`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/comments") {
+			_, _ = w.Write([]byte(comments))
+			return
+		}
+		_, _ = w.Write([]byte("[" + issue + "]"))
+	}))
+	defer server.Close()
+	revision := func(botLogin string) string {
+		client, err := New(Config{BaseURL: server.URL, Repository: "o/r", TokenFile: tokenFile(t, "tok\n"), BotLogin: botLogin})
+		if err != nil {
+			t.Fatal(err)
+		}
+		issues, bad, err := CollectIssues(context.Background(), client)
+		if err != nil || len(bad) != 0 || len(issues) != 1 {
+			t.Fatalf("collect: %v bad=%d issues=%d", err, len(bad), len(issues))
+		}
+		return issues[0].RevisionID()
+	}
+	if got := revision(""); got != "2026-09-24T10:00:00Z" {
+		t.Fatalf("without bot login the revision is updated_at, got %s", got)
+	}
+	if got := revision("My-App[bot]"); got != "2026-09-24T09:00:00Z" {
+		t.Fatalf("bot comment created a new revision: %s", got)
+	}
+	comments = `[{"user":{"login":"maint"},"updated_at":"2026-09-24T10:00:00Z"},{"user":{"login":"my-app[bot]"},"updated_at":"2026-09-24T09:00:00Z"}]`
+	if got := revision("my-app[bot]"); got != "2026-09-24T10:00:00Z" {
+		t.Fatalf("human comment must still create a revision: %s", got)
+	}
+}

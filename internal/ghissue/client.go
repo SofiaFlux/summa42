@@ -37,6 +37,10 @@ type Config struct {
 	TokenFile        string
 	Timeout          time.Duration
 	MaxResponseBytes int
+	// BotLogin is the GitHub App bot login (for example "my-app[bot]"). When set, an
+	// issue whose latest update is only a comment by this login keeps the revision it
+	// had before that comment. Empty keeps the issue's updated_at as the revision.
+	BotLogin string
 }
 
 // Client performs GET requests only; no write method exists on the type.
@@ -46,6 +50,7 @@ type Client struct {
 	tokenFile        string
 	http             *http.Client
 	maxResponseBytes int
+	botLogin         string
 }
 
 func New(cfg Config) (*Client, error) {
@@ -105,6 +110,7 @@ func New(cfg Config) (*Client, error) {
 		tokenFile:        tokenFile,
 		http:             &http.Client{Timeout: timeout, CheckRedirect: rejectRedirect},
 		maxResponseBytes: limit,
+		botLogin:         strings.TrimSpace(cfg.BotLogin),
 	}, nil
 }
 
@@ -164,6 +170,11 @@ func (c *Client) ListIssues(ctx context.Context, cursor string) ([]any, []Unpars
 		if err := classifyWireItem(item); err != nil {
 			unparseable = append(unparseable, Unparseable{Raw: item})
 			continue
+		}
+		if c.botLogin != "" {
+			if err := c.discountBotComments(ctx, token, item.(map[string]any)); err != nil {
+				return nil, nil, "", err
+			}
 		}
 		items = append(items, item)
 	}
@@ -307,4 +318,94 @@ func readTokenFile(path string) (string, error) {
 		return "", errors.New("GitHub issues credential file is empty")
 	}
 	return token, nil
+}
+
+// maxCommentPages bounds the comment scan for one issue; beyond it the issue's own
+// updated_at is kept (the conservative, pre-existing behaviour).
+const maxCommentPages = 10
+
+// discountBotComments rewrites item["updated_at"] when the issue's latest update is
+// exactly the latest comment and that comment was written by the configured bot: the
+// revision then falls back to the latest non-bot comment, or the issue's creation time.
+// ponytail: a human edit made after the last human comment and before the bot's reply
+// is not seen as a new revision; the bot only replies to an already observed revision.
+func (c *Client) discountBotComments(ctx context.Context, token string, item map[string]any) error {
+	if n, ok := item["comments"].(float64); ok && n == 0 {
+		return nil
+	}
+	number, err := numberOf(item)
+	if err != nil {
+		return err
+	}
+	updatedRaw, _ := item["updated_at"].(string)
+	updated, err := time.Parse(time.RFC3339, updatedRaw)
+	if err != nil {
+		return nil
+	}
+	created, err := time.Parse(time.RFC3339, fmt.Sprint(item["created_at"]))
+	if err != nil {
+		return nil
+	}
+	var latest, latestHuman time.Time
+	latestByBot := false
+	for page := 1; ; page++ {
+		if page > maxCommentPages {
+			return nil
+		}
+		target := c.baseURL.String() + "/repos/" + c.repository + "/issues/" + strconv.FormatInt(number, 10) +
+			"/comments?per_page=" + strconv.Itoa(pageSize) + "&page=" + strconv.Itoa(page)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		if err != nil {
+			return fmt.Errorf("build GitHub issue comments request: %w", err)
+		}
+		request.Header.Set("Accept", "application/vnd.github+json")
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("User-Agent", userAgent)
+		response, err := c.http.Do(request)
+		if err != nil {
+			return fmt.Errorf("list GitHub issue comments: %w", err)
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, int64(c.maxResponseBytes)+1))
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return fmt.Errorf("list GitHub issue comments: unexpected status %d", response.StatusCode)
+		}
+		if readErr != nil || len(body) > c.maxResponseBytes {
+			return errors.New("read GitHub issue comments response failed or exceeded the size limit")
+		}
+		var comments []struct {
+			User struct {
+				Login string `json:"login"`
+			} `json:"user"`
+			UpdatedAt string `json:"updated_at"`
+		}
+		if err := json.Unmarshal(body, &comments); err != nil {
+			return fmt.Errorf("decode GitHub issue comments: %w", err)
+		}
+		for _, comment := range comments {
+			at, err := time.Parse(time.RFC3339, comment.UpdatedAt)
+			if err != nil {
+				return nil
+			}
+			bot := strings.EqualFold(comment.User.Login, c.botLogin)
+			if !at.Before(latest) {
+				latest, latestByBot = at, bot
+			}
+			if !bot && at.After(latestHuman) {
+				latestHuman = at
+			}
+		}
+		if len(comments) < pageSize {
+			break
+		}
+	}
+	if latest.IsZero() || !latestByBot || !latest.Equal(updated) {
+		return nil
+	}
+	effective := created
+	if latestHuman.After(effective) {
+		effective = latestHuman
+	}
+	item["updated_at"] = effective.UTC().Format(time.RFC3339)
+	return nil
 }

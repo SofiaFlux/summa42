@@ -81,13 +81,13 @@ func (s *Service) Evaluate(ctx context.Context, proposalID domain.ID) (domain.Ex
 		return nil
 	})
 	if err!=nil{return domain.ExperienceRule{},err}
-	_,_ = s.audit.Append(ctx,audit.Event{
+	if _,err:=s.audit.Append(ctx,audit.Event{
 		Kind:"EXPERIENCE_RULE_EVALUATED",ActorID:"experience-service",SubjectID:rule.ID,
 		Payload:map[string]any{
 			"proposal_id":rule.ProposalID,"grant_id":rule.GrantID,"state":rule.State,
 			"verified_samples":rule.VerifiedSamples,"evidence_ids":evidenceIDs,"outcome_ids":outcomeIDs,
 		},
-	})
+	});err!=nil{return domain.ExperienceRule{},fmt.Errorf("audit rule evaluation: %w",err)}
 	return rule,nil
 }
 
@@ -112,10 +112,10 @@ func (s *Service) Preference(ctx context.Context,q PreferenceQuery)(Preference,b
 	if len(out)==0{return Preference{},false,nil}
 	if len(out)>1&&out[0].ExecutorKind!=out[1].ExecutorKind{
 		// Ambiguity is not an error: fall back to the baseline and leave an audit record.
-		_,_ = s.audit.Append(ctx,audit.Event{
+		if _,err:=s.audit.Append(ctx,audit.Event{
 			Kind:"EXPERIENCE_PREFERENCE_AMBIGUOUS",ActorID:"experience-service",SubjectID:domain.ID(q.ScopeKey),
 			Payload:map[string]any{"scope_key":q.ScopeKey,"rule_ids":[]domain.ID{out[0].RuleID,out[1].RuleID},"executors":[]string{out[0].ExecutorKind,out[1].ExecutorKind}},
-		})
+		});err!=nil{return Preference{},false,fmt.Errorf("audit ambiguous preference: %w",err)}
 		return Preference{},false,nil
 	}
 	return out[0],true,nil
@@ -213,9 +213,8 @@ func (s *Service) Rules(ctx context.Context)([]domain.ExperienceRule,error){
 		err:=s.store.DB().QueryRowContext(ctx,
 			"SELECT rule_id, proposal_id, grant_id, version, adaptation_kind, scope_key, generic_task_class, preferred_executor, state, verified_samples, activated_at, rolled_back_at, created_at FROM experience_rules WHERE rule_id = ?",id,
 		).Scan(&rule.ID,&rule.ProposalID,&rule.GrantID,&rule.Version,&rule.AdaptationKind,&rule.ScopeKey,&rule.GenericTaskClass,&rule.PreferredExecutor,&rule.State,&rule.VerifiedSamples,&activated,&rolled,&created)
-		if err!=nil{return nil,err};rule.CreatedAt,_=time.Parse(time.RFC3339Nano,created)
-		if activated.Valid{rule.ActivatedAt,_=time.Parse(time.RFC3339Nano,activated.String)}
-		if rolled.Valid{rule.RolledBackAt,_=time.Parse(time.RFC3339Nano,rolled.String)}
+		if err!=nil{return nil,err}
+		if err:=parseRuleTimes(&rule,created,activated,rolled);err!=nil{return nil,err}
 		out=append(out,rule)
 	}
 	return out,rows.Err()
@@ -226,8 +225,15 @@ func (s *Service) Rule(ctx context.Context,id domain.ID)(domain.ExperienceRule,e
 	err:=s.store.DB().QueryRowContext(ctx,
 		"SELECT rule_id, proposal_id, grant_id, version, adaptation_kind, scope_key, generic_task_class, preferred_executor, state, verified_samples, activated_at, rolled_back_at, created_at FROM experience_rules WHERE rule_id = ?",id,
 	).Scan(&rule.ID,&rule.ProposalID,&rule.GrantID,&rule.Version,&rule.AdaptationKind,&rule.ScopeKey,&rule.GenericTaskClass,&rule.PreferredExecutor,&rule.State,&rule.VerifiedSamples,&activated,&rolled,&created)
-	if err!=nil{return domain.ExperienceRule{},err};rule.CreatedAt,_=time.Parse(time.RFC3339Nano,created)
-	if activated.Valid{rule.ActivatedAt,_=time.Parse(time.RFC3339Nano,activated.String)}
-	if rolled.Valid{rule.RolledBackAt,_=time.Parse(time.RFC3339Nano,rolled.String)}
+	if err!=nil{return domain.ExperienceRule{},err}
+	if err:=parseRuleTimes(&rule,created,activated,rolled);err!=nil{return domain.ExperienceRule{},err}
 	return rule,nil
+}
+
+func parseRuleTimes(rule *domain.ExperienceRule,created string,activated,rolled sql.NullString)error{
+	var err error
+	if rule.CreatedAt,err=time.Parse(time.RFC3339Nano,created);err!=nil{return fmt.Errorf("parse rule created_at: %w",err)}
+	if activated.Valid{if rule.ActivatedAt,err=time.Parse(time.RFC3339Nano,activated.String);err!=nil{return fmt.Errorf("parse rule activated_at: %w",err)}}
+	if rolled.Valid{if rule.RolledBackAt,err=time.Parse(time.RFC3339Nano,rolled.String);err!=nil{return fmt.Errorf("parse rule rolled_back_at: %w",err)}}
+	return nil
 }

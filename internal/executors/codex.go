@@ -102,7 +102,7 @@ func (e *CodexExecutor) Start(ctx context.Context, envelope AttemptEnvelope) (Ex
 	runCtx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, e.path, "exec", "--ephemeral", "--json", "--cd", workspace, "-")
+	cmd := exec.CommandContext(runCtx, e.path, "exec", "--ephemeral", "--json", "--sandbox", "workspace-write", "--cd", workspace, "-")
 	cmd.Dir = workspace
 	cmd.Env = environmentList(e.environment)
 	cmd.Stdin = strings.NewReader(codexPrompt(envelope))

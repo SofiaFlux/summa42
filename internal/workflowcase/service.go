@@ -572,10 +572,32 @@ func (s *Service) ensureTx(ctx context.Context, tx *sql.Tx, prepared preparedObs
 		return Case{}, err
 	}
 	if storedRequest != prepared.requestJSON {
-		return Case{}, errors.New("observation revision already exists with a different initial request")
+		// Mission/source/object/revision are the lookup key. Evidence id, step cap and
+		// budget may legitimately differ on a re-observation; the authority-bearing
+		// config (grant and first work) must not.
+		var stored Observation
+		if err := json.Unmarshal([]byte(storedRequest), &stored); err != nil {
+			return Case{}, fmt.Errorf("decode stored initial request: %w", err)
+		}
+		storedGrant, err := json.Marshal(stored.Grant)
+		if err != nil {
+			return Case{}, err
+		}
+		storedWork, err := json.Marshal(stored.FirstWork)
+		if err != nil {
+			return Case{}, err
+		}
+		if string(storedGrant) != prepared.grantJSON || string(storedWork) != prepared.workJSON {
+			return Case{}, ErrIntakeConfigChanged
+		}
 	}
 	return result, nil
 }
+
+// ErrIntakeConfigChanged reports that an existing revision was observed again with a
+// different grant or first work. Grants are explicit, so the change is refused rather
+// than silently ignored or applied.
+var ErrIntakeConfigChanged = errors.New("observation revision already exists with a different grant or first work; grants are explicit and cannot change for an existing revision")
 
 func (s *Service) Ensure(ctx context.Context, observation Observation) (Case, error) {
 	if s == nil || s.store == nil || s.clock == nil || s.purposes == nil {

@@ -74,6 +74,20 @@ func TestCodexExecutorNormalizesJSONLAndUsesLiteralStdin(t *testing.T) {
 	}
 }
 
+func TestCodexPassesExplicitSandbox(t *testing.T) {
+	executor, err := NewCodexExecutor(CodexConfig{Path: copyFakeCodex(t), Timeout: 5 * time.Second, Environment: map[string]string{"PATH": os.Getenv("PATH")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := executor.Start(t.Context(), AttemptEnvelope{TaskID: "t", AttemptID: "a", Objective: "o", Workspace: t.TempDir(), ResourceEnvelopeID: "r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code = %d (fake codex requires --sandbox workspace-write): %s", result.ExitCode, result.Stderr)
+	}
+}
+
 func TestCodexExecutorRejectsAmbientProtectedCredentials(t *testing.T) {
 	fake := copyFakeCodex(t)
 	for _, key := range []string{"GITHUB_TOKEN", "AZURE_CLIENT_SECRET", "AWS_SECRET_ACCESS_KEY", "SUMMA42_OWNER_PRIVATE_KEY"} {

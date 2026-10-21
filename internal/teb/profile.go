@@ -1,3 +1,8 @@
+// Package teb holds trusted-execution-boundary primitives (OCI argument
+// building, egress proxy, egress assessment). They are primitives, not wired:
+// nothing here establishes a guarantee on its own, and several guarantee names
+// (for example NO_AMBIENT_CREDENTIALS, NO_CONTAINER_SOCKET) are declared
+// without a runtime check. Treat the package as experimental.
 package teb
 
 import (

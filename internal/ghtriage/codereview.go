@@ -288,13 +288,8 @@ func observeReview(ctx context.Context, sourceRepo string, input ImplementationI
 	if err != nil {
 		return err
 	}
-	raw, err := actual.Canonical()
-	if err != nil {
-		return err
-	}
-	expected, _ := input.Context.Canonical()
-	if !bytes.Equal(raw, expected) {
-		return errors.New("review source context differs")
+	if err := snapshotMatches(actual, input.Context); err != nil {
+		return fmt.Errorf("review source context differs: %w", err)
 	}
 	return repoworkspace.VerifyCandidate(ctx, record.Workspace, record.Candidate)
 }

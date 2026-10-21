@@ -10,6 +10,7 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/purpose"
+	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 	"github.com/SofiaFlux/summa42/internal/testutil"
 	"github.com/SofiaFlux/summa42/internal/workflow"
 )
@@ -24,7 +25,20 @@ func setupEnsure(t *testing.T) (*Service, *purpose.Service, domain.ID, context.C
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedFixtureEvidence(t, ctx, store, clk)
 	return New(store, clk, purposes), purposes, missionID, ctx
+}
+
+// seedFixtureEvidence inserts the fixed evidence ids the fixtures cite: Assess verifies
+// cited evidence exists.
+func seedFixtureEvidence(t *testing.T, ctx context.Context, store *state.Store, clk *testutil.Clock) {
+	t.Helper()
+	for _, id := range []string{"blocked-evidence", "evidence", "publication-evidence", "ready-evidence", "review-evidence", "reviewed"} {
+		if _, err := store.DB().ExecContext(ctx, `INSERT INTO evidence_objects(evidence_id,content_hash,media_type,kind,size_bytes,created_at) VALUES (?,?,'application/json','TEST',1,?)`,
+			id, "hash-"+id, clk.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func sampleObservation(missionID domain.ID) Observation {
@@ -279,5 +293,27 @@ func TestEnsureAllowsObjectAfterOtherMissionCaseClosed(t *testing.T) {
 	request.RevisionID = "r2"
 	if _, err := svc.Ensure(ctx, request); err != nil {
 		t.Fatalf("closed owner still blocked: %v", err)
+	}
+}
+
+func TestEnsureReportsConfigChange(t *testing.T) {
+	svc, _, missionID, ctx := setupEnsure(t)
+	request := sampleObservation(missionID)
+	first, err := svc.Ensure(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Non-authority fields may differ on re-observation.
+	again := request
+	again.EvidenceID = "e2"
+	again.RemainingBudget = 1
+	replay, err := svc.Ensure(ctx, again)
+	if err != nil || replay.ID != first.ID {
+		t.Fatalf("re-observation with new evidence id: %+v %v", replay, err)
+	}
+	changed := request
+	changed.Grant.Capabilities = []string{"read", "write"}
+	if _, err := svc.Ensure(ctx, changed); !errors.Is(err, ErrIntakeConfigChanged) {
+		t.Fatalf("grant change: got %v, want ErrIntakeConfigChanged", err)
 	}
 }

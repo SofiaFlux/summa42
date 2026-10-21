@@ -308,3 +308,25 @@ func TestOutcomeCostIsDistinctAndNullWhileReservationOpen(t *testing.T) {
 		t.Fatal("acceptance of another attempt supplied latency")
 	}
 }
+
+func TestActivationFailsWhenAuditAppendFails(t *testing.T) {
+	svc, ap, clk := newExpHarness(t)
+	ctx := context.Background()
+	req, err := svc.RequestGrant(ctx, GrantInput{
+		Kind: AdaptationExecutorPreference, ScopeKey: "repo.review",
+		AllowedExecutors: []string{"codex"}, MinVerifiedSamples: 3,
+		MaxAcceptanceRegressionBps: 500, MaxCostRegressionBps: 1000, ExpiresAt: clk.Now().Add(24 * time.Hour),
+	}, "requester-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ap.Approve(ctx, req.ApprovalID, "owner-1", req.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.store.DB().ExecContext(ctx, "DROP TABLE audit_events"); err != nil {
+		t.Skipf("cannot break audit table: %v", err)
+	}
+	if _, err := svc.ActivateGrant(ctx, req.ID); err == nil {
+		t.Fatal("ActivateGrant swallowed the audit append failure")
+	}
+}
