@@ -91,7 +91,7 @@ Field observations during autonomous pipeline execution identified four platform
 
 ## What is authoritative
 
-SQLite is the sole MVC source of truth and must live on a **local filesystem**. It runs in WAL mode with `synchronous=FULL`, foreign keys enabled and a busy timeout. The database is not supported on NFS/SMB or as shared multi-Cube state.
+SQLite is the sole MVC source of truth and must live on a **local filesystem**. It runs in WAL mode with `synchronous=FULL`, foreign keys enabled and a busy timeout. The database is not supported on NFS/SMB or as shared multi-Cube state. The Box and the `run-*` subcommands may run concurrently as separate processes on one local DB; correctness comes from guarded `BEGIN IMMEDIATE` transactions, not process exclusivity.
 
 Canonical semantics distinguish:
 

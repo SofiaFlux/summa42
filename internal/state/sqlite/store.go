@@ -37,6 +37,8 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// One connection per process serializes this process only; other processes
+	// are kept correct by BEGIN IMMEDIATE transactions and guards, not by this.
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
@@ -75,8 +77,26 @@ func localFileDSN(path string) (string, error) {
 	q.Set("_foreign_keys", "on")
 	q.Set("_journal_mode", "WAL")
 	q.Set("_synchronous", "FULL")
+	// Every WithTx starts BEGIN IMMEDIATE: the write lock is taken up front, so
+	// busy_timeout applies and a stale deferred snapshot cannot fail mid-guard.
+	q.Set("_txlock", "immediate")
 	u.RawQuery = q.Encode()
 	return u.String(), nil
+}
+
+// IsBusy reports whether err is SQLITE_BUSY or SQLITE_LOCKED, including their
+// extended codes (the low byte is the primary result code). Other processes
+// (Box, run-* subcommands) may hold the write lock past busy_timeout.
+func IsBusy(err error) bool {
+	var coded interface{ Code() int }
+	if !errors.As(err, &coded) {
+		return false
+	}
+	switch coded.Code() & 0xff {
+	case 5, 6:
+		return true
+	}
+	return false
 }
 
 func (s *Store) DB() *sql.DB {

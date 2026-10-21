@@ -14,6 +14,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/execution"
 	"github.com/SofiaFlux/summa42/internal/executors"
+	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 	"github.com/SofiaFlux/summa42/internal/verification"
 )
 
@@ -251,6 +252,11 @@ func (w *Worker) stepGuarded(ctx context.Context, capacity CapacitySnapshot) err
 	}
 	_, err := w.StepOnce(ctx, capacity)
 	if err != nil && ctx.Err() != nil {
+		return nil
+	}
+	if err != nil && state.IsBusy(err) {
+		// Another process holds the write lock past busy_timeout; retry next tick.
+		fmt.Fprintf(os.Stderr, "step busy (retrying next tick): %v\n", err)
 		return nil
 	}
 	return err

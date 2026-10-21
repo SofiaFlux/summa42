@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"context"
 	"encoding/json"
+	"database/sql"
 	"errors"
 	"os"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/execution"
 	"github.com/SofiaFlux/summa42/internal/executors"
 	"github.com/SofiaFlux/summa42/internal/purpose"
+	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 	"github.com/SofiaFlux/summa42/internal/resources"
 	"github.com/SofiaFlux/summa42/internal/scheduler"
 	"github.com/SofiaFlux/summa42/internal/testutil"
@@ -951,6 +953,102 @@ func TestWorkerKeepsRunningAfterRecoveryError(t *testing.T) {
 			t.Fatalf("Run stopped after a recovery error: %v", err)
 		case <-deadline:
 			t.Fatal("recovery hook not called repeatedly")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v, want nil", err)
+	}
+}
+
+func TestWorkerRunRetriesBusyStep(t *testing.T) {
+	ctx := context.Background()
+	store := testutil.OpenStore(t)
+	// A second handle on the same file stands in for another process.
+	var dbPath string
+	if err := store.DB().QueryRowContext(ctx, `SELECT file FROM pragma_database_list WHERE name = 'main'`).Scan(&dbPath); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := state.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.DB().Close()
+	if _, err := store.DB().ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
+		t.Fatal(err)
+	}
+	clk := testutil.NewClock(time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC))
+	purposes := purpose.New(store, clk)
+	execSvc := execution.New(store, clk, purposes)
+	schedSvc := scheduler.New(store, clk, purposes, execSvc, resources.New(store, clk), time.Minute)
+	evidenceStore, err := evidence.New(store, t.TempDir(), clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelopeID := domain.NewID("envelope")
+	if _, err := store.DB().ExecContext(ctx,
+		`INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at) VALUES (?, ?, ?)`,
+		envelopeID, 100, clk.Now().UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		t.Fatal(err)
+	}
+	task, err := execSvc.CreateTask(ctx, execution.TaskRequest{
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeOwnerDirective, ID: domain.ID("owner-worker")},
+		Objective:            "review the diff",
+		AcceptanceCriteria:   []string{"done"},
+		RequiredCapabilities: []string{"shell"},
+		RequiredEnforcement:  domain.EnforcementEnforced,
+		AuthorityCeiling:     []string{"shell"},
+		ResourceEnvelopeID:   envelopeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacity := scheduler.CapacitySnapshot{Capabilities: map[string]scheduler.CapabilityCapacity{
+		"shell": {Accessible: true, Enforcement: domain.EnforcementEnforced},
+	}}
+	worker, err := scheduler.NewWorker(schedSvc, execSvc, evidenceStore, verification.New(store, clk, execSvc),
+		map[string]executors.Executor{"shell": &fakeExecutor{result: executors.ExecutionResult{ExitCode: 0, Stdout: "ok"}}}, clk, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ticks atomic.Int32
+	worker.WithRecovery(func(context.Context) error { ticks.Add(1); return nil })
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	release := make(chan struct{})
+	held := make(chan struct{})
+	go func() {
+		_ = holder.WithTx(ctx, func(*sql.Tx) error { close(held); <-release; return nil })
+	}()
+	<-held
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(runCtx, capacity, time.Millisecond) }()
+	deadline := time.After(10 * time.Second)
+	for ticks.Load() < 3 {
+		select {
+		case err := <-done:
+			t.Fatalf("Run stopped on a busy step: %v", err)
+		case <-deadline:
+			t.Fatal("worker did not keep ticking")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	close(release)
+	for {
+		reloaded, err := execSvc.Task(ctx, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reloaded.State == domain.TaskAwaitingVerification {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("Run stopped: %v", err)
+		case <-deadline:
+			t.Fatalf("task stuck in %s after the lock was released", reloaded.State)
 		case <-time.After(time.Millisecond):
 		}
 	}

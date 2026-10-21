@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -287,5 +288,87 @@ func TestGovernanceStateSurvivesCloseAndReopen(t *testing.T) {
 	if manifestHash != "manifest-hash" || approvalState != "PENDING" || ruleState != "ACTIVE" || operationState != "OUTCOME_UNKNOWN" || reconciliation != 1 {
 		t.Fatalf("reopened state manifest=%q approval=%q rule=%q operation=%q reconcile=%d",
 			manifestHash, approvalState, ruleState, operationState, reconciliation)
+	}
+}
+
+func TestConcurrentProcessesWriteWithoutBusyCrash(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	var stores [2]*state.Store
+	for i := range stores {
+		s, err := state.Open(ctx, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = s.DB().Close() })
+		stores[i] = s
+	}
+	if _, err := stores[0].DB().ExecContext(ctx, `CREATE TABLE IF NOT EXISTS k19_counter (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stores[0].DB().ExecContext(ctx, `INSERT INTO k19_counter (id, n) VALUES (1, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	const writes = 200
+	errs := make(chan error, len(stores))
+	for _, s := range stores {
+		go func() {
+			for i := 0; i < writes; i++ {
+				// Guarded read-then-write: a deferred BEGIN fails here with a stale snapshot.
+				err := s.WithTx(ctx, func(tx *sql.Tx) error {
+					var n int
+					if err := tx.QueryRowContext(ctx, `SELECT n FROM k19_counter WHERE id = 1`).Scan(&n); err != nil {
+						return err
+					}
+					_, err := tx.ExecContext(ctx, `UPDATE k19_counter SET n = ? WHERE id = 1 AND n = ?`, n+1, n)
+					return err
+				})
+				if err != nil {
+					errs <- err
+					return
+				}
+			}
+			errs <- nil
+		}()
+	}
+	for range stores {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent write: %v", err)
+		}
+	}
+	var n int
+	if err := stores[0].DB().QueryRowContext(ctx, `SELECT n FROM k19_counter WHERE id = 1`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2*writes {
+		t.Fatalf("counter = %d, want %d (lost update)", n, 2*writes)
+	}
+}
+
+func TestIsBusyClassifiesBusyAndLockedCodes(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	holder, err := state.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.DB().Close() })
+	other, err := state.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.DB().Close() })
+	if _, err := other.DB().ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
+		t.Fatal(err)
+	}
+	_ = holder.WithTx(ctx, func(*sql.Tx) error {
+		err := other.WithTx(ctx, func(*sql.Tx) error { return nil })
+		if err == nil || !state.IsBusy(err) {
+			t.Fatalf("contended BEGIN IMMEDIATE err = %v, want busy", err)
+		}
+		return nil
+	})
+	if state.IsBusy(nil) || state.IsBusy(errors.New("database is locked")) {
+		t.Fatal("IsBusy must not match nil or plain strings")
 	}
 }

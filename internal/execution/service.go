@@ -563,8 +563,8 @@ func (s *Service) insertTask(ctx context.Context, parentID domain.ID, request Ta
 
 // CreateTaskWithGuardInTx inserts or replays a Task inside an enclosing
 // transaction so canonical writes that must commit together share one
-// transaction. SQLite runs a single connection, so callers must never open a
-// nested transaction.
+// transaction. The store has one connection per process, so callers must never
+// open a nested transaction.
 func (s *Service) CreateTaskWithGuardInTx(ctx context.Context, tx *sql.Tx, request TaskRequest, guard TaskGuard) (domain.Task, error) {
 	if err := s.configured(); err != nil {
 		return domain.Task{}, err
