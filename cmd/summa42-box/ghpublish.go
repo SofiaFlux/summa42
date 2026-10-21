@@ -86,6 +86,9 @@ func runGHPublish(ctx context.Context, args []string) error {
 	if err = json.NewEncoder(os.Stdout).Encode(got); err != nil {
 		return err
 	}
+	if got.Busy {
+		return errBusy
+	}
 	if got.Held {
 		return errors.New("publication held; approve the exact bound operation within its live lease, then retry")
 	}

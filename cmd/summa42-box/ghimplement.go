@@ -77,6 +77,15 @@ func runGHImplement(ctx context.Context, args []string) error {
 	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 		return err
 	}
+	return implementOutcome(result)
+}
+
+// implementOutcome is the command's error for a Prepare result: busy when
+// another claimant holds the implementation task.
+func implementOutcome(result ghtriage.ImplementationResult) error {
+	if result.Busy {
+		return errBusy
+	}
 	if result.Record != nil && !result.Record.AllPassed {
 		return fmt.Errorf("candidate %s recorded failing validation; independent acceptance remains pending", result.Record.CandidateSHA)
 	}

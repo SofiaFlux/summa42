@@ -66,5 +66,8 @@ func runGHPlanReview(ctx context.Context, args []string) error {
 	if len(result.Failures) > 0 {
 		return fmt.Errorf("plan review failed for %d case(s): %s", len(result.Failures), strings.Join(result.Failures, "; "))
 	}
+	if result.Busy > 0 {
+		return errBusy
+	}
 	return nil
 }

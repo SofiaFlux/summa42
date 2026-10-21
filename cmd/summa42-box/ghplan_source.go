@@ -50,3 +50,20 @@ func (g *groundingFlags) config() (*ghtriage.GroundingConfig, error) {
 	}
 	return &cfg, nil
 }
+
+// argv re-emits exactly the grounding flags that were passed, so a caller can
+// forward them to run-gh-plan unchanged (an explicit empty value included).
+func (g *groundingFlags) argv() []string {
+	var out []string
+	g.flags.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "source-repo", "source-repository", "source-sha":
+			out = append(out, "--"+f.Name+"="+f.Value.String())
+		case "context-file", "allowed-path", "allowed-prefix", "validation-command-json":
+			for _, v := range *f.Value.(*stringSlice) {
+				out = append(out, "--"+f.Name+"="+v)
+			}
+		}
+	})
+	return out
+}

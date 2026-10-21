@@ -443,97 +443,46 @@ func loadStartupMaterial(ctx context.Context, cfg localconfig.Config) (startupMa
 	}, nil
 }
 
+// subcommands maps each run-* name (and its run-repo-* alias) to its command.
+var subcommands = map[string]func(context.Context, []string) error{
+	"run-worker":             runWorker,
+	"run-observer":           runObserver,
+	"run-gh-intake":          runGHIntake,
+	"run-repo-intake":        runGHIntake,
+	"run-driver":             runDriver,
+	"run-gh-triage-driver":   runGHTriageDriver,
+	"run-repo-triage-driver": runGHTriageDriver,
+	"run-gh-triage-review":   runGHTriageReview,
+	"run-repo-triage-review": runGHTriageReview,
+	"run-gh-plan":            runGHPlan,
+	"run-repo-plan":          runGHPlan,
+	"run-gh-plan-review":     runGHPlanReview,
+	"run-repo-plan-review":   runGHPlanReview,
+	"run-gh-implement":       runGHImplement,
+	"run-repo-implement":     runGHImplement,
+	"run-gh-publish":         runGHPublish,
+	"run-repo-publish":       runGHPublish,
+	"run-gh-code-review":     runGHCodeReview,
+	"run-repo-code-review":   runGHCodeReview,
+	"run-gh-pipeline":        runGHPipeline,
+	"run-repo-pipeline":      runGHPipeline,
+	"run-final-verifier":     runFinalVerifier,
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	if len(os.Args) > 1 {
+		if command, ok := subcommands[os.Args[1]]; ok {
+			code := exitStatus(command(ctx, os.Args[2:]), os.Stderr)
+			stop()
+			os.Exit(code)
+		}
+		if strings.HasPrefix(os.Args[1], "run-") {
+			fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
+			os.Exit(1)
+		}
+	}
 	defer stop()
-	if len(os.Args) > 1 && os.Args[1] == "run-worker" {
-		if err := runWorker(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "run-observer" {
-		if err := runObserver(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && (os.Args[1] == "run-gh-intake" || os.Args[1] == "run-repo-intake") {
-		if err := runGHIntake(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "run-driver" {
-		if err := runDriver(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && (os.Args[1] == "run-gh-triage-driver" || os.Args[1] == "run-repo-triage-driver") {
-		if err := runGHTriageDriver(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && (os.Args[1] == "run-gh-triage-review" || os.Args[1] == "run-repo-triage-review") {
-		if err := runGHTriageReview(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && (os.Args[1] == "run-gh-plan" || os.Args[1] == "run-repo-plan") {
-		if err := runGHPlan(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && (os.Args[1] == "run-gh-plan-review" || os.Args[1] == "run-repo-plan-review") {
-		if err := runGHPlanReview(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && (os.Args[1] == "run-gh-implement" || os.Args[1] == "run-repo-implement") {
-		if err := runGHImplement(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && (os.Args[1] == "run-gh-publish" || os.Args[1] == "run-repo-publish") {
-		if err := runGHPublish(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && (os.Args[1] == "run-gh-code-review" || os.Args[1] == "run-repo-code-review") {
-		if err := runGHCodeReview(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == "run-final-verifier" {
-		if err := runFinalVerifier(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "run-") {
-		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
-		os.Exit(1)
-	}
 	if err := run(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -576,13 +525,20 @@ func parseWorkerFlags(args []string) (pollInterval time.Duration, leaseDuration 
 // explicitly, and whatever was explicitly passed is used exactly as passed,
 // with nothing prepended.
 func registerTriageModelFlags(flags *flag.FlagSet, binaryUse string) {
-	flags.String("model-binary", "codex", binaryUse+", which must read the prompt on stdin (defaults are codex-shaped: codex + exec)")
-	flags.String("model-timeout", "60s", "per-invocation model timeout")
-	flags.Var(&modelArgs{}, "model-arg",
+	registerModelFlags(flags, "model", binaryUse)
+}
+
+// registerModelFlags is registerTriageModelFlags under another flag prefix, so
+// run-gh-pipeline can take a second model (--review-model-*) with the same
+// types, defaults and credential checks.
+func registerModelFlags(flags *flag.FlagSet, prefix, binaryUse string) {
+	flags.String(prefix+"-binary", "codex", binaryUse+", which must read the prompt on stdin (defaults are codex-shaped: codex + exec)")
+	flags.String(prefix+"-timeout", "60s", "per-invocation model timeout")
+	flags.Var(&modelArgs{}, prefix+"-arg",
 		"argument passed to the model binary before the prompt, repeatable and in order "+
 			"(the prompt is on stdin; when unset and the binary is codex this defaults to \"exec\"; "+
 			"a binary that is not codex takes no default arguments, so set this flag explicitly)")
-	flags.Var(&modelEnv{}, "model-env",
+	flags.Var(&modelEnv{}, prefix+"-env",
 		"name of a Box environment variable forwarded to the model process, repeatable "+
 			"(the model otherwise gets only PATH, HOME, TMPDIR and LANG; GitHub and Box credentials are rejected)")
 }
@@ -637,37 +593,42 @@ func (m *modelArgs) Get() any { return append([]string(nil), m.args...) }
 // command, because the flag sets that call this are not all run-worker's and
 // a rejected value must not be reported against the wrong subcommand.
 func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
-	binaryFlag := flags.Lookup("model-binary")
+	return prefixedModelConfig(flags, "model")
+}
+
+// prefixedModelConfig is triageModelConfig for the flags registerModelFlags put under prefix.
+func prefixedModelConfig(flags *flag.FlagSet, prefix string) (climodel.Config, error) {
+	binaryFlag := flags.Lookup(prefix + "-binary")
 	if binaryFlag == nil {
-		return climodel.Config{}, errors.New("model flags are not registered: --model-binary is missing from the flag set")
+		return climodel.Config{}, errors.New("model flags are not registered: --" + prefix + "-binary is missing from the flag set")
 	}
-	timeoutFlag := flags.Lookup("model-timeout")
+	timeoutFlag := flags.Lookup(prefix + "-timeout")
 	if timeoutFlag == nil {
-		return climodel.Config{}, errors.New("model flags are not registered: --model-timeout is missing from the flag set")
+		return climodel.Config{}, errors.New("model flags are not registered: --" + prefix + "-timeout is missing from the flag set")
 	}
-	argsFlag := flags.Lookup("model-arg")
+	argsFlag := flags.Lookup(prefix + "-arg")
 	if argsFlag == nil {
-		return climodel.Config{}, errors.New("model flags are not registered: --model-arg is missing from the flag set")
+		return climodel.Config{}, errors.New("model flags are not registered: --" + prefix + "-arg is missing from the flag set")
 	}
 	binary := binaryFlag.Value.String()
 	timeout := timeoutFlag.Value.String()
 	if strings.TrimSpace(binary) == "" {
-		return climodel.Config{}, fmt.Errorf("--model-binary must not be blank, got %q", binary)
+		return climodel.Config{}, fmt.Errorf("--%s-binary must not be blank, got %q", prefix, binary)
 	}
 	duration, err := time.ParseDuration(timeout)
 	if err != nil {
-		return climodel.Config{}, fmt.Errorf("parse --model-timeout: %w", err)
+		return climodel.Config{}, fmt.Errorf("parse --%s-timeout: %w", prefix, err)
 	}
 	if duration <= 0 {
-		return climodel.Config{}, fmt.Errorf("--model-timeout must be positive, got %q", timeout)
+		return climodel.Config{}, fmt.Errorf("--%s-timeout must be positive, got %q", prefix, timeout)
 	}
 	getter, ok := argsFlag.Value.(flag.Getter)
 	if !ok {
-		return climodel.Config{}, errors.New("--model-arg does not collect values from the flag set")
+		return climodel.Config{}, fmt.Errorf("--%s-arg does not collect values from the flag set", prefix)
 	}
 	args, ok := getter.Get().([]string)
 	if !ok {
-		return climodel.Config{}, errors.New("--model-arg does not collect values from the flag set")
+		return climodel.Config{}, fmt.Errorf("--%s-arg does not collect values from the flag set", prefix)
 	}
 	// Bare codex with a piped stdin exits immediately demanding a terminal,
 	// while codex exec reads the prompt from stdin, so the default invocation
@@ -683,7 +644,7 @@ func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
 		args = []string{"exec"}
 	}
 	var envNames []string
-	if envFlag := flags.Lookup("model-env"); envFlag != nil {
+	if envFlag := flags.Lookup(prefix + "-env"); envFlag != nil {
 		envNames, _ = envFlag.Value.(flag.Getter).Get().([]string)
 	}
 	return climodel.Config{Binary: binary, Args: args, Timeout: duration, EnvAllowlist: envNames}, nil

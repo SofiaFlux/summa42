@@ -68,6 +68,9 @@ func runGHCodeReview(ctx context.Context, args []string) error {
 	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 		return err
 	}
+	if result.Busy {
+		return errBusy
+	}
 	if result.Record != nil && !result.Accepted {
 		return fmt.Errorf("implementation held: code review %s or recorded validation failed", result.Record.Verdict)
 	}
