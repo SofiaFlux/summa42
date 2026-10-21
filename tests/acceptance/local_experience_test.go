@@ -167,7 +167,7 @@ func TestLocalExperienceEarnsAndLosesAutonomyFromVerifiedResults(t *testing.T) {
 	}
 
 	f.clock.Advance(time.Second)
-	if err := f.box.Execution.ChallengeTask(f.ctx, third.ID, domain.ChallengeTask, "verified regression after field use", nil); err != nil {
+	if _, err := f.box.Execution.ChallengeTaskIfInStates(f.ctx, third.ID, testutil.AnyTaskState, domain.ChallengeTask, "verified regression after field use", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _,err:=f.client.ExperienceOutcomeCreate(f.ctx,control.ExperienceOutcomeCreateRequest{

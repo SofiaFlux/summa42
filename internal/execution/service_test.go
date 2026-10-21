@@ -226,7 +226,7 @@ func TestFailAttemptBlocksRepeatedFailureSignature(t *testing.T) {
 func TestChallengeTaskPersistsChallengeAndStopsExecution(t *testing.T) {
 	svc, _, ctx, missionID := newExecutionService(t)
 	task, _ := seedActiveAttempt(t, svc, missionID)
-	if err := svc.ChallengeTask(ctx, task.ID, domain.ChallengeMissionAssumption, "mission assumption contradicted", []domain.ID{"evidence_1"}); err != nil {
+	if _, err := svc.ChallengeTaskIfInStates(ctx, task.ID, testutil.AnyTaskState, domain.ChallengeMissionAssumption, "mission assumption contradicted", []domain.ID{"evidence_1"}); err != nil {
 		t.Fatal(err)
 	}
 	var state domain.TaskState

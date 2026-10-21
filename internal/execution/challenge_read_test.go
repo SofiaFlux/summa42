@@ -62,12 +62,12 @@ func TestChallengeReturnsTheMostRecentOfSeveral(t *testing.T) {
 	svc := execution.New(store, clk, purpose.New(store, clk))
 	ctx := context.Background()
 	task := newTriageTask(t, store, svc, ctx, "work-recent")
-	if err := svc.ChallengeTask(ctx, task.ID, domain.ChallengeTask, "first", nil); err != nil {
+	if _, err := svc.ChallengeTaskIfInStates(ctx, task.ID, testutil.AnyTaskState, domain.ChallengeTask, "first", nil); err != nil {
 		t.Fatal(err)
 	}
 	clk.Advance(time.Second)
 	evidenceID := domain.NewID("evidence")
-	if err := svc.ChallengeTask(ctx, task.ID, domain.ChallengeGoal, "second", []domain.ID{evidenceID}); err != nil {
+	if _, err := svc.ChallengeTaskIfInStates(ctx, task.ID, testutil.AnyTaskState, domain.ChallengeGoal, "second", []domain.ID{evidenceID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +100,7 @@ func TestChallengeOrdersTwoChallengesOfOneInstantDeterministically(t *testing.T)
 	store, svc, ctx := newTriageService(t)
 	task := newTriageTask(t, store, svc, ctx, "work-tie")
 	for _, reason := range []string{"first", "second"} {
-		if err := svc.ChallengeTask(ctx, task.ID, domain.ChallengeTask, reason, nil); err != nil {
+		if _, err := svc.ChallengeTaskIfInStates(ctx, task.ID, testutil.AnyTaskState, domain.ChallengeTask, reason, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -161,7 +161,7 @@ func TestChallengeOnATaskNobodyChallengedAndOnBadInput(t *testing.T) {
 func TestChallengeReportsEvidenceItCannotDecode(t *testing.T) {
 	store, svc, ctx := newTriageService(t)
 	task := newTriageTask(t, store, svc, ctx, "work-corrupt")
-	if err := svc.ChallengeTask(ctx, task.ID, domain.ChallengeTask, "superseded", nil); err != nil {
+	if _, err := svc.ChallengeTaskIfInStates(ctx, task.ID, testutil.AnyTaskState, domain.ChallengeTask, "superseded", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DB().ExecContext(ctx,
@@ -180,7 +180,7 @@ func TestChallengeReportsEvidenceItCannotDecode(t *testing.T) {
 func TestChallengeWithNoEvidenceIsAnEmptyList(t *testing.T) {
 	store, svc, ctx := newTriageService(t)
 	task := newTriageTask(t, store, svc, ctx, "work-bare")
-	if err := svc.ChallengeTask(ctx, task.ID, domain.ChallengeTask, "stopped", nil); err != nil {
+	if _, err := svc.ChallengeTaskIfInStates(ctx, task.ID, testutil.AnyTaskState, domain.ChallengeTask, "stopped", nil); err != nil {
 		t.Fatal(err)
 	}
 	challenge, found, err := svc.Challenge(ctx, task.ID)

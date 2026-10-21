@@ -20,8 +20,6 @@ import (
 	"github.com/SofiaFlux/summa42/internal/experience"
 	"github.com/SofiaFlux/summa42/internal/fieldfeedback"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
-	"github.com/SofiaFlux/summa42/internal/memory"
-	"github.com/SofiaFlux/summa42/internal/observability"
 	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/SofiaFlux/summa42/internal/policy"
 	"github.com/SofiaFlux/summa42/internal/purpose"
@@ -74,9 +72,7 @@ type Box struct {
 	Capabilities        *capabilities.Registry
 	Scheduler     *scheduler.Service
 	Wake          *wake.Service
-	Memory        *memory.Service
 	Audit         *audit.Service
-	Observability *observability.Bridge
 	Policy        policy.PolicyEngine
 	Executors     map[string]executors.Executor
 	TEBProfile    teb.Profile
@@ -177,7 +173,6 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	capabilityRegistry := capabilities.NewRegistry(store, cfg.Clock, executionSvc, cfg.CapabilityProviders...)
 	var schedulerSvc *scheduler.Service
 	var wakeSvc *wake.Service
-	memorySvc := memory.New(store, cfg.Clock)
 	auditSvc := audit.New(store, cfg.Clock)
 	fieldObserver := fieldfeedback.NewObserver(store, cfg.Clock, cfg.CollectiveID)
 	denyPatterns := make([]*regexp.Regexp, 0, len(cfg.FieldFeedback.DenyPatterns))
@@ -246,9 +241,7 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		Capabilities:        capabilityRegistry,
 		Scheduler:           schedulerSvc,
 		Wake:          wakeSvc,
-		Memory:        memorySvc,
 		Audit:         auditSvc,
-		Observability: observability.New(nil),
 		Policy:        cfg.PolicyEngine,
 		Executors:     executorSet,
 		TEBProfile:    cfg.TEBProfile,

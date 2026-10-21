@@ -10,8 +10,6 @@ require (
 	github.com/open-policy-agent/opa v1.20.2
 	github.com/pressly/goose/v3 v3.27.2
 	github.com/spf13/cobra v1.10.2
-	go.opentelemetry.io/otel v1.46.0
-	go.opentelemetry.io/otel/trace v1.46.0
 	modernc.org/sqlite v1.58.0
 )
 

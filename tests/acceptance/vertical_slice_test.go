@@ -17,7 +17,6 @@ import (
 	"github.com/SofiaFlux/summa42/internal/execution"
 	"github.com/SofiaFlux/summa42/internal/executors"
 	"github.com/SofiaFlux/summa42/internal/identity"
-	"github.com/SofiaFlux/summa42/internal/memory"
 	"github.com/SofiaFlux/summa42/internal/resources"
 	summa42runtime "github.com/SofiaFlux/summa42/internal/runtime"
 	"github.com/SofiaFlux/summa42/internal/scheduler"
@@ -266,13 +265,13 @@ func TestUsefulWorkVerticalSlice(t *testing.T) {
 		t.Fatalf("downstream state=%s before acceptance, want CREATED", downstreamState)
 	}
 
-	reservation, err := box.Resources.Reserve(ctx, envelopeID, 20, resources.Enforceability{
+	reservation, err := reserveInOwnTx(ctx, box, envelopeID, 20, resources.Enforceability{
 		CostControl: resources.CostTechnicallyCapped, RequireHardCap: true, Source: "deterministic-fixture-budget",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := box.Resources.Settle(ctx, reservation.ID, 7); err != nil {
+	if err := settleInOwnTx(ctx, box, reservation.ID, 7); err != nil {
 		t.Fatal(err)
 	}
 	available, err := box.Resources.Available(ctx, envelopeID)
@@ -319,24 +318,6 @@ func TestUsefulWorkVerticalSlice(t *testing.T) {
 	}
 	downstreamEvidence := putTextEvidence(t, ctx, box, "post-repair success recorded", "ATTEMPT_OUTPUT")
 	completeAndAccept(t, ctx, box, downstream.ID, downstreamAttempt.ID, initResult.OwnerPrincipalID, downstreamEvidence.ID)
-
-	claims, err := box.Memory.Ingest(ctx, memory.KnowledgeDelta{
-		ID: domain.NewID("delta"), SourceID: mainTask.ID,
-		Evidence: []memory.EvidenceInput{{
-			Ref: domain.EvidenceRef{ID: mainEvidence.ID, ContentHash: mainEvidence.ContentHash, MediaType: mainEvidence.MediaType, SizeBytes: mainEvidence.SizeBytes, CreatedAt: mainEvidence.CreatedAt},
-			Kind: mainEvidence.Kind,
-		}},
-		Claims: []memory.ClaimInput{{
-			SubjectID: mainTask.ID, Predicate: "repair_result", Statement: "fixture repository is repaired",
-			Status: domain.ClaimVerified, Confidence: 1, ValidFrom: clk.Now(), EvidenceIDs: []domain.ID{mainEvidence.ID},
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(claims) != 1 || claims[0].Status != domain.ClaimVerified {
-		t.Fatalf("knowledge delta claims=%+v", claims)
-	}
 
 	decision, err := box.Audit.RecordDecision(ctx, audit.DecisionRecord{
 		Trigger: "fixture repair accepted",

@@ -118,7 +118,7 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 	if err != nil {
 		return domain.ExternalOperation{}, err
 	}
-	if err := validateDecisionProvenance(decision, now); err != nil {
+	if err := validateDecisionProvenance(decision); err != nil {
 		return domain.ExternalOperation{}, err
 	}
 	gate, err := evaluatePrepareOutcome(decision)
@@ -150,7 +150,7 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 		if !hasString(current.AuthorityCeiling, provider.Capability()) || !enforcementSatisfies(provider.EnforcementLevel(), current.RequiredEnforcement) {
 			return domain.ErrPolicyDenied
 		}
-		if err := validateDecisionProvenance(decision, now); err != nil {
+		if err := validateDecisionProvenance(decision); err != nil {
 			return err
 		}
 		if _, err := evaluatePrepareOutcome(decision); err != nil {
@@ -387,7 +387,7 @@ func (s *Service) DispatchWithGuard(ctx context.Context, operationID, attemptID 
 	if evalErr != nil {
 		return op, evalErr
 	}
-	if err := validateDecisionProvenance(decision, now); err != nil || validateDispatchOutcome(decision) != nil || !authorityValid {
+	if err := validateDecisionProvenance(decision); err != nil || validateDispatchOutcome(decision) != nil || !authorityValid {
 		if cancelErr := s.cancelPrepared(ctx, op, attemptID); cancelErr != nil {
 			return op, cancelErr
 		}
@@ -420,7 +420,7 @@ func (s *Service) DispatchWithGuard(ctx context.Context, operationID, attemptID 
 		if !hasString(currentControl.AuthorityCeiling, provider.Capability()) || !enforcementSatisfies(provider.EnforcementLevel(), currentControl.RequiredEnforcement) {
 			return domain.ErrPolicyDenied
 		}
-		if err := validateDecisionProvenance(decision, now); err != nil {
+		if err := validateDecisionProvenance(decision); err != nil {
 			return err
 		}
 		if err := validateDispatchOutcome(decision); err != nil {

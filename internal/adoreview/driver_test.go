@@ -711,7 +711,7 @@ func TestDriverHoldsTerminalWork2StatesWithoutEvidence(t *testing.T) {
 					t.Fatal(err)
 				}
 			case domain.TaskChallenged:
-				if err := h.execution.ChallengeTask(h.ctx, task.ID, domain.ChallengeTask, "publisher challenged", nil); err != nil {
+				if _, err := h.execution.ChallengeTaskIfInStates(h.ctx, task.ID, testutil.AnyTaskState, domain.ChallengeTask, "publisher challenged", nil); err != nil {
 					t.Fatal(err)
 				}
 			default:

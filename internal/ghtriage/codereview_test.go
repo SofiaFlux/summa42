@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
+	"github.com/SofiaFlux/summa42/internal/testutil"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/verification"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
@@ -321,7 +322,7 @@ func TestCodeReviewCannotAcceptChallengedPlanReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &codeReviewModel{verdict: "ACCEPT", onCall: func(ghtriage.CodeReviewInput) {
-		if err := f.execSvc.ChallengeTask(f.ctx, review.TaskID, domain.ChallengeTask, "plan unsafe", nil); err != nil {
+		if _, err := f.execSvc.ChallengeTaskIfInStates(f.ctx, review.TaskID, testutil.AnyTaskState, domain.ChallengeTask, "plan unsafe", nil); err != nil {
 			t.Fatal(err)
 		}
 	}}
@@ -339,7 +340,7 @@ func TestCodeReviewCannotAcceptChallengedTriage(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &codeReviewModel{verdict: "ACCEPT", onCall: func(ghtriage.CodeReviewInput) {
-		if err := f.execSvc.ChallengeTask(f.ctx, triageID, domain.ChallengeTask, "triage unsafe", nil); err != nil {
+		if _, err := f.execSvc.ChallengeTaskIfInStates(f.ctx, triageID, testutil.AnyTaskState, domain.ChallengeTask, "triage unsafe", nil); err != nil {
 			t.Fatal(err)
 		}
 	}}

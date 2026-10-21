@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -262,18 +261,4 @@ func issueCreateRequest(payload fieldfeedback.IssuePayload) []byte {
 		"body":  body,
 	})
 	return encoded
-}
-
-func credentialPathFromEnv() string {
-	return strings.TrimSpace(os.Getenv("SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE"))
-}
-
-func cleanCredentialPath(path string) string {
-	if strings.TrimSpace(path) == "" {
-		return ""
-	}
-	if absolute, err := filepath.Abs(path); err == nil {
-		return absolute
-	}
-	return path
 }

@@ -393,54 +393,6 @@ func (s *Service) FailAttempt(ctx context.Context, attemptID domain.ID, class do
 	})
 }
 
-func (s *Service) ChallengeTask(ctx context.Context, taskID domain.ID, scope domain.ChallengeScope, reason string, evidenceIDs []domain.ID) error {
-	if err := s.configured(); err != nil {
-		return err
-	}
-	reason = strings.TrimSpace(reason)
-	if taskID == "" || reason == "" || !validChallengeScope(scope) {
-		return errors.New("task, valid challenge scope, and reason are required")
-	}
-	evidenceJSON, err := json.Marshal(evidenceIDs)
-	if err != nil {
-		return err
-	}
-	now := s.clock.Now().UTC()
-	return s.store.WithTx(ctx, func(tx *sql.Tx) error {
-		var currentAttempt sql.NullString
-		if err := tx.QueryRowContext(ctx,
-			`SELECT current_attempt_id FROM tasks WHERE task_id = ?`, taskID,
-		).Scan(&currentAttempt); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("task %q not found", taskID)
-			}
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO task_challenges(challenge_id, task_id, scope, reason, evidence_ids_json, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-			domain.NewID("challenge"), taskID, scope, reason, string(evidenceJSON), formatTime(now),
-		); err != nil {
-			return err
-		}
-		if currentAttempt.Valid {
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE attempts SET lease_state = ?, state = ?, completed_at = COALESCE(completed_at, ?) WHERE attempt_id = ? AND lease_state = ?`,
-				domain.LeaseRevoked, domain.AttemptCancelled, formatTime(now), currentAttempt.String, domain.LeaseActive,
-			); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ?`,
-			domain.TaskChallenged, formatTime(now), taskID,
-		); err != nil {
-			return err
-		}
-		return appendEvent(ctx, tx, taskID, domain.ID(currentAttempt.String), "TASK_CHALLENGED", now)
-	})
-}
-
 // ChallengeTaskIfInStates challenges a task only when it is currently in one of
 // the supplied states. The caller must re-read the task when changed is false,
 // because the state may have moved since it was read. An accepted task can

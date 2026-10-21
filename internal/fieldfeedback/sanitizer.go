@@ -24,15 +24,10 @@ type Sanitizer interface {
 	Sanitize(context.Context, domain.ID) (domain.SanitizedFeedback, domain.SanitizationResult, error)
 }
 
-type Abstracter interface {
-	Abstract(context.Context, domain.FeedbackCandidate) (domain.FeedbackCandidate, error)
-}
-
 type DeterministicSanitizerConfig struct {
-	Version                    string
-	DenyPatterns               []*regexp.Regexp
-	AllowExecutorMetadata      bool
-	AllowSyntheticReproduction bool
+	Version               string
+	DenyPatterns          []*regexp.Regexp
+	AllowExecutorMetadata bool
 }
 
 var safeExportMetadataToken = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
@@ -64,7 +59,6 @@ type DeterministicSanitizer struct {
 	feedback    *Feedback
 	config      DeterministicSanitizerConfig
 	rulesetHash string
-	abstracter  Abstracter
 	builtin     []scanRule
 }
 
@@ -132,13 +126,6 @@ func (s *DeterministicSanitizer) Sanitize(ctx context.Context, candidateID domai
 	candidate, err = s.feedback.Candidate(ctx, candidate.ID)
 	if err != nil {
 		return domain.SanitizedFeedback{}, domain.SanitizationResult{}, err
-	}
-
-	if s.abstracter != nil {
-		candidate, err = s.abstracter.Abstract(ctx, candidate)
-		if err != nil {
-			return s.persistUnsafe(ctx, candidate, domain.SanitizationUncertain, []string{"ABSTRACTION_FAILED"})
-		}
 	}
 
 	inputDigest, err := candidateDigest(candidate)
@@ -382,15 +369,13 @@ func computeRulesetHash(cfg DeterministicSanitizerConfig, builtin []scanRule) (s
 		builtinValues = append(builtinValues, rule.Code+"="+rule.Pattern.String())
 	}
 	material := struct {
-		Version                    string   `json:"version"`
-		Builtin                    []string `json:"builtin"`
-		Deny                       []string `json:"deny"`
-		AllowExecutorMetadata      bool     `json:"allow_executor_metadata"`
-		AllowSyntheticReproduction bool     `json:"allow_synthetic_reproduction"`
+		Version               string   `json:"version"`
+		Builtin               []string `json:"builtin"`
+		Deny                  []string `json:"deny"`
+		AllowExecutorMetadata bool     `json:"allow_executor_metadata"`
 	}{
 		Version: cfg.Version, Builtin: builtinValues, Deny: deny,
-		AllowExecutorMetadata:      cfg.AllowExecutorMetadata,
-		AllowSyntheticReproduction: cfg.AllowSyntheticReproduction,
+		AllowExecutorMetadata: cfg.AllowExecutorMetadata,
 	}
 	encoded, err := json.Marshal(material)
 	if err != nil {

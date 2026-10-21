@@ -292,14 +292,6 @@ func loadTaskCapabilityControl(ctx context.Context, tx *sql.Tx, taskID domain.ID
 	return control, nil
 }
 
-func loadTaskAuthority(ctx context.Context, tx *sql.Tx, taskID domain.ID) ([]string, error) {
-	control, err := loadTaskCapabilityControl(ctx, tx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	return control.Authority, nil
-}
-
 func authorityContains(authority, required []string) bool {
 	set := make(map[string]struct{}, len(authority))
 	for _, capability := range authority {

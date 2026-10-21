@@ -21,14 +21,11 @@ type policyGate struct {
 	RequiresApproval bool
 }
 
-func validateDecisionProvenance(decision domain.PolicyDecision, now time.Time) error {
+func validateDecisionProvenance(decision domain.PolicyDecision) error {
 	if decision.ID == "" || decision.PolicySetID == "" ||
 		strings.TrimSpace(decision.PolicySetHash) == "" ||
 		strings.TrimSpace(decision.PolicyCapabilitiesHash) == "" {
 		return fmt.Errorf("%w: incomplete policy-decision provenance", domain.ErrPolicyDenied)
-	}
-	if decision.EvaluatedAt.IsZero() || !decision.EvaluatedAt.Equal(now) {
-		return fmt.Errorf("%w: stale policy decision", domain.ErrPolicyDenied)
 	}
 	return nil
 }

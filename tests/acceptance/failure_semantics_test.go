@@ -341,7 +341,7 @@ func testUnresolvedBillingExposureBlocksOvercommit(t *testing.T) {
 	if available != 5 {
 		t.Fatalf("available=%d, want 5 with unresolved 20 exposure", available)
 	}
-	_, err = f.box.Resources.Reserve(f.ctx, f.envelope, 10, resources.Enforceability{
+	_, err = reserveInOwnTx(f.ctx, f.box, f.envelope, 10, resources.Enforceability{
 		CostControl: resources.CostTechnicallyCapped, RequireHardCap: true, Source: "acceptance",
 	})
 	if !errors.Is(err, domain.ErrBudgetExceeded) {
@@ -506,7 +506,7 @@ func testConstraintPrecedenceBlocksIllegalGoalPath(t *testing.T) {
 
 func testHardBudgetRequiresEnforceableCeiling(t *testing.T) {
 	f := newFixture(t, 100)
-	_, err := f.box.Resources.Reserve(f.ctx, f.envelope, 10, resources.Enforceability{
+	_, err := reserveInOwnTx(f.ctx, f.box, f.envelope, 10, resources.Enforceability{
 		CostControl: resources.CostEstimatedOnly,
 		RequireHardCap: true,
 		Source: "model-estimate",
