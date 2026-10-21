@@ -18,6 +18,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/execution"
 	"github.com/SofiaFlux/summa42/internal/repoworkspace"
 	"github.com/SofiaFlux/summa42/internal/verification"
+	"github.com/SofiaFlux/summa42/internal/workflow"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
 
@@ -93,7 +94,20 @@ func NewImplementer(cases *workflowcase.Service, exec *execution.Service, verify
 	return &Implementer{cases, exec, verify, store, model}
 }
 
+// Prepare produces the implementation record and holds the case when validation did not pass.
 func (i *Implementer) Prepare(ctx context.Context, id domain.ID, sourceRepo, root string) (ImplementationResult, error) {
+	result, err := i.prepare(ctx, id, sourceRepo, root)
+	if err != nil || result.Record == nil || result.Record.AllPassed {
+		return result, err
+	}
+	c, err := i.cases.Get(ctx, id)
+	if err != nil {
+		return result, err
+	}
+	return result, moveCase(ctx, i.cases, c, workflow.Unknown, "implementation-failed:validation", result.EvidenceID)
+}
+
+func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, root string) (ImplementationResult, error) {
 	if ctx == nil || i == nil || i.cases == nil || i.exec == nil || i.verify == nil || i.evidence == nil || i.model == nil {
 		return ImplementationResult{}, errors.New("implementation services and context required")
 	}

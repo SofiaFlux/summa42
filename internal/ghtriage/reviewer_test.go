@@ -1545,3 +1545,56 @@ func TestReviewerReportsClosedCaseWithPlanReviewChain(t *testing.T) {
 		t.Fatalf("a closed case after an accepted plan review was accepted: %+v", verdict.Structural)
 	}
 }
+
+func TestReviewerAcceptsPublishedChain(t *testing.T) {
+	rf := reviewerPastPlanReview(t)
+	f := rf.driver
+	id := f.casesByRev[fixtureRevision].ID
+	cases := []struct {
+		reason, state string
+		want          bool
+	}{
+		{"published:https://github.com/o/r/pull/1", "READY_FOR_VERIFICATION", true},
+		{"published:https://github.com/o/r/pull/1", "BLOCKED", false},
+		{"code-review:REVISE: x", "BLOCKED", true},
+		{"implementation-failed:validation", "BLOCKED", true},
+		{"code-review:BLOCK: x", "READY_FOR_VERIFICATION", false},
+	}
+	rf.model.ScriptedReview = []bool{true, true, true, true, true}
+	for _, tc := range cases {
+		// The state is rewritten under the reviewer, which fingerprints state and latest assessment.
+		rf.setLatestAssessment(t, tc.reason)
+		if _, err := f.store.DB().ExecContext(f.ctx, `UPDATE workflow_cases SET state=?, next_work_json='{}' WHERE case_id=?`, tc.state, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rf.review.Tick(f.ctx, f.missionID); err != nil {
+			t.Fatal(err)
+		}
+		if got := rf.lastVerdict(t).Structural.StateMatchesDisposition; got != tc.want {
+			t.Fatalf("%s/%s: matches=%v want %v", tc.reason, tc.state, got, tc.want)
+		}
+	}
+}
+
+// setLatestAssessment appends an assessment row with the given reason, as a later stage would.
+func (rf *reviewerFixture) setLatestAssessment(t *testing.T, reason string) {
+	t.Helper()
+	f := rf.driver
+	id := f.casesByRev[fixtureRevision].ID
+	records, err := f.cases.ListAssessments(f.ctx, id)
+	if err != nil || len(records) == 0 {
+		t.Fatal(err)
+	}
+	f.clock.Advance(time.Second)
+	last := records[len(records)-1]
+	var result workflowcase.AssessmentResult
+	if err := json.Unmarshal([]byte(last.ResultJSON), &result); err != nil {
+		t.Fatal(err)
+	}
+	result.Decision.Reason = reason
+	raw, _ := json.Marshal(result)
+	if _, err := f.store.DB().ExecContext(f.ctx, `INSERT INTO workflow_assessments (assessment_id, case_id, work_id, request_json, result_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		domain.NewID("assessment"), id, domain.NewID("work"), last.RequestJSON, string(raw), f.clock.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+}

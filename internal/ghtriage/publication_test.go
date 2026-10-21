@@ -13,6 +13,8 @@ import (
 	"github.com/SofiaFlux/summa42/internal/policy"
 	"github.com/SofiaFlux/summa42/internal/resources"
 	"github.com/SofiaFlux/summa42/internal/wake"
+	"github.com/SofiaFlux/summa42/internal/workflowcase"
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,17 +102,29 @@ func TestPublicationAcceptedChainAndReceiptReplay(t *testing.T) {
 	if err != nil || got.Pending || got.Record == nil || b.writes != 1 || p.writes != 1 {
 		t.Fatalf("%+v %v writes=%d/%d", got, err, b.writes, p.writes)
 	}
-	replay, err := pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main")
-	if err != nil || !replay.Reused || replay.EvidenceID != got.EvidenceID || b.writes != 1 || p.writes != 1 {
-		t.Fatalf("replay %+v %v", replay, err)
+	if _, err = pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main"); err == nil || b.writes != 1 || p.writes != 1 {
+		t.Fatalf("a published case must not publish again: %v writes=%d/%d", err, b.writes, p.writes)
 	}
 	task, err := f.execSvc.Task(f.ctx, got.Record.TaskID)
 	if err != nil || task.State != domain.TaskAwaitingVerification {
 		t.Fatal("publication must await independent verification", task.State, err)
 	}
-	f.store.DB().ExecContext(f.ctx, `UPDATE workflow_cases SET grant_json='{"Capabilities":[],"Actions":[]}' WHERE case_id=?`, id)
-	if _, err = pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main"); err == nil {
-		t.Fatal("revoked receipt replay")
+}
+func TestConfirmedPublicationMovesCaseToReadyForVerification(t *testing.T) {
+	f, cfg, id, _ := implementedFixture(t)
+	if r, err := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &codeReviewModel{verdict: "ACCEPT"}).Review(f.ctx, id, cfg.Source.LocalPath); err != nil || !r.Accepted {
+		t.Fatal(err)
+	}
+	grantPublication(t, f, id)
+	ops, _, _ := publicationOps(t, f)
+	got, err := ghtriage.NewPublisher(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, ops).Publish(f.ctx, id, cfg.Source.LocalPath, "main")
+	if err != nil || got.Record == nil {
+		t.Fatalf("%+v %v", got, err)
+	}
+	assertAssessed(t, f, id, workflowcase.ReadyForVerification, "published:"+got.Record.PRReference)
+	c, _ := f.cases.Get(f.ctx, id)
+	if c.NextWork.Kind != "" || c.CurrentWorkID != "" {
+		t.Fatalf("ready case keeps work: %+v", c)
 	}
 }
 func TestPublicationRejectsMissingAcceptanceAndGrant(t *testing.T) {
@@ -325,5 +339,22 @@ func TestPublicationRejectsUpstreamCompletionMismatch(t *testing.T) {
 				t.Fatal("mismatched upstream completion published")
 			}
 		})
+	}
+}
+
+// assertAssessed checks the case state and that the latest assessment reason starts with reason.
+func assertAssessed(t *testing.T, f *driverFixture, id domain.ID, state workflowcase.State, reason string) {
+	t.Helper()
+	c, err := f.cases.Get(f.ctx, id)
+	if err != nil || c.State != state {
+		t.Fatalf("state %s want %s (%v)", c.State, state, err)
+	}
+	records, err := f.cases.ListAssessments(f.ctx, id)
+	if err != nil || len(records) == 0 {
+		t.Fatalf("assessments %v", err)
+	}
+	var result workflowcase.AssessmentResult
+	if err := json.Unmarshal([]byte(records[len(records)-1].ResultJSON), &result); err != nil || !strings.HasPrefix(result.Decision.Reason, reason) {
+		t.Fatalf("reason %q want prefix %q (%v)", result.Decision.Reason, reason, err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/verification"
+	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
 
 type codeReviewModel struct {
@@ -108,8 +109,13 @@ func TestCodeReviewAcceptsOnlyPassingReviewedImplementation(t *testing.T) {
 				t.Fatalf("state=%s want=%s", task.State, want)
 			}
 			replay, err := r.Review(f.ctx, id, cfg.Source.LocalPath)
-			if err != nil || !replay.Reused || replay.EvidenceID != got.EvidenceID || m.calls.Load() != 1 {
-				t.Fatalf("replay=%+v %v calls=%d", replay, err, m.calls.Load())
+			if verdict == "ACCEPT" {
+				if err != nil || !replay.Reused || replay.EvidenceID != got.EvidenceID || m.calls.Load() != 1 {
+					t.Fatalf("replay=%+v %v calls=%d", replay, err, m.calls.Load())
+				}
+			} else if err == nil || m.calls.Load() != 1 {
+				// A held case is no longer reviewable.
+				t.Fatalf("held case reviewed again: %+v %v calls=%d", replay, err, m.calls.Load())
 			}
 		})
 	}
@@ -118,12 +124,23 @@ func TestCodeReviewFailedTestsCannotBeAccepted(t *testing.T) {
 	f, cfg, id, impl := implementedFixture(t, []string{"git", "diff", "--invalid-flag"})
 	m := &codeReviewModel{verdict: "ACCEPT"}
 	got, err := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).Review(f.ctx, id, cfg.Source.LocalPath)
-	if err != nil || got.Accepted {
+	if err == nil || got.Accepted || m.calls.Load() != 0 {
 		t.Fatalf("%+v %v", got, err)
 	}
 	task, _ := f.execSvc.Task(f.ctx, impl.Record.TaskID)
 	if task.State != domain.TaskAwaitingVerification {
 		t.Fatal(task.State)
+	}
+}
+func TestCodeReviewReviseHoldsCase(t *testing.T) {
+	for _, verdict := range []string{"REVISE", "BLOCK"} {
+		t.Run(verdict, func(t *testing.T) {
+			f, cfg, id, _ := implementedFixture(t)
+			if _, err := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &codeReviewModel{verdict: verdict}).Review(f.ctx, id, cfg.Source.LocalPath); err != nil {
+				t.Fatal(err)
+			}
+			assertAssessed(t, f, id, workflowcase.Blocked, "code-review:"+verdict+": independent assessment")
+		})
 	}
 }
 func TestCodeReviewRejectsDriftAndRevocation(t *testing.T) {

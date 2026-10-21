@@ -14,6 +14,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/execution"
 	"github.com/SofiaFlux/summa42/internal/repoworkspace"
 	"github.com/SofiaFlux/summa42/internal/verification"
+	"github.com/SofiaFlux/summa42/internal/workflow"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
 
@@ -265,6 +266,11 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 		}
 	} else if implTask.State == domain.TaskSucceeded {
 		return CodeReviewResult{}, errors.New("implementation acceptance contradicts saved review")
+	}
+	if record.Verdict != "ACCEPT" {
+		if err := moveCase(ctx, r.cases, c, workflow.Unknown, "code-review:"+record.Verdict+": "+record.Reason, object.ID); err != nil {
+			return CodeReviewResult{}, err
+		}
 	}
 	return CodeReviewResult{Reused: reused, Accepted: accepted, EvidenceID: object.ID, Record: &record}, nil
 }

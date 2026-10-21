@@ -98,3 +98,15 @@ func failStage(ctx context.Context, cases *workflowcase.Service, ex *execution.S
 	})
 	return err
 }
+
+// moveCase assesses the case's current work with the given verdict and reason, citing one
+// evidence object. Unknown holds the case (BLOCKED); Ready moves it to READY_FOR_VERIFICATION
+// with no next work. Neither is gated by MaxSteps or the budget, and the budget is passed
+// through unchanged.
+func moveCase(ctx context.Context, cases *workflowcase.Service, c workflowcase.Case, verdict workflow.Verdict, reason string, evidenceID domain.ID) error {
+	_, err := cases.Assess(ctx, workflowcase.AssessmentRequest{
+		CaseID: c.ID, WorkID: c.CurrentWorkID, RemainingBudget: c.RemainingBudget, RequireLatestRevision: verdict == workflow.Ready,
+		Assessment: workflow.Assessment{Verdict: verdict, Reason: reason, EvidenceIDs: []string{string(evidenceID)}},
+	})
+	return err
+}

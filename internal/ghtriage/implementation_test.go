@@ -12,6 +12,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/repoworkspace"
+	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
 
 type implementationModel struct {
@@ -229,4 +230,13 @@ func TestImplementationValidationCannotModifySource(t *testing.T) {
 	if err == nil || got.Record != nil {
 		t.Fatalf("source mutation certified: %+v %v", got, err)
 	}
+}
+
+func TestValidationFailureHoldsCase(t *testing.T) {
+	f, cfg, id := readyImplementation(t, []string{"git", "diff", "--invalid-flag"})
+	got, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &implementationModel{}).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	if err != nil || got.Record == nil || got.Record.AllPassed {
+		t.Fatalf("%+v %v", got, err)
+	}
+	assertAssessed(t, f, id, workflowcase.Blocked, "implementation-failed:validation")
 }

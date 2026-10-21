@@ -325,6 +325,17 @@ func reconciled(c workflowcase.Case, records []workflowcase.AssessmentRecord, de
 	return len(records) > 0 || c.State != workflowcase.Active
 }
 
+// postPlanReason reports whether an assessment reason belongs to the stages that follow
+// planning: plan review, implementation, code review and publication.
+func postPlanReason(reason string) bool {
+	for _, head := range []string{"plan-review", "implementation-failed:", "code-review:", "published:"} {
+		if strings.HasPrefix(reason, head) {
+			return true
+		}
+	}
+	return false
+}
+
 // stateMatches treats a superseded case as an allowed terminal state, so a
 // correctly superseded revision is never reported as a violation.
 func (r *Reviewer) stateMatches(ctx context.Context, c workflowcase.Case, records []workflowcase.AssessmentRecord, latest *string, decision Decision, decisionID domain.ID) bool {
@@ -346,15 +357,19 @@ func (r *Reviewer) stateMatches(ctx context.Context, c workflowcase.Case, record
 			return false
 		}
 		for _, record := range records[1:] {
-			if !strings.HasPrefix(recordReason(record), "plan-review") {
+			if !postPlanReason(recordReason(record)) {
 				return false
 			}
 		}
 		if len(records) > 1 {
-			// An accepted review hands the case to implementation; every other
+			// An accepted review hands the case to implementation; a confirmed
+			// publication leaves it ready for an independent verifier; every other
 			// outcome (verdict, missing grant, held failure) blocks it.
 			if strings.HasPrefix(reason, "plan-review:ACCEPT") {
 				return c.State == workflowcase.Active && c.NextWork.Kind == ImplementationWorkKind
+			}
+			if strings.HasPrefix(reason, "published:") {
+				return c.State == workflowcase.ReadyForVerification && c.NextWork.Kind == ""
 			}
 			return c.State == workflowcase.Blocked
 		}

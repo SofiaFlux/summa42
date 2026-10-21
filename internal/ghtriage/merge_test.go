@@ -90,10 +90,20 @@ func publishedFixture(t *testing.T) (*driverFixture, ghtriage.GroundingConfig, d
 	grantMerge(t, f, id)
 	ops, m := mergeOps(t, f)
 	_ = m
+	before, err := f.cases.Get(f.ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pub := ghtriage.NewPublisher(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, ops)
 	pubResult, err := pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main")
 	if err != nil || pubResult.Record == nil {
 		t.Fatalf("publish failed: %v", err)
+	}
+	// Publication now ends the case at READY_FOR_VERIFICATION, but the merge stack (deleted in
+	// Task 16) still requires an ACTIVE case: restore the pre-publication state for it.
+	nextWork, _ := json.Marshal(before.NextWork)
+	if _, err = f.store.DB().ExecContext(f.ctx, `UPDATE workflow_cases SET state='ACTIVE', current_work_id=?, next_work_json=? WHERE case_id=?`, before.CurrentWorkID, string(nextWork), id); err != nil {
+		t.Fatal(err)
 	}
 	return f, cfg, id, ops, pubResult.Record
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/SofiaFlux/summa42/internal/repoworkspace"
 	"github.com/SofiaFlux/summa42/internal/verification"
+	"github.com/SofiaFlux/summa42/internal/workflow"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 	"time"
 )
@@ -299,6 +300,9 @@ func (p *Publisher) Publish(ctx context.Context, id domain.ID, source, baseBranc
 		if err != nil {
 			return PublicationResult{}, err
 		}
+		if err = moveCase(ctx, p.cases, c, workflow.Ready, "published:"+receipt.PRReference, o.ID); err != nil {
+			return PublicationResult{}, err
+		}
 		return PublicationResult{Reused: true, EvidenceID: o.ID, Record: &receipt}, nil
 	}
 	staged := false
@@ -406,6 +410,10 @@ func (p *Publisher) Publish(ctx context.Context, id domain.ID, source, baseBranc
 	}
 	if _, err = p.verify.CompleteAttemptWithGuard(ctx, task.CurrentAttemptID, verification.CompletionManifest{EvidenceIDs: []domain.ID{receiptObject.ID}}, receiptGuard); err != nil {
 		return PublicationResult{}, fmt.Errorf("staged receipt retained; live fence or operator recovery required: %w", err)
+	}
+	// The case is READY_FOR_VERIFICATION, not closed: an independent verifier closes it.
+	if err = moveCase(ctx, p.cases, c, workflow.Ready, "published:"+receipt.PRReference, receiptObject.ID); err != nil {
+		return PublicationResult{}, err
 	}
 	return PublicationResult{Reused: reused, EvidenceID: receiptObject.ID, Record: &receipt}, nil
 }
