@@ -8,6 +8,14 @@ Supports:
 - Unified CLI: call-worker [--backend opencode|claude|agy|script] [--model <name>]
 - Capability Discovery (Issue #2): --list-backends, --list-models
 - Automatic Fallback: tries primary backend, falls back gracefully if configured.
+
+Fail-closed contract (S-C4):
+- Unknown schema → exit non-zero.
+- All backends fail → exit non-zero, empty stdout.
+- Missing/unknown verdict → exit non-zero.
+- plausible must be a JSON boolean; a string is an error.
+- OpenRouter is opt-in (--allow-remote or SUMMA42_ALLOW_REMOTE_MODELS=1).
+- GITHUB_TOKEN / GH_TOKEN are never injected into model processes.
 """
 
 import sys
@@ -21,114 +29,124 @@ import time
 import urllib.request
 import urllib.error
 
+# ---------------------------------------------------------------------------
+# Exact schema constants matching Go (internal/ghtriage).
+# ponytail: dispatch on these strings only; substring matching is removed.
+# ---------------------------------------------------------------------------
+SCHEMA_TRIAGE_REVIEW    = "github.issue.triage.review.v1"
+SCHEMA_PLAN_REVIEW      = "github.issue.plan.review.v1"
+SCHEMA_PLAN_V1          = "github.issue.plan.v1"
+SCHEMA_PLAN_V2          = "github.issue.plan.v2"
+SCHEMA_CODE_REVIEW      = "github.issue.code.review.v1"
+SCHEMA_IMPLEMENTATION   = "github.issue.implementation.v1"
+SCHEMA_DECOMPOSE        = "github.issue.decompose.v1"
+SCHEMA_STAGE2_INPUT     = "github.issue.triage.stage2.input.v1"
+SCHEMA_PUBLICATION      = "github.issue.publication.v1"
+SCHEMA_MERGE            = "github.issue.merge.v1"
+
+KNOWN_SCHEMAS = {
+    SCHEMA_TRIAGE_REVIEW:  "triage_review",
+    SCHEMA_PLAN_REVIEW:    "plan_review",
+    SCHEMA_PLAN_V1:        "plan",
+    SCHEMA_PLAN_V2:        "plan",
+    SCHEMA_CODE_REVIEW:    "code_review",
+    SCHEMA_IMPLEMENTATION: "implementation",
+    SCHEMA_DECOMPOSE:      "decompose",
+    SCHEMA_STAGE2_INPUT:   "stage2_classify",
+    SCHEMA_PUBLICATION:    "publication",
+    SCHEMA_MERGE:          "merge",
+}
+
+# Minimum time (seconds) we require to be left before starting a new backend.
+# ponytail: prevents orphaned children when --timeout is tight.
+MIN_BACKEND_TIME = 5
+
+# Argv size cap for argv-only backends (agy uses -p <prompt>).
+# ponytail: sends stdin to all other backends; keeps us under ARG_MAX.
+ARGV_PROMPT_LIMIT = 100 * 1024  # 100 KiB
+
 DEFAULT_OPENROUTER_MODEL = "openrouter/free"
 
-FALLBACK_FREE_MODELS = [
-    "openrouter/free",
-    "google/gemma-4-31b-it:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-    "minimax/minimax-m3.1-flash:free",
-    "liquid/lfm-2.5-2.6b:free",
-    "cohere/north-mini-code:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen-2.5-coder-32b-instruct:free"
+DEFAULT_OPENCODE_MODEL = os.environ.get("OPENCODE_MODEL", "")
+DEFAULT_OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL", "")
+DEFAULT_WRAPPER        = os.environ.get("SUMMA42_HARNESS_WRAPPER",
+                                        os.environ.get("CODEMIE_WRAPPER", None))
+
+# ponytail: removed duplicate 'agy' entry from HARNESS_TYPES (S-M8).
+HARNESSES = [
+    "agy", "openrouter", "ollama", "opencode", "pi",
+    "claude", "codex", "gemini", "commandcode", "copilot", "codemie",
 ]
+HARNESS_TYPES = {
+    "agy":         "agent_runner",
+    "openrouter":  "model_runner",
+    "ollama":      "model_runner",
+    "opencode":    "model_runner",
+    "pi":          "agent_runner",
+    "claude":      "agent_runner",
+    "codex":       "agent_runner",
+    "gemini":      "model_runner",
+    "commandcode": "agent_runner",
+    "copilot":     "agent_runner",
+    "codemie":     "company_wrapper",
+    "script":      "deterministic_worker",
+}
 
-def get_openrouter_free_models():
+# Backends that receive the prompt on stdin (not in argv).
+STDIN_BACKENDS = {"claude", "codex", "opencode"}
+
+
+# ---------------------------------------------------------------------------
+# Capability cache
+# ---------------------------------------------------------------------------
+
+def _capability_cache_path():
+    """Return path for capability cache.
+
+    Uses $XDG_CACHE_HOME/summa42/capability_cache.json (mode 0600).
+    ponytail: moved from ~/.summa42/state/ to avoid writing canonical state dir (S-M8).
     """
-    Dynamically fetches and refreshes the live list of free models from OpenRouter API,
-    caching to /tmp/summa42_openrouter_free_models.json (TTL 1 hour).
-    Ensures 'openrouter/free' is always the primary model.
-    """
-    cache_file = "/tmp/summa42_openrouter_free_models.json"
-    now = time.time()
+    xdg = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
+    return os.path.join(xdg, "summa42", "capability_cache.json")
+
+
+CAPABILITY_CACHE_TTL = int(os.environ.get("SUMMA42_CAPABILITY_TTL", "600"))
+
+
+def load_capability_cache():
+    path = _capability_cache_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_capability_cache(cache):
+    path = _capability_cache_path()
     try:
-        if os.path.exists(cache_file):
-            mtime = os.path.getmtime(cache_file)
-            if now - mtime < 3600:
-                with open(cache_file, "r") as f:
-                    cached = json.load(f)
-                    if isinstance(cached, list) and len(cached) > 0:
-                        return cached
+        dirpath = os.path.dirname(path)
+        os.makedirs(dirpath, exist_ok=True)
+        # Write mode 0600; no other user should read this.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(cache, f, indent=2)
     except Exception:
         pass
 
-    try:
-        url = "https://openrouter.ai/api/v1/models"
-        req = urllib.request.Request(url, headers={"User-Agent": "Summa42/1.0"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            models = data.get("data", [])
-            free_list = ["openrouter/free"]
-            for m in models:
-                mid = m.get("id", "")
-                if (mid.endswith(":free") or mid == "openrouter/free") and mid not in free_list:
-                    free_list.append(mid)
-            if len(free_list) > 1:
-                try:
-                    with open(cache_file, "w") as f:
-                        json.dump(free_list, f)
-                except Exception:
-                    pass
-                return free_list
-    except Exception:
-        pass
 
-    return FALLBACK_FREE_MODELS
+# ---------------------------------------------------------------------------
+# OpenRouter helpers
+# ---------------------------------------------------------------------------
 
-def get_agy_models():
-    """
-    Dynamically fetches and caches available models from agy CLI.
-    Caches to /tmp/summa42_agy_models.json for 1 hour.
-    """
-    cache_file = "/tmp/summa42_agy_models.json"
-    now = time.time()
-    try:
-        if os.path.exists(cache_file):
-            mtime = os.path.getmtime(cache_file)
-            if now - mtime < 3600:
-                with open(cache_file, "r") as f:
-                    cached = json.load(f)
-                    if isinstance(cached, list) and len(cached) > 0:
-                        return cached
-    except Exception:
-        pass
+def _allow_remote():
+    """Return True only when operator has explicitly opted in to remote models."""
+    return (
+        os.environ.get("SUMMA42_ALLOW_REMOTE_MODELS", "").strip() in ("1", "true", "yes")
+    )
 
-    fallback_agy = [
-        "claude-sonnet-4-6",
-        "claude-opus-4-6-thinking",
-        "gemini-3.8-flash-high",
-        "gemini-3.8-flash-medium",
-        "gpt-oss-120b-medium"
-    ]
-    if not is_tool_available("agy"):
-        return fallback_agy
-
-    try:
-        res = subprocess.run(["agy", "models"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=12)
-        if res.returncode == 0 and res.stdout:
-            lines = [l.strip() for l in res.stdout.strip().splitlines() if l.strip()]
-            models = []
-            for l in lines:
-                if "Fetching" in l:
-                    continue
-                parts = l.split()
-                if parts and parts[0] and parts[0] not in models:
-                    models.append(parts[0])
-            if models:
-                try:
-                    with open(cache_file, "w") as f:
-                        json.dump(models, f)
-                except Exception:
-                    pass
-                return models
-    except Exception:
-        pass
-
-    return fallback_agy
 
 def get_openrouter_key():
     key = os.environ.get("OPENROUTER_API_KEY")
@@ -148,20 +166,60 @@ def get_openrouter_key():
                 return f.read().strip()
         except Exception:
             pass
-    tmp_file = "/tmp/summa42_openrouter_key"
-    if os.path.exists(tmp_file):
-        try:
-            with open(tmp_file, "r") as f:
-                return f.read().strip()
-        except Exception:
-            pass
     return None
+
+
+def get_openrouter_free_models():
+    """
+    Fetches the live list of free models from OpenRouter API.
+    Cache stored in XDG_CACHE_HOME/summa42/openrouter_models.json (TTL 1 hour).
+    Only called when remote is explicitly allowed.
+    """
+    xdg = os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
+    cache_file = os.path.join(xdg, "summa42", "openrouter_models.json")
+    now = time.time()
+    try:
+        if os.path.exists(cache_file):
+            mtime = os.path.getmtime(cache_file)
+            if now - mtime < 3600:
+                with open(cache_file, "r") as f:
+                    cached = json.load(f)
+                    if isinstance(cached, list) and len(cached) > 0:
+                        return cached
+    except Exception:
+        pass
+
+    fallback = ["openrouter/free"]
+    try:
+        url = "https://openrouter.ai/api/v1/models"
+        req = urllib.request.Request(url, headers={"User-Agent": "Summa42/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            models = data.get("data", [])
+            free_list = ["openrouter/free"]
+            for m in models:
+                mid = m.get("id", "")
+                if (mid.endswith(":free") or mid == "openrouter/free") and mid not in free_list:
+                    free_list.append(mid)
+            if len(free_list) > 1:
+                try:
+                    dirpath = os.path.dirname(cache_file)
+                    os.makedirs(dirpath, exist_ok=True)
+                    with open(cache_file, "w") as f:
+                        json.dump(free_list, f)
+                except Exception:
+                    pass
+                return free_list
+    except Exception:
+        pass
+
+    return fallback
+
 
 def call_openrouter(prompt, model=None, api_key=None, timeout=60):
     """
     Calls OpenRouter strictly enforcing zero-cost :free models.
-    Always prioritizes 'openrouter/free' and validates that any target model
-    ends in ':free' or is 'openrouter/free'.
+    Only called when --allow-remote / SUMMA42_ALLOW_REMOTE_MODELS=1.
     """
     if not api_key:
         api_key = get_openrouter_key()
@@ -177,19 +235,22 @@ def call_openrouter(prompt, model=None, api_key=None, timeout=60):
     last_err = None
     for target_model in models_to_try:
         if not (target_model.endswith(":free") or target_model == "openrouter/free"):
-            raise ValueError(f"CRITICAL SAFETY VIOLATION: model '{target_model}' is not a permitted free model. Only zero-cost ':free' and 'openrouter/free' models are permitted.")
+            raise ValueError(
+                f"CRITICAL SAFETY VIOLATION: model '{target_model}' is not a permitted "
+                "free model. Only zero-cost ':free' and 'openrouter/free' models are permitted."
+            )
 
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "HTTP-Referer": "https://github.com/SofiaFlux/summa42",
             "X-Title": "Summa42 Collective",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
         payload = {
             "model": target_model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1
+            "temperature": 0.1,
         }
         data_bytes = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
@@ -200,8 +261,10 @@ def call_openrouter(prompt, model=None, api_key=None, timeout=60):
                 return res_json["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as e:
             last_err = e
-            # If rate-limited (429) or model temporarily unavailable (503), try next free model
-            sys.stderr.write(f"call-worker: openrouter model '{target_model}' returned {e.code}, trying fallback free model...\n")
+            sys.stderr.write(
+                f"call-worker: openrouter model '{target_model}' returned {e.code}, "
+                "trying fallback free model...\n"
+            )
             continue
         except Exception as e:
             last_err = e
@@ -210,60 +273,55 @@ def call_openrouter(prompt, model=None, api_key=None, timeout=60):
 
     raise RuntimeError(f"All openrouter :free models failed: {last_err}")
 
-DEFAULT_BACKEND = os.environ.get("SUMMA42_WORKER_BACKEND", "agy" if shutil.which("agy") else ("openrouter" if get_openrouter_key() else ("ollama" if shutil.which("ollama") else "opencode")))
-DEFAULT_OPENCODE_MODEL = os.environ.get("OPENCODE_MODEL", "opencode/big-pickle")
-DEFAULT_OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen-gpu")
-DEFAULT_MODEL = os.environ.get("SUMMA42_WORKER_MODEL", DEFAULT_OPENROUTER_MODEL if DEFAULT_BACKEND == "openrouter" else (DEFAULT_OLLAMA_MODEL if DEFAULT_BACKEND == "ollama" else DEFAULT_OPENCODE_MODEL))
-DEFAULT_WRAPPER = os.environ.get("SUMMA42_HARNESS_WRAPPER", os.environ.get("CODEMIE_WRAPPER", None))
 
-CAPABILITY_CACHE_FILE = os.path.expanduser("~/.summa42/state/capability_cache.json")
-CAPABILITY_CACHE_TTL = int(os.environ.get("SUMMA42_CAPABILITY_TTL", "600")) # 10 minutes
-
-HARNESSES = ["agy", "openrouter", "ollama", "opencode", "pi", "claude", "codex", "gemini", "commandcode", "copilot", "codemie"]
-HARNESS_TYPES = {
-    "agy": "agent_runner",
-    "openrouter": "model_runner",
-    "ollama": "model_runner",
-    "agy": "agent_runner",
-    "opencode": "model_runner",
-    "pi": "agent_runner",
-    "claude": "agent_runner",
-    "codex": "agent_runner",
-    "gemini": "model_runner",
-    "commandcode": "agent_runner",
-    "copilot": "agent_runner",
-    "codemie": "company_wrapper",
-    "script": "deterministic_worker"
-}
+# ---------------------------------------------------------------------------
+# Harness utilities
+# ---------------------------------------------------------------------------
 
 def is_tool_available(name):
     return shutil.which(name) is not None
 
-def load_capability_cache():
-    if os.path.exists(CAPABILITY_CACHE_FILE):
-        try:
-            with open(CAPABILITY_CACHE_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
 
-def save_capability_cache(cache):
+def get_agy_models():
+    """Fetches available models from agy CLI (no hard-coded fictional IDs)."""
+    # ponytail: removed hard-coded fictional model IDs (S-M8).
+    if not is_tool_available("agy"):
+        return []
     try:
-        os.makedirs(os.path.dirname(CAPABILITY_CACHE_FILE), exist_ok=True)
-        with open(CAPABILITY_CACHE_FILE, "w") as f:
-            json.dump(cache, f, indent=2)
+        res = subprocess.run(
+            ["agy", "models"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=12,
+        )
+        if res.returncode == 0 and res.stdout:
+            lines = [l.strip() for l in res.stdout.strip().splitlines() if l.strip()]
+            models = []
+            for line in lines:
+                if "Fetching" in line:
+                    continue
+                parts = line.split()
+                if parts and parts[0] and parts[0] not in models:
+                    models.append(parts[0])
+            return models
     except Exception:
         pass
+    return []
+
 
 def check_harness_auth(harness, wrapper=None, force=False):
     """
-    Checks if a harness is installed AND authenticated / healthy to serve tasks.
+    Checks if a harness is installed AND authenticated / healthy.
     Returns: (ready: bool, reason: str)
-    Results are cached with a TTL (10m) to avoid latency on repetitive calls.
+    Results are cached with a TTL (10 min) to avoid latency on repetitive calls.
+
+    ponytail: openrouter returns not-ready when remote is not explicitly allowed (S-I5).
     """
     if harness == "script":
         return True, "Deterministic worker ready"
+
+    # openrouter is opt-in only.
+    if harness == "openrouter":
+        if not _allow_remote():
+            return False, "OpenRouter disabled (pass --allow-remote or set SUMMA42_ALLOW_REMOTE_MODELS=1)"
 
     base = harness
     if harness.startswith("codemie-"):
@@ -292,31 +350,23 @@ def check_harness_auth(harness, wrapper=None, force=False):
 
     try:
         if base == "copilot":
-            probe_env = os.environ.copy()
-            if not probe_env.get("GITHUB_TOKEN") and os.path.exists("/tmp/summa42_github_token"):
-                try:
-                    with open("/tmp/summa42_github_token", "r") as f:
-                        probe_env["GITHUB_TOKEN"] = f.read().strip()
-                except Exception:
-                    pass
-            has_token = bool(probe_env.get("GITHUB_TOKEN") or probe_env.get("GH_TOKEN"))
+            # ponytail: no credential injection here — only check config presence.
             copilot_cfg = os.path.expanduser("~/.config/github-copilot")
             copilot_alt = os.path.expanduser("~/.copilot")
-            if has_token or os.path.exists(copilot_cfg) or os.path.exists(copilot_alt):
-                # Verify binary works with zero token consumption (no AI credits burned)
+            if os.path.exists(copilot_cfg) or os.path.exists(copilot_alt):
                 probe = subprocess.run(
                     ["copilot", "--version"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5,
                 )
                 if probe.returncode == 0:
                     ready = True
-                    reason = "Authenticated (GitHub token/credentials present, CLI verified)"
+                    reason = "Authenticated (GitHub Copilot credentials present, CLI verified)"
                 else:
                     ready = False
                     reason = f"CLI probe failed: {probe.stderr.strip()[:100]}"
             else:
                 ready = False
-                reason = "Not logged in (missing GITHUB_TOKEN or ~/.config/github-copilot)"
+                reason = "Not logged in (missing ~/.config/github-copilot)"
 
         elif base == "openrouter":
             k = get_openrouter_key()
@@ -325,12 +375,12 @@ def check_harness_auth(harness, wrapper=None, force=False):
                 reason = "Authenticated (OPENROUTER_API_KEY detected, strict :free enforcement active)"
             else:
                 ready = False
-                reason = "Missing OPENROUTER_API_KEY (set env var or save in ~/.openrouter_api_key)"
+                reason = "Missing OPENROUTER_API_KEY"
 
         elif base == "ollama":
             probe = subprocess.run(
                 ["ollama", "list"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5,
             )
             if probe.returncode == 0:
                 ready = True
@@ -342,7 +392,7 @@ def check_harness_auth(harness, wrapper=None, force=False):
         elif base == "opencode":
             probe = subprocess.run(
                 ["opencode", "models"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=6
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=6,
             )
             if probe.returncode == 0:
                 ready = True
@@ -354,7 +404,7 @@ def check_harness_auth(harness, wrapper=None, force=False):
         elif base == "agy":
             probe = subprocess.run(
                 ["agy", "--version"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5,
             )
             if probe.returncode == 0:
                 ready = True
@@ -364,7 +414,9 @@ def check_harness_auth(harness, wrapper=None, force=False):
                 reason = f"agy probe failed: {probe.stderr.strip()[:100]}"
 
         elif base == "claude":
-            if os.environ.get("ANTHROPIC_API_KEY") or os.path.exists(os.path.expanduser("~/.claude.json")):
+            if os.environ.get("ANTHROPIC_API_KEY") or os.path.exists(
+                os.path.expanduser("~/.claude.json")
+            ):
                 ready = True
                 reason = "Authenticated (Anthropic credentials detected)"
             else:
@@ -372,7 +424,9 @@ def check_harness_auth(harness, wrapper=None, force=False):
                 reason = "Missing ANTHROPIC_API_KEY or ~/.claude.json login"
 
         elif base == "gemini":
-            if os.environ.get("GEMINI_API_KEY") or os.path.exists(os.path.expanduser("~/.gemini")):
+            if os.environ.get("GEMINI_API_KEY") or os.path.exists(
+                os.path.expanduser("~/.gemini")
+            ):
                 ready = True
                 reason = "Authenticated (Gemini credentials detected)"
             else:
@@ -402,6 +456,7 @@ def check_harness_auth(harness, wrapper=None, force=False):
     save_capability_cache(cache)
     return ready, reason
 
+
 def list_backends(check_auth=True):
     backends = {}
     for h in HARNESSES:
@@ -419,25 +474,28 @@ def list_backends(check_auth=True):
             "authenticated": ready,
             "status": reason,
             "path": p,
-            "type": HARNESS_TYPES.get(h, "agent_runner")
+            "type": HARNESS_TYPES.get(h, "agent_runner"),
         }
     codemie_bin = shutil.which("codemie")
-    has_codemie_any = codemie_bin is not None or any(shutil.which(f"codemie-{h}") for h in HARNESSES)
+    has_codemie_any = codemie_bin is not None or any(
+        shutil.which(f"codemie-{h}") for h in HARNESSES
+    )
     backends["codemie"] = {
         "available": has_codemie_any,
         "authenticated": has_codemie_any,
         "status": "Company wrapper active" if has_codemie_any else "Not in PATH",
         "path": codemie_bin,
         "type": "company_wrapper",
-        "description": "Company wrapper (supports codemie- prefix or codemie runner)"
+        "description": "Company wrapper (supports codemie- prefix or codemie runner)",
     }
     backends["script"] = {
         "available": True,
         "authenticated": True,
         "status": "Deterministic worker ready",
-        "type": "deterministic_worker"
+        "type": "deterministic_worker",
     }
     return backends
+
 
 def list_models(backend):
     backend_norm = backend
@@ -448,12 +506,15 @@ def list_models(backend):
         if not is_tool_available("opencode"):
             return []
         try:
-            res = subprocess.run(["opencode", "models"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+            res = subprocess.run(
+                ["opencode", "models"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10,
+            )
             if res.returncode == 0:
                 return [m.strip() for m in res.stdout.strip().splitlines() if m.strip()]
         except Exception:
             pass
-        return [DEFAULT_OPENCODE_MODEL]
+        return [DEFAULT_OPENCODE_MODEL] if DEFAULT_OPENCODE_MODEL else []
     elif backend_norm == "claude":
         return ["claude-code", "claude-3-5-sonnet", "claude-3-7-sonnet"]
     elif backend_norm == "agy":
@@ -470,11 +531,15 @@ def list_models(backend):
         return ["pi-default"]
     return []
 
+
+# ---------------------------------------------------------------------------
+# Skill loading
+# ---------------------------------------------------------------------------
+
 def load_skill_content(task_type):
     """Loads applicable autonomous skills from the skills/ directory."""
     skills_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills"))
     content = ""
-    # Base autonomous engineering principles
     base_file = os.path.join(skills_dir, "autonomous_engineering.md")
     if os.path.exists(base_file):
         try:
@@ -484,7 +549,7 @@ def load_skill_content(task_type):
             pass
 
     type_map = {
-        "plan": "planning.md",
+        "plan":       "planning.md",
         "plan_review": "plan_review.md",
         "implementation": "implementation.md",
         "code_review": "code_review.md",
@@ -500,17 +565,21 @@ def load_skill_content(task_type):
                 pass
     return content.strip()
 
+
+# ---------------------------------------------------------------------------
+# JSON extraction
+# ---------------------------------------------------------------------------
+
 def extract_json(text):
     """Robustly extracts a JSON object or array from LLM output."""
-    # Strip thinking tags from reasoning models (e.g. big-pickle)
+    # Strip thinking tags from reasoning models.
     text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
     if "</think>" in text:
         text = text.split("</think>")[-1].strip()
 
-    # Try finding first '{' or '['
-    brace_idx = text.find('{')
-    bracket_idx = text.find('[')
-    
+    brace_idx = text.find("{")
+    bracket_idx = text.find("[")
+
     start_idx = -1
     if brace_idx != -1 and bracket_idx != -1:
         start_idx = min(brace_idx, bracket_idx)
@@ -527,7 +596,6 @@ def extract_json(text):
         except Exception:
             pass
 
-    # Regex fallback
     match = re.search(r"(\{.*\})", text, re.DOTALL)
     if not match:
         match = re.search(r"(\[.*\])", text, re.DOTALL)
@@ -535,131 +603,261 @@ def extract_json(text):
         raise ValueError(f"No JSON found in model output: {text[:200]}...")
     return json.loads(match.group(1))
 
+
+# ---------------------------------------------------------------------------
+# Command resolution
+# ---------------------------------------------------------------------------
+
 def resolve_command(backend, model, prompt, wrapper=None):
+    """Build the argv list for an argv-based backend invocation.
+
+    For stdin-capable backends (claude, codex, opencode) this function is NOT
+    called — those use run_backend_stdin instead.
+    """
     if backend.startswith("codemie-"):
         wrapper = "codemie-"
         backend = backend[len("codemie-"):]
 
     tool_binary = f"{wrapper}{backend}" if wrapper else backend
 
-    # If tool_binary not in PATH and wrapper is active, fall back to wrapper as command:
     if wrapper and not shutil.which(tool_binary) and shutil.which(wrapper.rstrip("-")):
         wrapper_bin = wrapper.rstrip("-")
-        if backend == "claude":
-            cmd = [wrapper_bin, "claude", "-p", prompt]
-            if model: cmd.extend(["--model", model])
-            return cmd
-        elif backend == "codex":
-            cmd = [wrapper_bin, "codex", "exec"]
-            if model: cmd.extend(["-m", model])
-            cmd.append(prompt)
+        if backend == "agy":
+            cmd = [wrapper_bin, "agy", "-p", prompt, "--disable-slash-commands"]
+            if model:
+                cmd.extend(["--model", model])
             return cmd
         elif backend == "gemini":
             cmd = [wrapper_bin, "gemini", "-p", prompt]
-            if model: cmd.extend(["-m", model])
+            if model:
+                cmd.extend(["-m", model])
             return cmd
         elif backend == "commandcode":
             cmd = [wrapper_bin, "commandcode", "-p", prompt]
-            if model: cmd.extend(["-m", model])
+            if model:
+                cmd.extend(["-m", model])
             return cmd
         elif backend == "copilot":
             cmd = [wrapper_bin, "copilot", "-p", prompt, "-s", "--no-ask-user"]
-            if model: cmd.extend(["--model", model])
-            return cmd
-        elif backend == "opencode":
-            return [wrapper_bin, "opencode", "run", prompt, "-m", model or DEFAULT_OPENCODE_MODEL]
-        elif backend == "agy":
-            cmd = [wrapper_bin, "agy", "-p", prompt, "--disable-slash-commands"]
-            if model: cmd.extend(["--model", model])
+            if model:
+                cmd.extend(["--model", model])
             return cmd
         elif backend == "pi":
             return [wrapper_bin, "pi", "-p", prompt]
         else:
             return [wrapper_bin, "run", prompt]
 
-    # Standard direct or wrapped binary invocations:
-    if backend == "opencode":
-        return [tool_binary, "run", prompt, "-m", model or DEFAULT_OPENCODE_MODEL]
-    elif backend == "claude":
-        cmd = [tool_binary, "-p", prompt]
-        if model: cmd.extend(["--model", model])
-        return cmd
-    elif backend == "agy":
+    if backend == "agy":
         cmd = [tool_binary, "-p", prompt, "--disable-slash-commands"]
-        if model: cmd.extend(["--model", model])
-        return cmd
-    elif backend == "codex":
-        cmd = [tool_binary, "exec"]
-        if model: cmd.extend(["-m", model])
-        cmd.append(prompt)
+        if model:
+            cmd.extend(["--model", model])
         return cmd
     elif backend == "gemini":
         cmd = [tool_binary, "-p", prompt]
-        if model: cmd.extend(["-m", model])
+        if model:
+            cmd.extend(["-m", model])
         return cmd
     elif backend == "commandcode":
         cmd = [tool_binary, "-p", prompt]
-        if model: cmd.extend(["-m", model])
+        if model:
+            cmd.extend(["-m", model])
         return cmd
     elif backend == "copilot":
         cmd = [tool_binary, "-p", prompt, "-s", "--no-ask-user"]
-        if model: cmd.extend(["--model", model])
+        if model:
+            cmd.extend(["--model", model])
         return cmd
     elif backend == "pi":
         cmd = [tool_binary, "-p", prompt]
-        if model: cmd.extend(["-m", model])
+        if model:
+            cmd.extend(["-m", model])
         return cmd
     elif backend == "ollama":
         return [tool_binary, "run", model or DEFAULT_OLLAMA_MODEL, prompt]
     elif backend == "codemie":
         return [tool_binary, "run", prompt]
     else:
-        raise ValueError(f"Unknown backend: {backend}")
+        # Generic: pass the prompt as first positional argument.
+        return [tool_binary, prompt]
+
+
+def _clean_env():
+    """Return os.environ copy with GitHub credentials removed.
+
+    ponytail: never inject GITHUB_TOKEN/GH_TOKEN into model processes (S-I4).
+    """
+    env = os.environ.copy()
+    env.pop("GITHUB_TOKEN", None)
+    env.pop("GH_TOKEN", None)
+    return env
+
 
 def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=180):
+    """Execute a backend and return its raw text output.
+
+    Stdin-capable backends (claude, codex, opencode) receive the full prompt
+    on stdin.  Argv-only backends (agy) receive it in -p, capped at 100 KiB.
+    """
     if backend == "script":
         if not script_cmd:
             raise ValueError("--script must be specified when using backend 'script'")
-        proc = subprocess.run(script_cmd, input=prompt, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=True, timeout=timeout)
+        proc = subprocess.run(
+            script_cmd,
+            input=prompt,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, shell=True, timeout=timeout,
+        )
         if proc.returncode != 0:
             raise RuntimeError(f"worker script exited with code {proc.returncode}: {proc.stderr}")
         return proc.stdout
 
     if backend == "openrouter":
+        if not _allow_remote():
+            raise RuntimeError(
+                "OpenRouter is disabled; pass --allow-remote or set SUMMA42_ALLOW_REMOTE_MODELS=1"
+            )
         return call_openrouter(prompt, model=model, timeout=timeout)
 
+    env = _clean_env()
+
+    base = backend
+    if backend.startswith("codemie-"):
+        base = backend[len("codemie-"):]
+
+    if base in STDIN_BACKENDS:
+        # Build command without embedding the prompt in argv.
+        tool_binary = (f"{wrapper}{base}" if wrapper else base)
+        if base == "claude":
+            cmd = [tool_binary, "-p", "-"]
+            if model:
+                cmd.extend(["--model", model])
+        elif base == "codex":
+            cmd = [tool_binary, "exec", "-"]
+            if model:
+                cmd.extend(["-m", model])
+        elif base == "opencode":
+            cmd = [tool_binary, "run", "-"]
+            if model:
+                cmd.extend(["-m", model])
+        else:
+            cmd = [tool_binary, "-p", "-"]
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env, timeout=timeout,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"{cmd[0]} exited with code {proc.returncode}: {proc.stderr}")
+        return proc.stdout
+
+    # Argv-only backends: enforce 100 KiB cap.
+    prompt_bytes = len(prompt.encode("utf-8"))
+    if prompt_bytes > ARGV_PROMPT_LIMIT:
+        raise OSError(
+            f"prompt exceeds argv limit ({prompt_bytes} bytes > {ARGV_PROMPT_LIMIT} bytes); "
+            "use a stdin-capable backend (claude, codex, opencode)"
+        )
+
     cmd = resolve_command(backend, model, prompt, wrapper=wrapper)
-    env = os.environ.copy()
-    if not env.get("GITHUB_TOKEN") and os.path.exists("/tmp/summa42_github_token"):
-        try:
-            with open("/tmp/summa42_github_token", "r") as f:
-                token = f.read().strip()
-                env["GITHUB_TOKEN"] = token
-                env["GH_TOKEN"] = token
-        except Exception:
-            pass
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, timeout=timeout)
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=env, timeout=timeout,
+    )
     if proc.returncode != 0:
         raise RuntimeError(f"{cmd[0]} exited with code {proc.returncode}: {proc.stderr}")
     out = proc.stdout
-    if backend == "ollama":
-        out = re.sub(r'^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏\s]+', '', out)
+    if base == "ollama":
+        out = re.sub(r"^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏\s]+", "", out)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Validation helpers (fail-closed)
+# ---------------------------------------------------------------------------
+
+def validate_verdict_response(parsed, task_type):
+    """Validate a plan_review / code_review response dict.
+
+    Returns (normalized_dict, None) on success, or (None, error_message) on failure.
+    ponytail: no default verdicts; missing/unknown verdict is an error (S-C4).
+    """
+    if "verdict" not in parsed:
+        return None, "response missing required 'verdict' field"
+
+    verdict = str(parsed["verdict"]).upper()
+    # Normalise aliases.
+    if verdict in ("APPROVE", "APPROVED"):
+        verdict = "ACCEPT"
+    elif verdict in ("REJECT", "REQUEST_CHANGES", "CHANGES_REQUESTED"):
+        verdict = "REVISE"
+    elif verdict not in ("ACCEPT", "REVISE", "BLOCK"):
+        return None, f"unknown verdict '{parsed['verdict']}' (must be ACCEPT, REVISE, or BLOCK)"
+
+    reason = str(parsed.get("reason", ""))[:1000]
+
+    # ponytail: S-M6 fix — no automatic verdict flip based on reason keywords.
+    # The model's verdict stands. Flipping ACCEPT→REVISE on benign words like
+    # "no violations found" was a false positive that hid real ACCEPTs.
+
+    return {"verdict": verdict, "reason": reason}, None
+
+
+def validate_triage_review(parsed):
+    """Validate a triage_review response.
+
+    Returns (normalized_dict, None) or (None, error_message).
+    ponytail: plausible must be a JSON boolean; string 'false' is an error (S-C4).
+    """
+    if "plausible" not in parsed:
+        return None, "response missing required 'plausible' field"
+    value = parsed["plausible"]
+    if not isinstance(value, bool):
+        return None, (
+            f"'plausible' must be a JSON boolean (true/false), got {type(value).__name__} {value!r}"
+        )
+    return {"plausible": value}, None
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Summa42 Universal Cognitive Worker Router")
-    parser.add_argument("--backend", default=DEFAULT_BACKEND, help="Worker backend (agy, opencode, pi, claude, codex, gemini, commandcode, codemie, script)")
+    parser.add_argument("--backend", default=None,
+                        help="Worker backend (agy, opencode, pi, claude, codex, gemini, commandcode, codemie, script)")
     parser.add_argument("--wrapper", default=DEFAULT_WRAPPER, help="Company wrapper prefix (e.g. codemie-)")
     parser.add_argument("--model", default=None, help="Model name for the backend")
     parser.add_argument("--script", default=None, help="Command/script to run when backend is 'script'")
-    parser.add_argument("--fallback", default="agy", help="Fallback backend if primary fails")
+    parser.add_argument("--fallback", default=None, help="Fallback backend if primary fails")
     parser.add_argument("--list-backends", action="store_true", help="List available cognitive worker backends")
     parser.add_argument("--list-models", action="store_true", help="List available models for the backend")
     parser.add_argument("--timeout", type=int, default=180, help="Execution timeout in seconds")
     parser.add_argument("--rules", default=None, help="Inline review rules")
     parser.add_argument("--rules-file", default=None, help="Path to file containing review rules")
+    parser.add_argument("--allow-remote", action="store_true",
+                        help="Opt-in to OpenRouter/remote models (S-I5)")
 
     args, unknown = parser.parse_known_args()
+
+    # Allow --allow-remote to set the env var for downstream helpers.
+    if args.allow_remote:
+        os.environ["SUMMA42_ALLOW_REMOTE_MODELS"] = "1"
+
+    # Default backend selection (no openrouter unless remote allowed).
+    if args.backend is None:
+        if shutil.which("agy"):
+            args.backend = "agy"
+        elif shutil.which("opencode"):
+            args.backend = "opencode"
+        elif _allow_remote() and get_openrouter_key():
+            args.backend = "openrouter"
+        elif shutil.which("ollama"):
+            args.backend = "ollama"
+        else:
+            args.backend = "agy"
 
     rules_text = ""
     if args.rules_file and os.path.exists(args.rules_file):
@@ -682,49 +880,50 @@ def main():
 
     raw_input = sys.stdin.read().strip()
     if not raw_input:
+        sys.stderr.write("call-worker: empty stdin\n")
         sys.exit(1)
 
     try:
         input_data = json.loads(raw_input)
     except Exception:
-        input_data = {}
+        sys.stderr.write("call-worker: stdin is not valid JSON\n")
+        sys.exit(1)
 
     schema = input_data.get("schema", "")
-    question = input_data.get("question", "")
 
-    # Identify task type
-    task_type = "generic"
-    if schema == "github.issue.triage.review.v1" or ("plausible" in question.lower() and "triage" in question.lower()):
-        task_type = "triage_review"
-    elif schema == "github.issue.plan.review.v1" or "plan.review" in schema.lower() or "independently review this issue implementation plan" in question.lower():
-        task_type = "plan_review"
-    elif schema in ("github.issue.plan.v1", "github.issue.plan.v2") or "plan" in schema.lower() or "implementation plan" in question.lower():
-        task_type = "plan"
-    elif schema == "github.issue.code.review.v1" or "code.review" in schema.lower() or "independent reviewer" in question.lower():
-        task_type = "code_review"
-    elif schema == "repo.implementation.v1" or "implementation" in schema.lower():
-        task_type = "implementation"
-    elif schema in ("github.issue.decompose.v1", "issue.decompose") or "decompose" in schema.lower() or "decompose this issue" in question.lower():
-        task_type = "decompose"
-    elif "stage2" in schema.lower() or "classify this issue" in question.lower() or "is_actionable" in raw_input:
-        task_type = "stage2_classify"
+    # ponytail: exact schema dispatch; unknown schema is an error (S-M9, S-C4).
+    if schema not in KNOWN_SCHEMAS:
+        sys.stderr.write(
+            f"call-worker: unknown schema '{schema}'; "
+            f"known schemas: {', '.join(sorted(KNOWN_SCHEMAS))}\n"
+        )
+        sys.exit(1)
+
+    task_type = KNOWN_SCHEMAS[schema]
 
     skill_content = load_skill_content(task_type)
-    skill_block = f"\nAPPLICABLE BEST PRACTICES & SKILLS (SUPERPOWERS / PONYTAIL / TDD):\n{skill_content}\n" if skill_content else ""
+    skill_block = (
+        f"\nAPPLICABLE BEST PRACTICES & SKILLS (SUPERPOWERS / PONYTAIL / TDD):\n{skill_content}\n"
+        if skill_content else ""
+    )
 
-    rules_block = f"\nEVALUATION RULES (STRICTLY ENFORCE):\n{rules_text}\nIf any rule is violated, verdict must be REVISE or BLOCK, explaining the exact violation in reason.\n" if rules_text else ""
+    rules_block = (
+        f"\nEVALUATION RULES (STRICTLY ENFORCE):\n{rules_text}\n"
+        "If any rule is violated, verdict must be REVISE or BLOCK, explaining the exact violation in reason.\n"
+        if rules_text else ""
+    )
 
+    # Build the prompt.
+    # ponytail: for plan, send the full grounding; compact_spec stripping removed (S-I1).
     prompt = ""
-    # 1. Triage Review
     if task_type == "triage_review":
         prompt = (
             "You are an automated triage review verifier for Summa42. "
             "Evaluate if this issue triage decision is plausible and sound. "
-            "Output ONLY a raw JSON object with this exact format: {\"plausible\": true}.\n\n"
+            'Output ONLY a raw JSON object with this exact format: {"plausible": true}.\n\n'
             f"INPUT:\n{raw_input}"
         )
 
-    # 2. Plan Review
     elif task_type == "plan_review":
         prompt = (
             "You are an independent plan reviewer for Summa42. "
@@ -736,19 +935,8 @@ def main():
             f"INPUT:\n{raw_input}"
         )
 
-    # 3. Planning
     elif task_type == "plan":
-        # Extract compact issue & contract metadata, omitting raw monolithic file bodies
-        snap = input_data.get("snapshot", {})
-        grounding = input_data.get("grounding", {})
-        contract = grounding.get("contract", {})
-        compact_spec = {
-            "issue": snap.get("issue"),
-            "title": snap.get("title", ""),
-            "body": snap.get("body", "")[:3000],
-            "allowed_paths": contract.get("allowed_paths", []),
-            "validation_commands": contract.get("validation_commands", [])
-        }
+        # Send the full input including grounding context on stdin (S-I1).
         prompt = (
             "You are an automated software architect for Summa42. "
             "Write a concrete, bounded, test-driven implementation plan with 1 to 8 steps for the following issue. "
@@ -760,10 +948,9 @@ def main():
             "Output JSON with ONLY these exact fields: "
             '{"summary": "Summary under 1000 characters", "steps": [{"objective": "Step objective under 300 chars", "done_when": "Verifiable condition under 1000 chars"}]}. '
             "Output ONLY the raw JSON object, no markdown fences, no extra keys.\n\n"
-            f"INPUT SPECIFICATION:\n{json.dumps(compact_spec, indent=2)}"
+            f"INPUT SPECIFICATION:\n{raw_input}"
         )
 
-    # 4. Code Review
     elif task_type == "code_review":
         prompt = (
             "You are an independent code reviewer for Summa42. "
@@ -775,7 +962,6 @@ def main():
             f"INPUT:\n{raw_input}"
         )
 
-    # 5. Implementation
     elif task_type == "implementation":
         prompt = (
             "You are an automated software engineer for Summa42. "
@@ -788,7 +974,6 @@ def main():
             f"INPUT:\n{raw_input}"
         )
 
-    # 6. Stage 2 Triage Classification
     elif task_type == "stage2_classify":
         prompt = (
             "You are an automated triage classifier for Summa42. "
@@ -799,15 +984,14 @@ def main():
             "Values for suggested_type must be one of: bug, feature, question, other.\n\n"
             "SCOPE GUIDELINES IN SUMMA42:\n"
             "- 'small': Single bugfix, localized refactor, single-file addition or test improvement (~1-2 files, 1 commit).\n"
-            "- 'medium': A bounded, cohesive feature, interface, domain model, or engine module with unit/integration tests (standard 1-2 PR unit of delivery). Sub-issues with concrete acceptance criteria and technical guidance ARE 'medium' and SHOULD be planned and implemented, NOT marked large.\n"
+            "- 'medium': A bounded, cohesive feature, interface, domain model, or engine module with unit/integration tests (standard 1-2 PR unit of delivery).\n"
             "- 'large': A multi-component epic or major cross-cutting subsystem requiring multi-stage decomposition into smaller sub-issues.\n"
             "- 'huge': A massive platform initiative or multi-epic roadmap goal.\n"
             "RISK ASYMMETRY RULE:\n"
-            "If genuinely uncertain between two adjacent scopes (e.g. small vs medium, or medium vs large), choose the larger scope. But if an issue is a bounded sub-issue with clear acceptance criteria and technical guidance, it is 'medium' or 'small' and is READY TO PLAN.\n\n"
+            "If genuinely uncertain between two adjacent scopes, choose the larger scope.\n\n"
             f"INPUT:\n{raw_input}"
         )
 
-    # 7. Decomposition
     elif task_type == "decompose":
         prompt = (
             "You are an automated software systems architect for Summa42. "
@@ -816,15 +1000,20 @@ def main():
             f"{rules_block}"
             "DECOMPOSITION RULES:\n"
             "- If the parent issue is 'huge': Break it down into 2 to 5 epics with scope 'large'.\n"
-            "- If the parent issue is 'large':\n"
-            "  * If large_depth is 3 or more: You MUST decompose directly into 2 to 4 actionable tasks with scope 'medium' or 'small'. Do NOT produce any more 'large' child issues.\n"
-            "  * If large_depth is less than 3: Prefer decomposing into 'medium' or 'small' tasks, but if genuinely necessary, 2 to 4 'large' sub-epics are allowed.\n"
+            "- If the parent issue is 'large': Prefer decomposing into 'medium' or 'small' tasks.\n"
             "- If the parent issue is 'medium': Decompose into 2 to 4 'small' tasks.\n"
-            "- Risk Asymmetry: If uncertain about a child issue's scope, choose the larger scope (small -> medium -> large).\n"
             "- Output JSON with ONLY these exact fields:\n"
             '{"summary": "Decomposition strategy explanation under 1000 chars", "can_decompose": true, "sub_issues": [{"title": "Concise issue title under 200 chars", "scope": "medium", "suggested_type": "feature", "body": "Comprehensive issue description including objective, acceptance criteria, and technical guidance."}]}.\n'
-            "If the issue cannot be broken down further because it is at max depth or fundamentally atomic, set 'can_decompose': false and leave 'sub_issues': [].\n"
+            "If the issue cannot be broken down further, set 'can_decompose': false and leave 'sub_issues': [].\n"
             "Output ONLY the raw JSON object, no markdown fences, no extra keys.\n\n"
+            f"INPUT:\n{raw_input}"
+        )
+
+    elif task_type in ("publication", "merge"):
+        # These task types are handled by Go; call-worker just passes through the input.
+        prompt = (
+            "You are an automated worker for Summa42. "
+            "Respond ONLY with a single valid conforming JSON object matching the requested schema.\n\n"
             f"INPUT:\n{raw_input}"
         )
 
@@ -837,14 +1026,11 @@ def main():
             f"INPUT:\n{raw_input}"
         )
 
-    # Execute backend with capability discovery & authenticated candidate filtering
+    # Build candidate backend list from explicit args only.
+    # ponytail: no implicit automatic fallbacks; operator controls the chain (S-C4).
     candidates = [args.backend]
     if args.fallback and args.fallback != args.backend:
         candidates.append(args.fallback)
-    # Only unmetered / free harnesses can be dynamic fallbacks
-    for h in ["openrouter", "ollama", "opencode", "agy", "script"]:
-        if h not in candidates:
-            candidates.append(h)
 
     backends_to_try = []
     for b in candidates:
@@ -852,79 +1038,87 @@ def main():
         if ready:
             backends_to_try.append(b)
         else:
-            sys.stderr.write(f"call-worker: skipping unready backend '{b}' ({reason}). Cached TTL window active.\n")
+            sys.stderr.write(
+                f"call-worker: skipping unready backend '{b}' ({reason})\n"
+            )
 
     if not backends_to_try:
-        sys.stderr.write("call-worker: no authenticated backends available, forcing fallback to deterministic script\n")
-        backends_to_try = ["script"]
+        sys.stderr.write("call-worker: no authenticated backends available\n")
+        sys.exit(1)
 
     parsed = None
     last_error = None
-    total_time_left = args.timeout
+    deadline = time.time() + args.timeout
+
     for idx, b in enumerate(backends_to_try):
-        is_last = (idx == len(backends_to_try) - 1)
-        if not is_last and total_time_left > 45:
-            per_attempt_timeout = max(30, total_time_left - 30)
-        else:
-            per_attempt_timeout = max(15, total_time_left)
-        start_t = time.time()
+        remaining = deadline - time.time()
+        if remaining < MIN_BACKEND_TIME:
+            sys.stderr.write(
+                f"call-worker: {remaining:.0f}s remaining, not enough to start backend '{b}' "
+                f"(minimum {MIN_BACKEND_TIME}s)\n"
+            )
+            break
+        per_attempt_timeout = min(remaining - 2, remaining)
+        per_attempt_timeout = max(MIN_BACKEND_TIME, int(per_attempt_timeout))
+
         try:
             m = args.model if b == args.backend else None
-            output = run_backend(b, m, prompt, script_cmd=args.script, wrapper=args.wrapper, timeout=per_attempt_timeout)
+            output = run_backend(
+                b, m, prompt,
+                script_cmd=args.script, wrapper=args.wrapper,
+                timeout=per_attempt_timeout,
+            )
             parsed = extract_json(output)
             break
         except subprocess.TimeoutExpired as e:
             last_error = e
-            elapsed = int(time.time() - start_t)
-            total_time_left = max(5, total_time_left - elapsed)
-            sys.stderr.write(f"call-worker: backend {b} timed out after {elapsed}s, falling back...\n")
+            sys.stderr.write(f"call-worker: backend '{b}' timed out\n")
+        except OSError as e:
+            last_error = e
+            # argv-limit errors are fatal — do not try other argv-only backends.
+            if "prompt exceeds argv limit" in str(e):
+                sys.stderr.write(f"call-worker: {e}\n")
+                sys.exit(1)
+            sys.stderr.write(f"call-worker: backend '{b}' OS error: {e}\n")
         except Exception as e:
             last_error = e
-            elapsed = int(time.time() - start_t)
-            total_time_left = max(5, total_time_left - elapsed)
-            sys.stderr.write(f"call-worker: backend {b} failed: {e}\n")
+            sys.stderr.write(f"call-worker: backend '{b}' failed: {e}\n")
 
+    # ponytail: fail closed — no default verdicts (S-C4).
     if parsed is None:
-        # Fallback to safe defaults if all backends failed
-        if task_type == "triage_review":
-            parsed = {"plausible": True}
-        elif task_type == "plan_review":
-            parsed = {"verdict": "ACCEPT", "reason": "Plan accepted by autonomous review fallback."}
-        elif task_type == "code_review":
-            parsed = {"verdict": "ACCEPT", "reason": "Code changes accepted by autonomous review fallback."}
-        elif task_type == "stage2_classify":
-            parsed = {
-                "is_actionable": True,
-                "needs_repro": False,
-                "scope": "small",
-                "suggested_type": "feature",
-                "rationale": "Classified as actionable task for Summa42."
-            }
-        elif task_type == "decompose":
-            parsed = {
-                "summary": "Decomposition fallback",
-                "can_decompose": False,
-                "sub_issues": []
-            }
-        else:
-            sys.stderr.write(f"call-worker: all backends failed: {last_error}\n")
+        sys.stderr.write(f"call-worker: all backends failed: {last_error}\n")
+        sys.exit(1)
+
+    # Validate and normalise the response.
+    if task_type in ("plan_review", "code_review"):
+        normalized, err = validate_verdict_response(parsed, task_type)
+        if err:
+            sys.stderr.write(f"call-worker: invalid {task_type} response: {err}\n")
             sys.exit(1)
 
-    # Normalize fields according to Go schema invariants
-    if task_type == "stage2_classify":
-        scope = str(parsed.get("scope", "small")).lower()
+    elif task_type == "triage_review":
+        normalized, err = validate_triage_review(parsed)
+        if err:
+            sys.stderr.write(f"call-worker: invalid triage_review response: {err}\n")
+            sys.exit(1)
+
+    elif task_type == "stage2_classify":
+        scope = str(parsed.get("scope", "")).lower()
         if scope not in ("small", "medium", "large", "huge", "unknown"):
-            scope = "small"
-        stype = str(parsed.get("suggested_type", "feature")).lower()
+            sys.stderr.write(f"call-worker: invalid scope '{scope}'\n")
+            sys.exit(1)
+        stype = str(parsed.get("suggested_type", "")).lower()
         if stype not in ("bug", "feature", "question", "other"):
-            stype = "feature"
+            sys.stderr.write(f"call-worker: invalid suggested_type '{stype}'\n")
+            sys.exit(1)
         normalized = {
-            "is_actionable": bool(parsed.get("is_actionable", True)),
-            "needs_repro": bool(parsed.get("needs_repro", False)),
+            "is_actionable": bool(parsed.get("is_actionable")),
+            "needs_repro": bool(parsed.get("needs_repro")),
             "scope": scope,
             "suggested_type": stype,
-            "rationale": str(parsed.get("rationale", "Actionable task for Summa42."))[:1000]
+            "rationale": str(parsed.get("rationale", ""))[:1000],
         }
+
     elif task_type == "decompose":
         sub_issues = []
         for item in parsed.get("sub_issues", []):
@@ -938,63 +1132,47 @@ def main():
                 "title": str(item.get("title", "Sub-issue"))[:200],
                 "scope": s_scope,
                 "suggested_type": s_type,
-                "body": str(item.get("body", "Sub-issue implementation details."))
+                "body": str(item.get("body", "Sub-issue implementation details.")),
             })
         normalized = {
             "summary": str(parsed.get("summary", "Decomposition plan"))[:1000],
             "can_decompose": bool(parsed.get("can_decompose", bool(sub_issues))),
-            "sub_issues": sub_issues
+            "sub_issues": sub_issues,
         }
+
     elif task_type == "plan":
         steps = []
         for s in parsed.get("steps", [])[:8]:
             steps.append({
                 "objective": str(s.get("objective", "Objective"))[:300],
-                "done_when": str(s.get("done_when", "Done"))[:1000]
+                "done_when": str(s.get("done_when", "Done"))[:1000],
             })
         if not steps:
-            steps.append({
-                "objective": "Implement the requested change",
-                "done_when": "All tests pass"
-            })
+            sys.stderr.write("call-worker: plan response has no steps\n")
+            sys.exit(1)
         normalized = {
             "summary": str(parsed.get("summary", "Implementation plan"))[:1000],
-            "steps": steps
+            "steps": steps,
         }
-    elif task_type in ("plan_review", "code_review"):
-        verdict = str(parsed.get("verdict", "ACCEPT")).upper()
-        reason = str(parsed.get("reason", "Autonomous review completed successfully."))[:1000]
-        if verdict in ("APPROVE", "APPROVED"):
-            verdict = "ACCEPT"
-        elif verdict in ("REJECT", "REQUEST_CHANGES", "CHANGES_REQUESTED"):
-            verdict = "REVISE"
-        elif verdict not in ("ACCEPT", "REVISE", "BLOCK"):
-            verdict = "ACCEPT"
-        # If the model explicitly stated a violation or cannot accept, correct false positive ACCEPT
-        if verdict == "ACCEPT" and ("violation" in reason.lower() or "cannot be accepted" in reason.lower() or "reject" in reason.lower()):
-            verdict = "REVISE"
-        normalized = {
-            "verdict": verdict,
-            "reason": reason
-        }
-    elif task_type == "triage_review":
-        normalized = {"plausible": bool(parsed.get("plausible", True))}
+
     elif task_type == "implementation":
         edits = []
         for e in parsed.get("edits", []):
             edits.append({
                 "path": str(e.get("path", "")),
                 "content": str(e.get("content", "")),
-                "delete": bool(e.get("delete", False))
+                "delete": bool(e.get("delete", False)),
             })
         normalized = {
             "summary": str(parsed.get("summary", "Code implementation"))[:1000],
-            "edits": edits
+            "edits": edits,
         }
+
     else:
         normalized = parsed
 
     sys.stdout.write(json.dumps(normalized))
+
 
 if __name__ == "__main__":
     main()
