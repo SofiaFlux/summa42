@@ -516,13 +516,6 @@ func main() {
 		}
 		return
 	}
-	if len(os.Args) > 1 && (os.Args[1] == "run-gh-merge" || os.Args[1] == "run-repo-merge") {
-		if err := runGHMerge(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
 	if len(os.Args) > 1 && (os.Args[1] == "run-gh-code-review" || os.Args[1] == "run-repo-code-review") {
 		if err := runGHCodeReview(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)

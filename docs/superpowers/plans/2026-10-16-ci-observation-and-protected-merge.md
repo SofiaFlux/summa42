@@ -1,5 +1,7 @@
 # CI Observation and Protected Merge (Milestone A2) Implementation Plan
 
+> **Status: Reverted 2026-10-21, see review-remediation plan.**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement Etap 6 of the self-development roadmap: exact-SHA GitHub CI observation, PR review validation, and protected merge operation with idempotent read-only reconciliation.

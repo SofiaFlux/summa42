@@ -58,14 +58,14 @@ func (p *publicationProvider) Dispatch(context.Context, operations.ProviderDispa
 	if p.unknown {
 		return operations.ProviderOutcome{State: domain.OperationOutcomeUnknown}, nil
 	}
-	return operations.ProviderOutcome{State: domain.OperationConfirmedEffect, ProviderReference: p.name + ":confirmed", ActualCost: 1}, nil
+	return operations.ProviderOutcome{State: domain.OperationConfirmedEffect, ProviderReference: "https://github.com/o/r/pull/7", ActualCost: 1}, nil
 }
 func (p *publicationProvider) LookupOutcome(context.Context, operations.ProviderDispatchRequest) (operations.ProviderOutcome, error) {
 	p.lookups++
 	if p.unknown {
 		return operations.ProviderOutcome{State: domain.OperationOutcomeUnknown}, nil
 	}
-	return operations.ProviderOutcome{State: domain.OperationConfirmedEffect, ProviderReference: p.name + ":confirmed", ActualCost: 1}, nil
+	return operations.ProviderOutcome{State: domain.OperationConfirmedEffect, ProviderReference: "https://github.com/o/r/pull/7", ActualCost: 1}, nil
 }
 func publicationOps(t *testing.T, f *driverFixture) (*operations.Service, *publicationProvider, *publicationProvider) {
 	t.Helper()

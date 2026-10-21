@@ -133,11 +133,14 @@ func TestBranchProviderPreservesCandidateAndNeverOverwritesRef(t *testing.T) {
 					t.Fatal("lookup wrote or lost effect")
 				}
 			} else {
-				if err == nil || ref == intent.Export.Candidate.CandidateSHA {
+				if ref == intent.Export.Candidate.CandidateSHA {
 					t.Fatal("mismatched candidate referenced")
 				}
-				if mode == "existing-conflict" && writes != 0 {
-					t.Fatal("existing ref overwritten")
+				if mode == "existing-conflict" && (writes != 0 || err != nil || out.State != domain.OperationConfirmedNoEffect) {
+					t.Fatal("existing ref overwritten or conflict not settled as no effect")
+				}
+				if mode != "existing-conflict" && err == nil {
+					t.Fatal("mismatch accepted")
 				}
 			}
 		})
@@ -287,5 +290,76 @@ func TestPRProviderRejectsNullLookupBeforeAnyWrite(t *testing.T) {
 				t.Fatalf("inconclusive lookup wrote: %+v %v writes=%d", out, err, writes)
 			}
 		})
+	}
+}
+
+func TestBranchProviderBaseMovedIsNoEffect(t *testing.T) {
+	intent := branchIntent(t)
+	client := &http.Client{Transport: transport(func(r *http.Request) (*http.Response, error) {
+		if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/git/ref/heads/main") {
+			return response(200, map[string]any{"object": map[string]string{"sha": strings.Repeat("f", 40)}}), nil
+		}
+		t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		return nil, nil
+	})}
+	p, err := NewBranchProvider(Config{Repository: "o/r", CredentialSource: tokenSource{}, HTTPClient: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := p.CanonicalIntent(intent)
+	out, err := p.Dispatch(t.Context(), operations.ProviderDispatchRequest{CanonicalIntent: raw})
+	if err != nil || out.State != domain.OperationConfirmedNoEffect {
+		t.Fatalf("%+v %v", out, err)
+	}
+}
+
+func prFixtureIntent() PRIntent {
+	return PRIntent{Repository: "o/r", BaseBranch: "main", HeadBranch: "summa42/issue-42-0123456789abcdef", BaseSHA: strings.Repeat("a", 40), HeadSHA: strings.Repeat("b", 40), Title: "Issue 42", Body: "record\n<!-- summa42:publication:" + strings.Repeat("c", 64) + " -->", Marker: "summa42:publication:" + strings.Repeat("c", 64)}
+}
+
+func TestPRProviderRefsMovedIsNoEffect(t *testing.T) {
+	intent := prFixtureIntent()
+	client := &http.Client{Transport: transport(func(r *http.Request) (*http.Response, error) {
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "/git/ref/heads/") {
+			return response(200, map[string]any{"object": map[string]string{"sha": strings.Repeat("f", 40)}}), nil
+		}
+		t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		return nil, nil
+	})}
+	p, err := NewPRProvider(Config{Repository: "o/r", CredentialSource: tokenSource{}, HTTPClient: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := p.CanonicalIntent(intent)
+	out, err := p.Dispatch(t.Context(), operations.ProviderDispatchRequest{CanonicalIntent: raw})
+	if err != nil || out.State != domain.OperationConfirmedNoEffect {
+		t.Fatalf("%+v %v", out, err)
+	}
+}
+
+func TestPRProviderFindAcceptsReadyMarkedPR(t *testing.T) {
+	intent := prFixtureIntent()
+	mk := func(head string) map[string]any {
+		return map[string]any{"number": 7, "title": intent.Title, "body": intent.Body, "draft": false, "head": map[string]any{"ref": head, "sha": intent.HeadSHA, "repo": map[string]string{"full_name": "o/r"}}, "base": map[string]any{"ref": intent.BaseBranch, "sha": intent.BaseSHA, "repo": map[string]string{"full_name": "o/r"}}}
+	}
+	for _, c := range []struct {
+		head string
+		want domain.OperationState
+	}{{intent.HeadBranch, domain.OperationConfirmedEffect}, {"summa42/other", domain.OperationOutcomeUnknown}} {
+		client := &http.Client{Transport: transport(func(r *http.Request) (*http.Response, error) {
+			if strings.Contains(r.URL.Path, "/git/ref/heads/") {
+				return response(200, map[string]any{"object": map[string]string{"sha": map[bool]string{true: intent.HeadSHA, false: intent.BaseSHA}[strings.Contains(r.URL.Path, "/summa42/")]}}), nil
+			}
+			if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/pulls") {
+				return response(200, []any{mk(c.head)}), nil
+			}
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+			return nil, nil
+		})}
+		p, _ := NewPRProvider(Config{Repository: "o/r", CredentialSource: tokenSource{}, HTTPClient: client})
+		out, _ := p.find(t.Context(), intent)
+		if out.State != c.want {
+			t.Fatalf("head %s: got %+v want %s", c.head, out, c.want)
+		}
 	}
 }

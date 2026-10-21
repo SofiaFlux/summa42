@@ -143,6 +143,9 @@ func decode(raw []byte, v any) error {
 	}
 	return nil
 }
+func noEffect() operations.ProviderOutcome {
+	return operations.ProviderOutcome{State: domain.OperationConfirmedNoEffect}
+}
 func unknown() operations.ProviderOutcome {
 	return operations.ProviderOutcome{State: domain.OperationOutcomeUnknown}
 }
@@ -214,15 +217,18 @@ func (p *BranchProvider) Dispatch(ctx context.Context, r operations.ProviderDisp
 		return unknown(), e
 	}
 	base, _, e := p.c.ref(ctx, v.BaseBranch)
-	if e != nil || base != v.Export.Candidate.BaseSHA {
-		return unknown(), errors.New("publication base moved or unavailable")
+	if e != nil {
+		return unknown(), e
+	}
+	if base != v.Export.Candidate.BaseSHA {
+		return noEffect(), nil // nothing written yet: base moved
 	}
 	head, status, e := p.c.ref(ctx, v.HeadBranch)
 	if e == nil {
 		if head == v.Export.Candidate.CandidateSHA {
 			return p.LookupOutcome(ctx, r)
 		}
-		return unknown(), errors.New("managed branch already has different commit")
+		return noEffect(), nil // managed branch already has a different commit; never overwritten
 	}
 	if status != 404 {
 		return unknown(), e
@@ -233,8 +239,11 @@ func (p *BranchProvider) Dispatch(ctx context.Context, r operations.ProviderDisp
 			SHA string `json:"sha"`
 		} `json:"tree"`
 	}
-	if _, e = p.c.request(ctx, "GET", "/git/commits/"+base, nil, &b); e != nil || b.SHA != base || b.Tree.SHA != v.Export.BaseTreeSHA {
-		return unknown(), errors.New("base tree mismatch")
+	if _, e = p.c.request(ctx, "GET", "/git/commits/"+base, nil, &b); e != nil {
+		return unknown(), e
+	}
+	if b.SHA != base || b.Tree.SHA != v.Export.BaseTreeSHA {
+		return noEffect(), nil // base tree mismatch, detected before any write
 	}
 	tree := []map[string]any{}
 	for _, f := range v.Export.Files {
@@ -318,7 +327,8 @@ func (p *PRProvider) find(ctx context.Context, v PRIntent) (operations.ProviderO
 				continue
 			}
 			found++
-			if pr.Number <= 0 || pr.Title != v.Title || pr.Body != v.Body || !pr.Draft || pr.Head.Ref != v.HeadBranch || pr.Head.SHA != v.HeadSHA || pr.Head.Repo.FullName != v.Repository || pr.Base.Ref != v.BaseBranch || pr.Base.SHA != v.BaseSHA || pr.Base.Repo.FullName != v.Repository {
+			// A human may mark the draft ready, so Draft is not compared.
+			if pr.Number <= 0 || pr.Title != v.Title || pr.Body != v.Body || pr.Head.Ref != v.HeadBranch || pr.Head.SHA != v.HeadSHA || pr.Head.Repo.FullName != v.Repository || pr.Base.Ref != v.BaseBranch || pr.Base.SHA != v.BaseSHA || pr.Base.Repo.FullName != v.Repository {
 				return unknown(), errors.New("publication marker has conflicting PR")
 			}
 			number = pr.Number
@@ -335,13 +345,17 @@ func (p *PRProvider) find(ctx context.Context, v PRIntent) (operations.ProviderO
 	}
 	return unknown(), errors.New("GitHub PR pagination limit")
 }
-func (p *PRProvider) pinned(ctx context.Context, v PRIntent) bool {
+// pinned reports whether both refs still sit at the reviewed SHAs; err means a ref could not be read.
+func (p *PRProvider) pinned(ctx context.Context, v PRIntent) (bool, error) {
 	base, _, e := p.c.ref(ctx, v.BaseBranch)
-	if e != nil || base != v.BaseSHA {
-		return false
+	if e != nil {
+		return false, e
 	}
 	head, _, e := p.c.ref(ctx, v.HeadBranch)
-	return e == nil && head == v.HeadSHA
+	if e != nil {
+		return false, e
+	}
+	return base == v.BaseSHA && head == v.HeadSHA, nil
 }
 func (p *PRProvider) Dispatch(ctx context.Context, r operations.ProviderDispatchRequest) (operations.ProviderOutcome, error) {
 	var v PRIntent
@@ -351,8 +365,10 @@ func (p *PRProvider) Dispatch(ctx context.Context, r operations.ProviderDispatch
 	if e := p.validate(v); e != nil {
 		return unknown(), e
 	}
-	if !p.pinned(ctx, v) {
-		return unknown(), errors.New("publication refs moved or unavailable")
+	if ok, e := p.pinned(ctx, v); e != nil {
+		return unknown(), e
+	} else if !ok {
+		return noEffect(), nil // refs moved before any write
 	}
 	out, e := p.find(ctx, v)
 	if e != nil || out.State == domain.OperationConfirmedEffect {
@@ -371,7 +387,7 @@ func (p *PRProvider) LookupOutcome(ctx context.Context, r operations.ProviderDis
 	if e := p.validate(v); e != nil {
 		return unknown(), e
 	}
-	if !p.pinned(ctx, v) {
+	if ok, e := p.pinned(ctx, v); e != nil || !ok {
 		return unknown(), nil
 	}
 	out, e := p.find(ctx, v)
