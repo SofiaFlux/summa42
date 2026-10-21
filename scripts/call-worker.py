@@ -93,7 +93,8 @@ HARNESS_TYPES = {
 }
 
 # Backends that receive the prompt on stdin (not in argv).
-STDIN_BACKENDS = {"claude", "codex", "opencode"}
+# opencode run documents only a positional message, so it stays on argv.
+STDIN_BACKENDS = {"claude", "codex"}
 
 
 # ---------------------------------------------------------------------------
@@ -515,20 +516,8 @@ def list_models(backend):
         except Exception:
             pass
         return [DEFAULT_OPENCODE_MODEL] if DEFAULT_OPENCODE_MODEL else []
-    elif backend_norm == "claude":
-        return ["claude-code", "claude-3-5-sonnet", "claude-3-7-sonnet"]
     elif backend_norm == "agy":
         return get_agy_models()
-    elif backend_norm == "gemini":
-        return ["gemini-2.5-flash", "gemini-2.5-pro"]
-    elif backend_norm == "codex":
-        return ["gpt-4o", "o3-mini", "o1"]
-    elif backend_norm == "commandcode":
-        return ["commandcode-default"]
-    elif backend_norm == "copilot":
-        return ["copilot-default", "gpt-4o", "claude-3.5-sonnet", "o1"]
-    elif backend_norm == "pi":
-        return ["pi-default"]
     return []
 
 
@@ -647,6 +636,11 @@ def resolve_command(backend, model, prompt, wrapper=None):
         else:
             return [wrapper_bin, "run", prompt]
 
+    if backend == "opencode":
+        cmd = [tool_binary, "run", prompt]
+        if model:
+            cmd.extend(["-m", model])
+        return cmd
     if backend == "agy":
         cmd = [tool_binary, "-p", prompt, "--disable-slash-commands"]
         if model:
@@ -726,21 +720,19 @@ def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=1
 
     if base in STDIN_BACKENDS:
         # Build command without embedding the prompt in argv.
+        if backend.startswith("codemie-"):
+            wrapper = "codemie-"
         tool_binary = (f"{wrapper}{base}" if wrapper else base)
         if base == "claude":
-            cmd = [tool_binary, "-p", "-"]
+            cmd = [tool_binary, "-p"]  # no positional: reads piped stdin
             if model:
                 cmd.extend(["--model", model])
         elif base == "codex":
             cmd = [tool_binary, "exec", "-"]
             if model:
                 cmd.extend(["-m", model])
-        elif base == "opencode":
-            cmd = [tool_binary, "run", "-"]
-            if model:
-                cmd.extend(["-m", model])
         else:
-            cmd = [tool_binary, "-p", "-"]
+            raise ValueError(f"no stdin form for backend {base}")
         proc = subprocess.run(
             cmd,
             input=prompt,
@@ -1089,6 +1081,13 @@ def main():
         sys.stderr.write(f"call-worker: all backends failed: {last_error}\n")
         sys.exit(1)
 
+    def fail(msg):
+        sys.stderr.write(f"call-worker: invalid {task_type} response: {msg}\n")
+        sys.exit(1)
+
+    if task_type in ("plan_review", "code_review", "triage_review") and not isinstance(parsed, dict):
+        fail("response is not a JSON object")
+
     # Validate and normalise the response.
     if task_type in ("plan_review", "code_review"):
         normalized, err = validate_verdict_response(parsed, task_type)
@@ -1103,68 +1102,76 @@ def main():
             sys.exit(1)
 
     elif task_type == "stage2_classify":
-        scope = str(parsed.get("scope", "")).lower()
+        if not isinstance(parsed, dict):
+            fail("classification response is not a JSON object")
+        for k in ("is_actionable", "needs_repro"):
+            if not isinstance(parsed.get(k), bool):
+                fail(f"'{k}' must be a JSON boolean")
+        scope = parsed.get("scope")
         if scope not in ("small", "medium", "large", "huge", "unknown"):
-            sys.stderr.write(f"call-worker: invalid scope '{scope}'\n")
-            sys.exit(1)
-        stype = str(parsed.get("suggested_type", "")).lower()
+            fail(f"invalid scope {scope!r}")
+        stype = parsed.get("suggested_type")
         if stype not in ("bug", "feature", "question", "other"):
-            sys.stderr.write(f"call-worker: invalid suggested_type '{stype}'\n")
-            sys.exit(1)
+            fail(f"invalid suggested_type {stype!r}")
         normalized = {
-            "is_actionable": bool(parsed.get("is_actionable")),
-            "needs_repro": bool(parsed.get("needs_repro")),
+            "is_actionable": parsed["is_actionable"],
+            "needs_repro": parsed["needs_repro"],
             "scope": scope,
             "suggested_type": stype,
             "rationale": str(parsed.get("rationale", ""))[:1000],
         }
 
     elif task_type == "decompose":
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("can_decompose"), bool) \
+                or not isinstance(parsed.get("sub_issues"), list) \
+                or not isinstance(parsed.get("summary"), str):
+            fail("decompose response needs summary, boolean can_decompose and sub_issues list")
         sub_issues = []
-        for item in parsed.get("sub_issues", []):
-            s_scope = str(item.get("scope", "medium")).lower()
-            if s_scope not in ("small", "medium", "large", "huge"):
-                s_scope = "medium"
-            s_type = str(item.get("suggested_type", "feature")).lower()
-            if s_type not in ("bug", "feature", "question", "other"):
-                s_type = "feature"
+        for item in parsed["sub_issues"]:
+            if not isinstance(item, dict) or item.get("scope") not in ("small", "medium", "large", "huge") \
+                    or item.get("suggested_type") not in ("bug", "feature", "question", "other") \
+                    or not isinstance(item.get("title"), str) or not item["title"] \
+                    or not isinstance(item.get("body"), str) or not item["body"]:
+                fail("invalid sub_issue entry")
             sub_issues.append({
-                "title": str(item.get("title", "Sub-issue"))[:200],
-                "scope": s_scope,
-                "suggested_type": s_type,
-                "body": str(item.get("body", "Sub-issue implementation details.")),
+                "title": item["title"][:200],
+                "scope": item["scope"],
+                "suggested_type": item["suggested_type"],
+                "body": item["body"],
             })
         normalized = {
-            "summary": str(parsed.get("summary", "Decomposition plan"))[:1000],
-            "can_decompose": bool(parsed.get("can_decompose", bool(sub_issues))),
+            "summary": parsed["summary"][:1000],
+            "can_decompose": parsed["can_decompose"],
             "sub_issues": sub_issues,
         }
 
     elif task_type == "plan":
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("steps"), list) \
+                or not parsed["steps"] or not isinstance(parsed.get("summary"), str):
+            fail("plan response needs summary and a non-empty steps list")
         steps = []
-        for s in parsed.get("steps", [])[:8]:
-            steps.append({
-                "objective": str(s.get("objective", "Objective"))[:300],
-                "done_when": str(s.get("done_when", "Done"))[:1000],
-            })
-        if not steps:
-            sys.stderr.write("call-worker: plan response has no steps\n")
-            sys.exit(1)
-        normalized = {
-            "summary": str(parsed.get("summary", "Implementation plan"))[:1000],
-            "steps": steps,
-        }
+        for st in parsed["steps"][:8]:
+            if not isinstance(st, dict) or not isinstance(st.get("objective"), str) \
+                    or not st["objective"] or not isinstance(st.get("done_when"), str) \
+                    or not st["done_when"]:
+                fail("each plan step needs objective and done_when strings")
+            steps.append({"objective": st["objective"][:300], "done_when": st["done_when"][:1000]})
+        normalized = {"summary": parsed["summary"][:1000], "steps": steps}
 
     elif task_type == "implementation":
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("edits"), list):
+            fail("implementation response needs an edits list")
         edits = []
-        for e in parsed.get("edits", []):
+        for e in parsed["edits"]:
+            if not isinstance(e, dict) or not isinstance(e.get("path"), str) or not e["path"]:
+                fail("each edit needs a path")
             edits.append({
-                "path": str(e.get("path", "")),
+                "path": e["path"],
                 "content": str(e.get("content", "")),
                 "delete": bool(e.get("delete", False)),
             })
         normalized = {
-            "summary": str(parsed.get("summary", "Code implementation"))[:1000],
+            "summary": str(parsed.get("summary", ""))[:1000],
             "edits": edits,
         }
 

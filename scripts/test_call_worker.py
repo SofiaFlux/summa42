@@ -271,12 +271,6 @@ class TestOpenRouterOptIn(unittest.TestCase):
         Assert OpenRouter is never invoked (fake openrouter backend writes a
         marker file; assert the file does NOT exist)."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            marker_file = os.path.join(tmpdir, "openrouter_invoked.txt")
-            or_script = textwrap.dedent(f"""\
-                touch {marker_file}
-                echo '{{"verdict":"ACCEPT","reason":"ok"}}'
-            """)
-            _make_backend(tmpdir, "openrouter", or_script)
             # Primary backend always fails so fallback logic is exercised.
             _make_backend(tmpdir, "fakeprimary", "exit 1\n")
             result = _run(
@@ -291,11 +285,11 @@ class TestOpenRouterOptIn(unittest.TestCase):
                             "--fallback", "openrouter"],
                 timeout=20,
             )
-            # We don't care whether rc is 0 or non-zero — only that openrouter
-            # was never invoked.
-            self.assertFalse(os.path.exists(marker_file),
-                             "OpenRouter was invoked without --allow-remote (must be opt-in)")
-    
+                # Gate must reject openrouter before any HTTP call is attempted.
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("OpenRouter disabled", result.stderr)
+            self.assertNotIn("openrouter error", result.stderr)
+
 
 class TestSchemaDispatch(unittest.TestCase):
     """S-M9: Unknown schema must be an error (non-zero exit)."""
@@ -312,6 +306,66 @@ class TestSchemaDispatch(unittest.TestCase):
             )
         self.assertNotEqual(result.returncode, 0,
                             "Unknown schema must cause non-zero exit")
+
+
+def _run_backend_output(tmpdir, schema, payload, extra=None):
+    _make_backend(tmpdir, "fakecog", "echo '%s'\n" % json.dumps(payload))
+    return _run({"schema": schema},
+                env={"PATH": _path_with(tmpdir), "XDG_CACHE_HOME": tmpdir},
+                extra_args=["--backend", "fakecog", "--fallback", "fakecog"])
+
+
+class TestStrictNormalizers(unittest.TestCase):
+    STAGE2 = "github.issue.triage.stage2.input.v1"
+    PLAN = "github.issue.plan.v2"
+    DECOMP = "github.issue.decompose.v1"
+
+    def _rc(self, schema, payload):
+        with tempfile.TemporaryDirectory() as d:
+            return _run_backend_output(d, schema, payload)
+
+    def test_stage2_requires_real_booleans(self):
+        ok = {"is_actionable": True, "needs_repro": False, "scope": "small",
+              "suggested_type": "bug", "rationale": "r"}
+        self.assertEqual(self._rc(self.STAGE2, ok).returncode, 0)
+        self.assertNotEqual(self._rc(self.STAGE2, dict(ok, is_actionable="false")).returncode, 0)
+        missing = dict(ok); del missing["needs_repro"]
+        self.assertNotEqual(self._rc(self.STAGE2, missing).returncode, 0)
+
+    def test_non_object_response_is_error(self):
+        for schema in (self.STAGE2, self.PLAN, self.DECOMP):
+            self.assertNotEqual(self._rc(schema, [1]).returncode, 0, schema)
+
+    def test_plan_requires_fields(self):
+        good = {"summary": "s", "steps": [{"objective": "o", "done_when": "d"}]}
+        self.assertEqual(self._rc(self.PLAN, good).returncode, 0)
+        for bad in ({"summary": "s", "steps": [{"objective": "o"}]},
+                    {"summary": "s", "steps": [{"done_when": "d"}]},
+                    {"summary": "s", "steps": ["x"]},
+                    {"summary": "s", "steps": []}):
+            self.assertNotEqual(self._rc(self.PLAN, bad).returncode, 0, bad)
+
+    def test_decompose_requires_fields(self):
+        sub = {"title": "t", "scope": "small", "suggested_type": "bug", "body": "b"}
+        good = {"summary": "s", "can_decompose": True, "sub_issues": [sub]}
+        self.assertEqual(self._rc(self.DECOMP, good).returncode, 0)
+        bad_sub = dict(sub); del bad_sub["scope"]
+        self.assertNotEqual(self._rc(self.DECOMP, dict(good, sub_issues=[bad_sub])).returncode, 0)
+
+
+class TestCodemieWrapper(unittest.TestCase):
+    def test_codemie_prefix_uses_wrapper_binary_on_stdin(self):
+        with tempfile.TemporaryDirectory() as d:
+            marker = os.path.join(d, "wrapper_used")
+            _make_backend(d, "claude", "exit 1\n")
+            _make_backend(d, "codemie-claude",
+                          "touch %s\ncat >/dev/null\n"
+                          "echo '{\"verdict\":\"ACCEPT\",\"reason\":\"ok\"}'\n" % marker)
+            r = _run({"schema": "github.issue.plan.review.v1"},
+                     env={"PATH": _path_with(d), "XDG_CACHE_HOME": d, "ANTHROPIC_API_KEY": "k"},
+                     extra_args=["--backend", "codemie-claude", "--fallback", "codemie-claude"])
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertTrue(os.path.exists(marker))
 
 
 if __name__ == "__main__":
