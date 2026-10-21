@@ -331,16 +331,19 @@ func buildCopilotExecutorFromEnv() (map[string]executors.Executor, error) {
 	return map[string]executors.Executor{"copilot": executor}, nil
 }
 
+// copilotEnvAllowlist deliberately omits GH_TOKEN and GITHUB_TOKEN: the agentic
+// Copilot child must not hold GitHub write credentials.
+var copilotEnvAllowlist = []string{
+	"PATH", "COPILOT_MODEL", "COPILOT_GITHUB_TOKEN",
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+	"SSL_CERT_FILE", "SSL_CERT_DIR", "TMPDIR", "TMP", "TEMP",
+}
+
 // copilotEnvironmentFromOS snapshots the allowlisted OS vars into the child
 // environment at build time. Absent vars are omitted, never empty-string injected.
 func copilotEnvironmentFromOS() map[string]string {
-	allowlisted := []string{
-		"PATH", "COPILOT_MODEL", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
-		"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-		"SSL_CERT_FILE", "SSL_CERT_DIR", "TMPDIR", "TMP", "TEMP",
-	}
-	env := make(map[string]string, len(allowlisted))
-	for _, key := range allowlisted {
+	env := make(map[string]string, len(copilotEnvAllowlist))
+	for _, key := range copilotEnvAllowlist {
 		if value, ok := os.LookupEnv(key); ok {
 			env[key] = value
 		}
@@ -586,7 +589,26 @@ func registerTriageModelFlags(flags *flag.FlagSet, binaryUse string) {
 		"argument passed to the model binary before the prompt, repeatable and in order "+
 			"(the prompt is on stdin; when unset and the binary is codex this defaults to \"exec\"; "+
 			"a binary that is not codex takes no default arguments, so set this flag explicitly)")
+	flags.Var(&modelEnv{}, "model-env",
+		"name of a Box environment variable forwarded to the model process, repeatable "+
+			"(the model otherwise gets only PATH, HOME, TMPDIR and LANG; GitHub and Box credentials are rejected)")
 }
+
+// modelEnv collects the repeatable --model-env names and rejects credentials
+// at parse time.
+type modelEnv struct{ names []string }
+
+func (m *modelEnv) String() string { return strings.Join(m.names, ",") }
+
+func (m *modelEnv) Set(value string) error {
+	if value == "GITHUB_TOKEN" || value == "GH_TOKEN" || strings.Contains(value, "SUMMA42_") {
+		return errors.New("model environment may not carry GitHub or Box credentials")
+	}
+	m.names = append(m.names, value)
+	return nil
+}
+
+func (m *modelEnv) Get() any { return append([]string(nil), m.names...) }
 
 // modelArgs collects a repeatable string flag, so --model-arg exec --model-arg -
 // reaches the binary as two arguments in the order they were written. flag's own
@@ -667,7 +689,11 @@ func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
 	if !explicit && filepath.Base(binary) == "codex" {
 		args = []string{"exec"}
 	}
-	return climodel.Config{Binary: binary, Args: args, Timeout: duration}, nil
+	var envNames []string
+	if envFlag := flags.Lookup("model-env"); envFlag != nil {
+		envNames, _ = envFlag.Value.(flag.Getter).Get().([]string)
+	}
+	return climodel.Config{Binary: binary, Args: args, Timeout: duration, EnvAllowlist: envNames}, nil
 }
 
 // triageModelAdapter builds the classifier the triage executor needs and reports

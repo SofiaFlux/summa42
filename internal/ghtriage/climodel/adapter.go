@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
@@ -16,12 +17,17 @@ type Config struct {
 	Binary  string
 	Args    []string
 	Timeout time.Duration
+	// EnvAllowlist names the Box environment variables forwarded to the model
+	// process (its own auth variables). Everything else is withheld, so an
+	// agentic model cannot reuse GitHub or Box credentials.
+	EnvAllowlist []string
 }
 
 type Adapter struct {
-	binary  string
-	args    []string
-	timeout time.Duration
+	binary    string
+	args      []string
+	timeout   time.Duration
+	allowlist []string
 }
 
 // New validates the model configuration at construction, so an unusable
@@ -36,7 +42,7 @@ func New(config Config) (*Adapter, error) {
 	if _, err := exec.LookPath(config.Binary); err != nil {
 		return nil, fmt.Errorf("model binary %q is not usable: %w", config.Binary, err)
 	}
-	return &Adapter{binary: config.Binary, args: config.Args, timeout: config.Timeout}, nil
+	return &Adapter{binary: config.Binary, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist}, nil
 }
 
 func (a *Adapter) Classify(ctx context.Context, input ghtriage.Stage2Input) (ghtriage.Stage2Output, error) {
@@ -120,6 +126,7 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(runCtx, a.binary, a.args...)
+	cmd.Env = a.childEnv()
 	isolateProcessTree(cmd)
 	cmd.Stdin = bytes.NewReader(prompt)
 	cmd.Stdout = &stdout
@@ -142,4 +149,16 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 		return nil, fmt.Errorf("model invocation failed: %w: %s", err, stderr.String())
 	}
 	return stdout.Bytes(), nil
+}
+
+// childEnv is the whole environment of the model process: a fixed minimal set
+// plus the configured allowlist, each only when present in the Box environment.
+func (a *Adapter) childEnv() []string {
+	env := []string{}
+	for _, name := range append([]string{"PATH", "HOME", "TMPDIR", "LANG"}, a.allowlist...) {
+		if value, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+value)
+		}
+	}
+	return env
 }

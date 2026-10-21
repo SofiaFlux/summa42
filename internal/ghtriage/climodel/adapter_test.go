@@ -327,3 +327,51 @@ func TestCodeReviewUsesStrictVerdict(t *testing.T) {
 		}
 	}
 }
+
+func envScript(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "env.sh")
+	script := "#!/bin/sh\ncat > /dev/null\nenv | sed 's/=.*//' | tr '\\n' ' ' | sed 's/^/{\"verdict\":\"ACCEPT\",\"reason\":\"/; s/ $/\"}/'\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func childEnvNames(t *testing.T, config Config) string {
+	t.Helper()
+	config.Binary, config.Timeout = envScript(t), 5*time.Second
+	adapter, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := adapter.ReviewPlan(t.Context(), ghtriage.PlanReviewInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return " " + out.Reason
+}
+
+func TestAdapterChildEnvIsMinimal(t *testing.T) {
+	for _, name := range []string{"GITHUB_TOKEN", "GH_TOKEN", "SUMMA42_CONTROL_TOKEN", "FOO"} {
+		t.Setenv(name, "secret")
+	}
+	names := childEnvNames(t, Config{})
+	for _, name := range []string{"GITHUB_TOKEN", "GH_TOKEN", "SUMMA42_CONTROL_TOKEN", "FOO"} {
+		if strings.Contains(names, " "+name+" ") {
+			t.Fatalf("child env leaked %s: %s", name, names)
+		}
+	}
+	if !strings.Contains(names, " PATH ") {
+		t.Fatalf("child env lacks PATH: %s", names)
+	}
+}
+
+func TestAdapterChildEnvHonoursAllowlist(t *testing.T) {
+	t.Setenv("FOO", "1")
+	t.Setenv("BAR", "1")
+	names := childEnvNames(t, Config{EnvAllowlist: []string{"FOO"}})
+	if !strings.Contains(names, " FOO ") || strings.Contains(names, " BAR ") {
+		t.Fatalf("child env = %s, want FOO and not BAR", names)
+	}
+}

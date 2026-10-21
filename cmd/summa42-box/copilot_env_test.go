@@ -1,6 +1,9 @@
 package main
 
 import (
+	"flag"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -55,4 +58,35 @@ func TestBuildCopilotExecutorDoesNotLeakNonAllowlistedEnv(t *testing.T) {
 	// (TestCopilotRejectsNonAllowlistedEnv). Here we assert the builder ran
 	// without inheriting the leak — success itself is the signal since any
 	// FOO passthrough would make NewCopilotExecutor fail.
+}
+
+func TestCopilotAllowlistExcludesGitHubTokens(t *testing.T) {
+	if !slices.Contains(copilotEnvAllowlist, "COPILOT_GITHUB_TOKEN") {
+		t.Fatal("allowlist lost COPILOT_GITHUB_TOKEN")
+	}
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		if slices.Contains(copilotEnvAllowlist, name) {
+			t.Fatalf("allowlist forwards %s", name)
+		}
+	}
+}
+
+func TestModelEnvFlagRejectsCredentials(t *testing.T) {
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "SUMMA42_CONTROL_TOKEN", "X_SUMMA42_Y"} {
+		flags := flag.NewFlagSet("t", flag.ContinueOnError)
+		flags.SetOutput(new(strings.Builder))
+		registerTriageModelFlags(flags, "m")
+		if err := flags.Parse([]string{"--model-env", name}); err == nil {
+			t.Fatalf("--model-env %s accepted", name)
+		}
+	}
+	flags := flag.NewFlagSet("t", flag.ContinueOnError)
+	registerTriageModelFlags(flags, "m")
+	if err := flags.Parse([]string{"--model-env", "OPENAI_API_KEY", "--model-env", "FOO"}); err != nil {
+		t.Fatal(err)
+	}
+	config, err := triageModelConfig(flags)
+	if err != nil || !slices.Equal(config.EnvAllowlist, []string{"OPENAI_API_KEY", "FOO"}) {
+		t.Fatalf("config = %+v, %v", config, err)
+	}
 }
