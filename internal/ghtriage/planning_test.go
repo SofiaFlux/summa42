@@ -13,7 +13,7 @@ func TestPlanningCandidatesRequireAcceptedReadyDecisionAndLatestRevision(t *test
 	gate := ghtriage.NewPlanningGate(f.cases, f.execSvc, f.verifSvc, f.evidenceStore)
 	check := func(want int) {
 		t.Helper()
-		got, err := gate.List(context.Background(), f.missionID)
+		got, _, err := gate.List(context.Background(), f.missionID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -44,7 +44,7 @@ func TestPlanningCandidatesRejectAcceptedNonReadyDecisionDuringCrashWindow(t *te
 	f := newDriverFixture(t)
 	f.simulateRestartAfterAcceptance(t, fixtureIssue, fixtureRevision)
 	gate := ghtriage.NewPlanningGate(f.cases, f.execSvc, f.verifSvc, f.evidenceStore)
-	got, err := gate.List(f.ctx, f.missionID)
+	got, _, err := gate.List(f.ctx, f.missionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,41 @@ func TestPlanningCandidatesRequireDurableAcceptanceOfTheirDecision(t *testing.T)
 		t.Fatal(err)
 	}
 	gate := ghtriage.NewPlanningGate(f.cases, f.execSvc, f.verifSvc, f.evidenceStore)
-	if got, err := gate.List(f.ctx, f.missionID); err == nil {
-		t.Fatalf("planning candidates = %+v, want an error for SUCCEEDED task without acceptance", got)
+	got, caseErrs, err := gate.List(f.ctx, f.missionID)
+	if err != nil || len(got) != 0 || len(caseErrs) != 1 {
+		t.Fatalf("candidates=%+v caseErrs=%+v err=%v, want one CaseError for SUCCEEDED task without acceptance", got, caseErrs, err)
+	}
+}
+
+func TestPlanningGateIsolatesBadCase(t *testing.T) {
+	f, _ := readyPlannerFixture(t)
+	const second = "2026-09-28T10:30:00Z"
+	f.registerIssueRevision(t, "o/r#43", second)
+	f.completeTaskWithDecision(t, second, readyToPlanDecision(43, second))
+	if result, err := f.driver.Tick(f.ctx, f.missionID); err != nil || len(result.Failures) != 0 {
+		t.Fatalf("triage tick: %+v, %v", result, err)
+	}
+	if _, err := f.store.DB().ExecContext(f.ctx, `DELETE FROM acceptance_records WHERE task_id = ?`, f.tasksByRev[second].ID); err != nil {
+		t.Fatal(err)
+	}
+	gate := ghtriage.NewPlanningGate(f.cases, f.execSvc, f.verifSvc, f.evidenceStore)
+	got, caseErrs, err := gate.List(f.ctx, f.missionID)
+	if err != nil || len(got) != 1 || got[0].Case.ID != f.casesByRev[fixtureRevision].ID ||
+		len(caseErrs) != 1 || caseErrs[0].CaseID != f.casesByRev[second].ID {
+		t.Fatalf("candidates=%+v caseErrs=%+v err=%v", got, caseErrs, err)
+	}
+}
+
+func TestPlanningGateRequiresTriageKind(t *testing.T) {
+	f, _ := readyPlannerFixture(t)
+	gate := ghtriage.NewPlanningGate(f.cases, f.execSvc, f.verifSvc, f.evidenceStore)
+	if got, _, err := gate.List(f.ctx, f.missionID); err != nil || len(got) != 1 {
+		t.Fatalf("before: %+v %v", got, err)
+	}
+	if _, err := f.store.DB().ExecContext(f.ctx, `UPDATE workflow_cases SET next_work_json = '{}' WHERE case_id = ?`, f.casesByRev[fixtureRevision].ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := gate.List(f.ctx, f.missionID); err != nil || len(got) != 0 {
+		t.Fatalf("empty NextWork was listed: %+v %v", got, err)
 	}
 }

@@ -3,6 +3,7 @@ package ghtriage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -120,9 +121,15 @@ func (p *Planner) captureGrounding(ctx context.Context, repository string) (*Gro
 	if err != nil {
 		return nil, err
 	}
-	object, err := p.evidence.Put(ctx, bytes.NewReader(raw), evidence.Metadata{MediaType: "application/json", Kind: KindSourceContext})
+	sum := sha256.Sum256(raw)
+	object, found, err := p.evidence.FindByContentHash(ctx, hex.EncodeToString(sum[:]), KindSourceContext)
 	if err != nil {
 		return nil, err
+	}
+	if !found {
+		if object, err = p.evidence.Put(ctx, bytes.NewReader(raw), evidence.Metadata{MediaType: "application/json", Kind: KindSourceContext}); err != nil {
+			return nil, err
+		}
 	}
 	source := PlanSource{BaseSHA: snapshot.Commit, ContextEvidenceID: object.ID, ContextHash: object.ContentHash, AllowedPaths: append([]string(nil), cfg.AllowedPaths...), ValidationCommands: cloneCommands(cfg.ValidationCommands)}
 	return &GroundedInput{Context: snapshot, Contract: source}, nil

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
@@ -125,5 +128,48 @@ func TestPlannerModelFailureLeavesReadyCaseUntouched(t *testing.T) {
 	}
 	if n := f.assessmentCount(t, fixtureRevision); n != 0 {
 		t.Fatalf("failed plan assessments = %d", n)
+	}
+}
+
+func TestPlannerStopsAtTickBudget(t *testing.T) {
+	f, model := readyPlannerFixture(t)
+	for i := 1; i < 5; i++ {
+		rev := time.Date(2026, 9, 28, 10, i, 0, 0, time.UTC).Format(time.RFC3339)
+		f.registerIssueRevision(t, fmt.Sprintf("o/r#%d", 42+i), rev)
+		f.completeTaskWithDecision(t, rev, readyToPlanDecision(int64(42+i), rev))
+	}
+	if result, err := f.driver.Tick(f.ctx, f.missionID); err != nil || len(result.Failures) != 0 {
+		t.Fatalf("triage tick: %+v, %v", result, err)
+	}
+	const timeout = 40 * time.Millisecond
+	model.err = errors.New("slow failure")
+	model.onCall = func() { time.Sleep(timeout) }
+	planner := ghtriage.NewPlanner(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model)
+	planner.SetConfig(ghtriage.PlannerConfig{TickBudget: 3 * timeout, ModelTimeout: timeout})
+	if _, err := planner.Tick(f.ctx, f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if model.calls < 1 || model.calls > 3 {
+		t.Fatalf("model calls = %d, want 1..3 (budget/timeout)", model.calls)
+	}
+}
+
+func TestPlannerHoldsCaseAfterMaxFailures(t *testing.T) {
+	f, model := readyPlannerFixture(t)
+	model.err = errors.New("model exited")
+	planner := ghtriage.NewPlanner(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model)
+	for i := 0; i < 3; i++ {
+		if result, err := planner.Tick(f.ctx, f.missionID); err != nil || len(result.Failures) != 1 {
+			t.Fatalf("tick %d: %+v %v", i, result, err)
+		}
+	}
+	if state := f.caseState(t, fixtureRevision); state != string(workflowcase.Blocked) {
+		t.Fatalf("case state = %s, want BLOCKED", state)
+	}
+	if reason := f.latestAssessmentReason(t, fixtureRevision); !strings.HasPrefix(reason, "planning-failed:") {
+		t.Fatalf("hold reason = %q", reason)
+	}
+	if _, err := planner.Tick(f.ctx, f.missionID); err != nil || model.calls != 3 {
+		t.Fatalf("held case was planned again: calls=%d err=%v", model.calls, err)
 	}
 }

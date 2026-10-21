@@ -2,6 +2,7 @@ package ghtriage_test
 
 import (
 	"encoding/json"
+	"errors"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/repoworkspace"
@@ -103,5 +104,25 @@ func TestGroundingWrongRepositoryStopsBeforeModel(t *testing.T) {
 	result, err := planner.Tick(f.ctx, f.missionID)
 	if err != nil || len(result.Failures) != 1 || model.calls != 0 {
 		t.Fatalf("wrong repo planned: %+v calls=%d err=%v", result, model.calls, err)
+	}
+}
+
+func TestGroundingReusesIdenticalContextEvidence(t *testing.T) {
+	f, model := readyPlannerFixture(t)
+	planner := ghtriage.NewPlanner(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model)
+	if err := planner.SetGrounding(groundingFixture(t)); err != nil {
+		t.Fatal(err)
+	}
+	model.err = errors.New("model unavailable")
+	if _, err := planner.Tick(f.ctx, f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	model.err = nil
+	if result, err := planner.Tick(f.ctx, f.missionID); err != nil || result.Planned != 1 {
+		t.Fatalf("%+v %v", result, err)
+	}
+	var n int
+	if err := f.store.DB().QueryRowContext(f.ctx, `SELECT count(*) FROM evidence_objects WHERE kind = ?`, ghtriage.KindSourceContext).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("source context rows = %d, %v", n, err)
 	}
 }
