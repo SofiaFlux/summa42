@@ -353,6 +353,32 @@ class TestStrictNormalizers(unittest.TestCase):
         self.assertNotEqual(self._rc(self.DECOMP, dict(good, sub_issues=[bad_sub])).returncode, 0)
 
 
+class TestPlanFilesSchema(unittest.TestCase):
+    FILES = "github.issue.plan.files.v1"
+
+    def _run(self, payload):
+        with tempfile.TemporaryDirectory() as d:
+            return _run_backend_output(d, self.FILES, payload)
+
+    def test_plan_files_strict(self):
+        good = {"context_files": ["a.go"], "allowed_paths": ["a.go", "a_test.go"]}
+        result = self._run(good)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), good)
+        for bad in ({"allowed_paths": ["a.go"]},
+                    {"context_files": [], "allowed_paths": []},
+                    {"context_files": "a.go", "allowed_paths": ["a.go"]},
+                    {"context_files": [1], "allowed_paths": ["a.go"]},
+                    {"context_files": ["x%d" % i for i in range(33)], "allowed_paths": ["a.go"]},
+                    {"context_files": [], "allowed_paths": ["x%d" % i for i in range(65)]},
+                    {"context_files": [], "allowed_paths": ["a.go"], "extra": 1},
+                    [1]):
+            result = self._run(bad)
+            self.assertNotEqual(result.returncode, 0, bad)
+            self.assertEqual(result.stdout, "", bad)
+            self.assertEqual(len(result.stderr.strip().splitlines()), 1, result.stderr)
+
+
 class TestCodemieWrapper(unittest.TestCase):
     def test_codemie_prefix_uses_wrapper_binary_on_stdin(self):
         with tempfile.TemporaryDirectory() as d:

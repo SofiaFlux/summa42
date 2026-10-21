@@ -37,6 +37,7 @@ SCHEMA_TRIAGE_REVIEW    = "github.issue.triage.review.v1"
 SCHEMA_PLAN_REVIEW      = "github.issue.plan.review.v1"
 SCHEMA_PLAN_V1          = "github.issue.plan.v1"
 SCHEMA_PLAN_V2          = "github.issue.plan.v2"
+SCHEMA_PLAN_FILES       = "github.issue.plan.files.v1"
 SCHEMA_CODE_REVIEW      = "github.issue.code.review.v1"
 SCHEMA_IMPLEMENTATION   = "github.issue.implementation.v1"
 SCHEMA_DECOMPOSE        = "github.issue.decompose.v1"
@@ -49,6 +50,7 @@ KNOWN_SCHEMAS = {
     SCHEMA_PLAN_REVIEW:    "plan_review",
     SCHEMA_PLAN_V1:        "plan",
     SCHEMA_PLAN_V2:        "plan",
+    SCHEMA_PLAN_FILES:     "plan_files",
     SCHEMA_CODE_REVIEW:    "code_review",
     SCHEMA_IMPLEMENTATION: "implementation",
     SCHEMA_DECOMPOSE:      "decompose",
@@ -950,6 +952,17 @@ def main():
             f"INPUT SPECIFICATION:\n{raw_input}"
         )
 
+    elif task_type == "plan_files":
+        prompt = (
+            "You are an automated software architect for Summa42. "
+            "Select the files needed to plan the following issue, using only paths under allowed_prefixes. "
+            "context_files (at most 32) must be listed in tracked_files; allowed_paths (at most 64) "
+            "are the files a change may touch: tracked files or new files that do not exist yet.\n"
+            "Output ONLY a raw JSON object with this exact format: "
+            '{"context_files": ["path"], "allowed_paths": ["path"]}.\n\n'
+            f"INPUT:\n{raw_input}"
+        )
+
     elif task_type == "code_review":
         prompt = (
             "You are an independent code reviewer for Summa42. "
@@ -1161,6 +1174,18 @@ def main():
                 fail("each plan step needs objective and done_when strings")
             steps.append({"objective": st["objective"][:300], "done_when": st["done_when"][:1000]})
         normalized = {"summary": parsed["summary"][:1000], "steps": steps}
+
+    elif task_type == "plan_files":
+        if not isinstance(parsed, dict) or set(parsed) != {"context_files", "allowed_paths"}:
+            fail("file selection needs exactly context_files and allowed_paths")
+        for key, limit in (("context_files", 32), ("allowed_paths", 64)):
+            value = parsed[key]
+            if not isinstance(value, list) or len(value) > limit \
+                    or not all(isinstance(p, str) and p for p in value):
+                fail(f"{key} must be a list of at most {limit} non-empty strings")
+        if not parsed["allowed_paths"]:
+            fail("allowed_paths must not be empty")
+        normalized = {"context_files": parsed["context_files"], "allowed_paths": parsed["allowed_paths"]}
 
     elif task_type == "implementation":
         if not isinstance(parsed, dict) or not isinstance(parsed.get("edits"), list):

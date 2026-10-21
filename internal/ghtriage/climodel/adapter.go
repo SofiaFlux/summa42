@@ -81,6 +81,18 @@ func (a *Adapter) Plan(ctx context.Context, input ghtriage.PlanInput) (ghtriage.
 	return ghtriage.ParsePlanOutput(raw)
 }
 
+func (a *Adapter) SelectFiles(ctx context.Context, input ghtriage.FileSelectionInput) (ghtriage.FileSelection, error) {
+	prompt, err := json.Marshal(input)
+	if err != nil {
+		return ghtriage.FileSelection{}, err
+	}
+	raw, err := a.run(ctx, prompt)
+	if err != nil {
+		return ghtriage.FileSelection{}, err
+	}
+	return ghtriage.ParseFileSelection(raw)
+}
+
 func (a *Adapter) ReviewPlan(ctx context.Context, input ghtriage.PlanReviewInput) (ghtriage.PlanReviewOutput, error) {
 	prompt, err := json.Marshal(input)
 	if err != nil {

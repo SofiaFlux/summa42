@@ -210,3 +210,29 @@ func Checkout(ctx context.Context, cfg Config, destination string) (Snapshot, er
 	}
 	return snapshot, nil
 }
+
+// TrackedFiles lists the paths tracked under prefixes at commit, mapped to
+// whether each is a regular file (not a symlink or submodule).
+// ponytail: the listing shares the 256 KiB Git output cap; an oversized prefix fails closed.
+func TrackedFiles(ctx context.Context, localPath, commit string, prefixes []string) (map[string]bool, error) {
+	if !FullCommit(commit) || !filepath.IsAbs(localPath) || len(prefixes) < 1 {
+		return nil, errors.New("explicit absolute local repository, full commit and prefixes required")
+	}
+	raw, err := git(ctx, localPath, append([]string{"ls-tree", "-r", "-z", commit, "--"}, prefixes...)...)
+	if err != nil {
+		return nil, err
+	}
+	files := map[string]bool{}
+	for _, entry := range bytes.Split(bytes.TrimSuffix(raw, []byte{0}), []byte{0}) {
+		if len(entry) == 0 {
+			continue
+		}
+		meta, name, ok := strings.Cut(string(entry), "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3 {
+			return nil, errors.New("unexpected git ls-tree output")
+		}
+		files[name] = (fields[0] == "100644" || fields[0] == "100755") && fields[1] == "blob"
+	}
+	return files, nil
+}

@@ -97,8 +97,12 @@ func (p *Planner) Tick(ctx context.Context, missionID domain.ID) (PlannerResult,
 	for _, ce := range caseErrs {
 		result.Failures = append(result.Failures, ce.Error())
 	}
+	reserve := cfg.ModelTimeout
+	if p.grounding != nil && len(p.grounding.AllowedPrefixes) > 0 {
+		reserve *= 2 // file selection plus plan
+	}
 	for i, candidate := range candidates {
-		if time.Since(started)+cfg.ModelTimeout > cfg.TickBudget {
+		if time.Since(started)+reserve > cfg.TickBudget {
 			result.Deferred = len(candidates) - i
 			break
 		}
@@ -216,7 +220,7 @@ func (p *Planner) planCase(ctx context.Context, candidate PlanningCandidate) err
 	if err != nil {
 		return err
 	}
-	grounding, err := p.captureGrounding(ctx, repo)
+	grounding, err := p.captureGrounding(ctx, repo, snap)
 	if err != nil {
 		return fmt.Errorf("prepare source context: %w", err)
 	}
