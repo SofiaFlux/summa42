@@ -368,5 +368,47 @@ class TestCodemieWrapper(unittest.TestCase):
             self.assertTrue(os.path.exists(marker))
 
 
+class TestRulesBlockScope(unittest.TestCase):
+    """S-I6: rules_block is appended only to review schemas, and
+    autonomous_engineering.md reaches a review prompt exactly once."""
+
+    RULES_SENTINEL = "UNIQUE_RULE_SENTINEL_98765"
+    AUTONOMOUS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills", "autonomous_engineering.md"))
+    AUTONOMOUS_HEADING = "# Autonomous Engineering Principles"
+
+    def _captured_prompt(self, schema):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            capture_file = os.path.join(tmpdir, "captured_stdin.txt")
+            _make_backend(tmpdir, "claude",
+                          f"cat > {capture_file}\n"
+                          "echo '{\"verdict\":\"ACCEPT\",\"reason\":\"ok\"}'\n")
+            _run({"schema": schema, "question": "q"},
+                 env={"PATH": _path_with(tmpdir), "XDG_CACHE_HOME": tmpdir,
+                      "ANTHROPIC_API_KEY": "test-key"},
+                 extra_args=["--backend", "claude", "--fallback", "claude",
+                             "--rules", self.RULES_SENTINEL,
+                             "--rules-file", self.AUTONOMOUS])
+            self.assertTrue(os.path.exists(capture_file),
+                            f"Backend did not receive a prompt for {schema}")
+            with open(capture_file) as f:
+                return f.read()
+
+    def test_rules_block_only_on_review_schemas(self):
+        review = ["github.issue.plan.review.v1", "github.issue.code.review.v1",
+                  "github.issue.triage.review.v1"]
+        non_review = ["github.issue.plan.v2", "github.issue.implementation.v1",
+                      "github.issue.decompose.v1"]
+        for schema in review:
+            with self.subTest(schema=schema):
+                self.assertIn(self.RULES_SENTINEL, self._captured_prompt(schema))
+        for schema in non_review:
+            with self.subTest(schema=schema):
+                self.assertNotIn(self.RULES_SENTINEL, self._captured_prompt(schema))
+        for schema in review[:2]:
+            with self.subTest(schema=schema, check="autonomous once"):
+                prompt = self._captured_prompt(schema)
+                self.assertEqual(prompt.count(self.AUTONOMOUS_HEADING), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

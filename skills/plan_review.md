@@ -20,8 +20,7 @@ Evaluate the proposed plan against the issue requirements using the following st
 4. **Scope & Authorization**:
    - Does the plan stay strictly within the issue requirements and allowed workspace paths?
    - If the plan exceeds authorized scope, return `REVISE` or `BLOCK`.
-5. **No Interactive Human Checkpoints**:
-   - Does the plan rely on human pauses or approvals? If so, return `REVISE` demanding autonomous machine-verifiable gates.
+5. Owner approval steps required by policy are correct and must not be removed.
 
 ---
 

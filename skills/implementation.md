@@ -29,7 +29,7 @@ Guide the automated software engineer in generating exact, verified code edits t
 ## Output Schema
 ```json
 {
-  "summary": "Summary of implemented changes and verification evidence (under 1000 characters)",
+  "summary": "Summary of implemented changes (under 1000 characters). Do not claim tests were run; validation is executed by the Box.",
   "edits": [
     {
       "path": "internal/example/service.go",

@@ -37,9 +37,8 @@ Autonomous workers (Summands) operate without human intervention. To ensure sove
 ## 4. Autonomous Non-Blocking Operation (Human Attention Budget)
 > **Low-friction autonomous execution protects the Human Attention Budget.**
 
-1. **Zero Interactive Prompts**: Never output prompts asking a human to confirm, choose, or review intermediate micro-steps.
-2. **Automated Peer Gates**: Rely on independent automated review stages (`PlanReviewer`, `CodeReviewer`) and deterministic compiler/test gates for acceptance.
-3. **Deterministic Verification**: Work is validated by evidence objects, test outputs, and cryptographic content hashes.
+1. Owner approval steps required by policy are correct and must not be removed.
+2. **Deterministic Verification**: Work is validated by evidence objects, test outputs, and cryptographic content hashes.
 
 ---
 

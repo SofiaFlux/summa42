@@ -21,8 +21,7 @@ Guide the automated software architect in constructing concrete, bounded, test-b
    - Stay strictly within the requirements stated in the issue.
    - Do not plan unnecessary refactoring of unrelated code.
    - Do not invent future-proof abstractions or unused interfaces.
-6. **No Human Checkpoint Requests**:
-   - Do NOT plan "Ask user for approval" steps. Independent verification is performed autonomously by the Plan Reviewer and automated test gates.
+6. Owner approval steps required by policy are correct and must not be removed.
 
 ---
 

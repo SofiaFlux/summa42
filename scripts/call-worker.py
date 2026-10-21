@@ -852,7 +852,9 @@ def main():
             args.backend = "agy"
 
     rules_text = ""
-    if args.rules_file and os.path.exists(args.rules_file):
+    # autonomous_engineering.md is already loaded as a skill; skip it as a rules file (S-I6).
+    autonomous_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "skills", "autonomous_engineering.md"))
+    if args.rules_file and os.path.exists(args.rules_file) and os.path.abspath(args.rules_file) != autonomous_path:
         try:
             with open(args.rules_file, "r") as f:
                 rules_text += f.read().strip() + "\n"
@@ -912,6 +914,7 @@ def main():
         prompt = (
             "You are an automated triage review verifier for Summa42. "
             "Evaluate if this issue triage decision is plausible and sound. "
+            f"{rules_block}"
             'Output ONLY a raw JSON object with this exact format: {"plausible": true}.\n\n'
             f"INPUT:\n{raw_input}"
         )
@@ -933,7 +936,6 @@ def main():
             "You are an automated software architect for Summa42. "
             "Write a concrete, bounded, test-driven implementation plan with 1 to 8 steps for the following issue. "
             f"{skill_block}"
-            f"{rules_block}"
             "CONSTRAINTS:\n"
             "1. Plan steps must ONLY affect files listed in allowed_paths.\n"
             "2. Validation in done_when must cite validation_commands.\n"
@@ -959,7 +961,6 @@ def main():
             "You are an automated software engineer for Summa42. "
             "Produce the concrete code edits needed to solve the task. "
             f"{skill_block}"
-            f"{rules_block}"
             "Output ONLY a raw JSON object with this exact format: "
             '{"summary": "Summary of changes", "edits": [{"path": "relative/path/to/file", "content": "full new content of file", "delete": false}]}. '
             "Output ONLY the raw JSON object.\n\n"
@@ -989,7 +990,6 @@ def main():
             "You are an automated software systems architect for Summa42. "
             "Your task is to decompose a large GitHub issue into a cohesive set of smaller, well-bounded child issues.\n"
             f"{skill_block}"
-            f"{rules_block}"
             "DECOMPOSITION RULES:\n"
             "- If the parent issue is 'huge': Break it down into 2 to 5 epics with scope 'large'.\n"
             "- If the parent issue is 'large': Prefer decomposing into 'medium' or 'small' tasks.\n"
@@ -1013,7 +1013,6 @@ def main():
         prompt = (
             "You are an automated cognitive worker for Summa42. "
             f"{skill_block}"
-            f"{rules_block}"
             "Respond ONLY with a single valid conforming JSON object matching the requested schema.\n\n"
             f"INPUT:\n{raw_input}"
         )
