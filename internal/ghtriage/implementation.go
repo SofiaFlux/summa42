@@ -169,6 +169,13 @@ func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 	if task.State != domain.TaskEligible {
 		return ImplementationResult{}, fmt.Errorf("implementation task %s requires operator attention", task.State)
 	}
+	// Workspaces of failed, cancelled or expired attempts are never read again.
+	if err := repoworkspace.GC(root, func(dir string) bool {
+		a, err := i.exec.Attempt(ctx, domain.ID(filepath.Base(dir)))
+		return err != nil || (a.State != domain.AttemptFailed && a.State != domain.AttemptCancelled && a.State != domain.AttemptExpired)
+	}); err != nil {
+		return ImplementationResult{}, err
+	}
 	attempt, err := i.exec.StartAttempt(ctx, task.ID, "github-issue-structured-implementer", ImplementationLeaseDuration)
 	if err != nil {
 		current, getErr := i.exec.Task(ctx, task.ID)

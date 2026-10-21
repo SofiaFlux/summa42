@@ -156,3 +156,29 @@ func TestCaptureDoesNotFetchMissingPartialCloneObjects(t *testing.T) {
 		t.Fatal("source capture fetched missing objects instead of failing offline")
 	}
 }
+
+func TestGCRemovesTerminalAttemptDirs(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"live", "dead"} {
+		if err := os.MkdirAll(filepath.Join(root, name, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "stray-file"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := GC(root, func(dir string) bool { return filepath.Base(dir) == "live" }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "dead")); !os.IsNotExist(err) {
+		t.Fatalf("terminal dir kept: %v", err)
+	}
+	for _, kept := range []string{"live", "stray-file"} {
+		if _, err := os.Stat(filepath.Join(root, kept)); err != nil {
+			t.Fatalf("%s removed: %v", kept, err)
+		}
+	}
+	if err := GC("relative", func(string) bool { return false }); err == nil {
+		t.Fatal("relative root accepted")
+	}
+}

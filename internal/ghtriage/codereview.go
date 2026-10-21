@@ -275,6 +275,10 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 	return CodeReviewResult{Reused: reused, Accepted: accepted, EvidenceID: object.ID, Record: &record}, nil
 }
 
+// observeReview is stage-independent: the pinned base commit must still hold the cited
+// context in the source repo (Capture reads git objects, not the live checkout), and the
+// attempt workspace must still hold exactly the recorded candidate (commit, tree, diff hash).
+// The owner's working tree may move on; SourceState equality is an implementation-attempt check only.
 func observeReview(ctx context.Context, sourceRepo string, input ImplementationInput, record ImplementationRecord) error {
 	paths := make([]string, len(input.Context.Files))
 	for n, f := range input.Context.Files {
@@ -291,13 +295,6 @@ func observeReview(ctx context.Context, sourceRepo string, input ImplementationI
 	expected, _ := input.Context.Canonical()
 	if !bytes.Equal(raw, expected) {
 		return errors.New("review source context differs")
-	}
-	state, err := repoworkspace.SourceState(ctx, sourceRepo)
-	if err != nil {
-		return err
-	}
-	if state != record.SourceStateHash {
-		return errors.New("review source state changed since implementation")
 	}
 	return repoworkspace.VerifyCandidate(ctx, record.Workspace, record.Candidate)
 }

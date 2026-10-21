@@ -15,16 +15,6 @@ import (
 const ValidationTimeout = 60 * time.Second
 const MaxValidationOutput = 16 * 1024
 
-func validationTimeout() time.Duration {
-	if val := os.Getenv("SUMMA42_VALIDATION_TIMEOUT"); val != "" {
-		if d, err := time.ParseDuration(val); err == nil && d > 0 {
-			return d
-		}
-	}
-	return ValidationTimeout
-}
-
-
 type CommandResult struct {
 	Argv      []string `json:"argv"`
 	ExitCode  int      `json:"exit_code"`
@@ -56,15 +46,13 @@ func ValidateCandidate(ctx context.Context, dir string, c Candidate, commands []
 		return nil, err
 	}
 	defer os.RemoveAll(home)
-	goCache := filepath.Join(home, "go-cache")
-	if warm := os.Getenv("GOCACHE"); warm != "" {
-		goCache = warm
-	}
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + home,
 		"TMPDIR=" + home,
-		"GOCACHE=" + goCache,
+		"GOCACHE=" + filepath.Join(home, "go-cache"),
+		"GOMODCACHE=" + filepath.Join(home, "go-mod-cache"),
+		"GOFLAGS=-modcacherw",
 		"GOPROXY=off",
 		"GOTOOLCHAIN=local",
 		"GIT_CONFIG_NOSYSTEM=1",
@@ -72,18 +60,12 @@ func ValidateCandidate(ctx context.Context, dir string, c Candidate, commands []
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_NO_LAZY_FETCH=1",
 	}
-	if mod := os.Getenv("GOMODCACHE"); mod != "" {
-		env = append(env, "GOMODCACHE=" + mod)
-	}
-	if gopath := os.Getenv("GOPATH"); gopath != "" {
-		env = append(env, "GOPATH=" + gopath)
-	}
 	var results []CommandResult
 	for _, argv := range commands {
 		if err := ctx.Err(); err != nil {
 			return results, err
 		}
-		commandCtx, cancel := context.WithTimeout(ctx, validationTimeout())
+		commandCtx, cancel := context.WithTimeout(ctx, ValidationTimeout)
 		cmd := exec.CommandContext(commandCtx, argv[0], argv[1:]...)
 		cmd.Dir = dir
 		cmd.Env = env
@@ -100,14 +82,9 @@ func ValidateCandidate(ctx context.Context, dir string, c Candidate, commands []
 				text = text[:len(text)-1]
 			}
 		}
-		result := CommandResult{Argv: append([]string(nil), argv...), ExitCode: 0, Passed: runErr == nil, TimedOut: commandCtx.Err() != nil, Output: text, Truncated: truncated}
-		if runErr != nil {
-			result.ExitCode = -1
-			var exit *exec.ExitError
-			if errors.As(runErr, &exit) {
-				result.ExitCode = exit.ExitCode()
-			}
-		}
+		result := commandResult(runErr, commandCtx.Err() != nil)
+		result.Argv = append([]string(nil), argv...)
+		result.Output, result.Truncated = text, truncated
 		cancel()
 		results = append(results, result)
 		if err := sameCandidate(ctx, dir, c); err != nil {
@@ -127,4 +104,17 @@ func sameCandidate(ctx context.Context, dir string, c Candidate) error {
 		return errors.New("candidate identity changed during validation")
 	}
 	return nil
+}
+
+// commandResult passes only on a zero exit that did not hit the deadline.
+func commandResult(runErr error, timedOut bool) CommandResult {
+	result := CommandResult{Passed: runErr == nil && !timedOut, TimedOut: timedOut}
+	if runErr != nil {
+		result.ExitCode = -1
+		var exit *exec.ExitError
+		if errors.As(runErr, &exit) {
+			result.ExitCode = exit.ExitCode()
+		}
+	}
+	return result
 }

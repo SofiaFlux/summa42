@@ -211,6 +211,26 @@ func Checkout(ctx context.Context, cfg Config, destination string) (Snapshot, er
 	return snapshot, nil
 }
 
+// GC removes the attempt directories directly under root for which keep returns false.
+// Non-directory entries are left alone.
+func GC(root string, keep func(attemptDir string) bool) error {
+	if !filepath.IsAbs(root) {
+		return errors.New("absolute workspace root required")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, entry := range entries {
+		dir := filepath.Join(root, entry.Name())
+		if entry.IsDir() && !keep(dir) {
+			errs = append(errs, os.RemoveAll(dir))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // TrackedFiles lists the paths tracked under prefixes at commit, mapped to
 // whether each is a regular file (not a symlink or submodule). Each prefix and
 // every ancestor must be a tracked directory, and each prefix must hold entries.

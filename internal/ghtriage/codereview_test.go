@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -170,16 +171,34 @@ func TestCodeReviewReviseHoldsCase(t *testing.T) {
 		})
 	}
 }
+func TestOwnerCommitBetweenStagesDoesNotKillCase(t *testing.T) {
+	f, cfg, id, _ := implementedFixture(t)
+	repo := cfg.Source.LocalPath
+	if err := os.WriteFile(filepath.Join(repo, "owner.txt"), []byte("owner work\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "owner.txt"}, {"-c", "user.name=o", "-c", "user.email=o@example.com", "commit", "-m", "owner"}} {
+		c := exec.Command("git", args...)
+		c.Dir = repo
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s %v", args, out, err)
+		}
+	}
+	os.WriteFile(filepath.Join(repo, "code.go"), []byte("uncommitted owner edit"), 0644)
+	m := &codeReviewModel{verdict: "ACCEPT"}
+	got, err := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).Review(f.ctx, id, repo)
+	if err != nil || !got.Accepted {
+		t.Fatalf("owner activity killed the case: %+v %v", got, err)
+	}
+}
 func TestCodeReviewRejectsDriftAndRevocation(t *testing.T) {
-	for _, mode := range []string{"candidate", "source", "revision", "grant", "expired", "model-mutation"} {
+	for _, mode := range []string{"candidate", "revision", "grant", "expired", "model-mutation"} {
 		t.Run(mode, func(t *testing.T) {
 			f, cfg, id, impl := implementedFixture(t)
 			m := &codeReviewModel{verdict: "ACCEPT", onCall: func(in ghtriage.CodeReviewInput) {
 				switch mode {
 				case "candidate":
 					os.WriteFile(filepath.Join(impl.Record.Workspace, "code.go"), []byte("drift"), 0644)
-				case "source":
-					os.WriteFile(filepath.Join(cfg.Source.LocalPath, "code.go"), []byte("drift"), 0644)
 				case "revision":
 					f.registerRevision(t, "2026-09-28T10:00:01Z")
 				case "grant":

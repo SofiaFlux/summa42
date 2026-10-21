@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -84,16 +85,37 @@ func TestValidationPersistsBoundedUTF8Output(t *testing.T) {
 	}
 }
 
-func TestValidationPropagatesModuleAndBuildCache(t *testing.T) {
+func TestValidationDoesNotInheritHostGoCaches(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix fixture")
 	}
-	t.Setenv("GOMODCACHE", "/tmp/custom-gomodcache")
-	t.Setenv("GOPATH", "/tmp/custom-gopath")
-	t.Setenv("GOCACHE", "/tmp/custom-gocache")
+	t.Setenv("GOMODCACHE", "/host/mod")
+	t.Setenv("GOPATH", "/host/path")
+	t.Setenv("GOCACHE", "/host/x")
 	dir, c := validationFixture(t)
-	got, err := ValidateCandidate(context.Background(), dir, c, [][]string{{"sh", "-c", "printf '%s|%s|%s' \"$GOMODCACHE\" \"$GOPATH\" \"$GOCACHE\""}})
-	if err != nil || len(got) != 1 || got[0].Output != "/tmp/custom-gomodcache|/tmp/custom-gopath|/tmp/custom-gocache" {
+	got, err := ValidateCandidate(context.Background(), dir, c, [][]string{{"sh", "-c", "printf '%s|%s|%s|%s' \"$GOCACHE\" \"$GOMODCACHE\" \"${GOPATH-unset}\" \"$TMPDIR\""}})
+	if err != nil || len(got) != 1 {
 		t.Fatalf("%+v %v", got, err)
+	}
+	parts := strings.Split(got[0].Output, "|")
+	if len(parts) != 4 || parts[2] != "unset" || parts[3] == "" || !strings.HasPrefix(parts[0], parts[3]+"/") || !strings.HasPrefix(parts[1], parts[3]+"/") || parts[0] == parts[1] {
+		t.Fatalf("host caches inherited or caches not private: %q", got[0].Output)
+	}
+}
+func TestValidationTimeoutNotOverridable(t *testing.T) {
+	t.Setenv("SUMMA42_VALIDATION_TIMEOUT", "1ms")
+	dir, c := validationFixture(t)
+	got, err := ValidateCandidate(context.Background(), dir, c, [][]string{{"sh", "-c", "sleep 0.3; echo ok"}})
+	if err != nil || len(got) != 1 || got[0].TimedOut || !got[0].Passed {
+		t.Fatalf("timeout override honored: %+v %v", got, err)
+	}
+}
+func TestTimedOutZeroExitIsNotPassed(t *testing.T) {
+	r := commandResult(nil, true)
+	if r.Passed || !r.TimedOut {
+		t.Fatalf("%+v", r)
+	}
+	if r := commandResult(nil, false); !r.Passed || r.TimedOut {
+		t.Fatalf("%+v", r)
 	}
 }
