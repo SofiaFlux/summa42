@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
+	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
@@ -146,11 +147,15 @@ func TestPlannerStopsAtTickBudget(t *testing.T) {
 	model.onCall = func() { time.Sleep(timeout) }
 	planner := ghtriage.NewPlanner(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model)
 	planner.SetConfig(ghtriage.PlannerConfig{TickBudget: 3 * timeout, ModelTimeout: timeout})
-	if _, err := planner.Tick(f.ctx, f.missionID); err != nil {
+	result, err := planner.Tick(f.ctx, f.missionID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if model.calls < 1 || model.calls > 3 {
-		t.Fatalf("model calls = %d, want 1..3 (budget/timeout)", model.calls)
+	if model.calls < 1 || model.calls > 2 {
+		t.Fatalf("model calls = %d, want 1..2 (budget/timeout)", model.calls)
+	}
+	if result.Deferred != 5-model.calls {
+		t.Fatalf("deferred = %d with %d calls, want %d", result.Deferred, model.calls, 5-model.calls)
 	}
 }
 
@@ -171,5 +176,26 @@ func TestPlannerHoldsCaseAfterMaxFailures(t *testing.T) {
 	}
 	if _, err := planner.Tick(f.ctx, f.missionID); err != nil || model.calls != 3 {
 		t.Fatalf("held case was planned again: calls=%d err=%v", model.calls, err)
+	}
+}
+
+func TestPlannerHoldsAtCapWithoutModelCall(t *testing.T) {
+	f, model := readyPlannerFixture(t)
+	c := f.casesByRev[fixtureRevision]
+	for i := 1; i <= 3; i++ {
+		raw := `{"case_id":"` + string(c.ID) + `","work_id":"` + string(c.CurrentWorkID) + `","class":"timeout","error":"x"}`
+		if _, err := f.evidenceStore.Put(f.ctx, strings.NewReader(raw), evidence.Metadata{
+			MediaType: "application/json", Kind: ghtriage.KindPlanFailure, Subject: fmt.Sprintf("%s#%d", c.CurrentWorkID, i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	planner := ghtriage.NewPlanner(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model)
+	if _, err := planner.Tick(f.ctx, f.missionID); err != nil {
+		t.Fatal(err)
+	}
+	if model.calls != 0 || f.caseState(t, fixtureRevision) != string(workflowcase.Blocked) ||
+		f.latestAssessmentReason(t, fixtureRevision) != "planning-failed:timeout" {
+		t.Fatalf("calls=%d state=%s reason=%s", model.calls, f.caseState(t, fixtureRevision), f.latestAssessmentReason(t, fixtureRevision))
 	}
 }

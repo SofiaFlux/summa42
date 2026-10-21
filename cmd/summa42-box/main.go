@@ -1511,6 +1511,11 @@ func parseGHTriageReviewFlags(args []string) (domain.ID, climodel.Config, error)
 // them. It is not the worker's: the model is handed to the reviewer directly
 // rather than registered as an executor, so a missing model is this command's
 // error and not a box that starts without a triage kind.
+// plannerConfig reserves tick budget by the operator's --model-timeout.
+func plannerConfig(modelConfig climodel.Config) ghtriage.PlannerConfig {
+	return ghtriage.PlannerConfig{ModelTimeout: modelConfig.Timeout}
+}
+
 func runGHPlan(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
@@ -1561,6 +1566,7 @@ func runGHPlan(ctx context.Context, args []string) error {
 	defer box.Close()
 	planner := ghtriage.NewPlanner(workflowcase.New(box.Store, box.Clock, box.Purpose),
 		box.Execution, box.Verification, box.Evidence, adapter)
+	planner.SetConfig(plannerConfig(modelConfig))
 	if grounding != nil {
 		if err := planner.SetGrounding(*grounding); err != nil {
 			return err
