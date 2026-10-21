@@ -161,6 +161,10 @@ func (e *Executor) loadSnapshot(ctx context.Context, payload triagePayload) (Sna
 		return Snapshot{}, fmt.Errorf("evidence %s is a snapshot of %s#%d, but the task payload names %s#%d",
 			id, snap.Repo, snap.Issue, payload.Repository, payload.Issue)
 	}
+	if snap.UpdatedAt != payload.Revision {
+		return Snapshot{}, fmt.Errorf("evidence %s is the snapshot of revision %q, but the task payload names revision %q",
+			id, snap.UpdatedAt, payload.Revision)
+	}
 	return snap, nil
 }
 

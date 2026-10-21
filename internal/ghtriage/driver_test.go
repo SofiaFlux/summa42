@@ -275,11 +275,7 @@ func (f *driverFixture) crashAfterAcceptance(t *testing.T, object, revision stri
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(acceptedRaw)), evidence.Metadata{
-			MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindAccepted,
-		}); err != nil {
-			t.Fatal(err)
-		}
+		f.putLinkedAccepted(t, createdCase.ID, acceptedRaw)
 	}
 	if _, err := f.verifSvc.CompleteAttempt(f.ctx, attempt.ID, verification.CompletionManifest{
 		EvidenceIDs: []domain.ID{decisionObject.ID},
@@ -476,9 +472,11 @@ func (f *driverFixture) decisionEvidenceIDFor(t *testing.T, revision string) dom
 // value.
 func (f *driverFixture) repointAccepted(t *testing.T, revision string, decisionID domain.ID) {
 	t.Helper()
-	if _, err := f.store.DB().ExecContext(f.ctx,
-		`DELETE FROM evidence_objects WHERE kind = ?`, ghtriage.KindAccepted); err != nil {
-		t.Fatal(err)
+	for _, table := range []string{"evidence_subjects", "evidence_objects"} {
+		if _, err := f.store.DB().ExecContext(f.ctx,
+			`DELETE FROM `+table+` WHERE kind = ?`, ghtriage.KindAccepted); err != nil {
+			t.Fatal(err)
+		}
 	}
 	raw, err := json.Marshal(map[string]any{
 		"schema": "github.issue.triage.accepted.v1", "case_id": f.casesByRev[revision].ID,
@@ -487,9 +485,20 @@ func (f *driverFixture) repointAccepted(t *testing.T, revision string, decisionI
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
+	f.putLinkedAccepted(t, f.casesByRev[revision].ID, raw)
+}
+
+// putLinkedAccepted stores an accepted index the way recordAccepted does:
+// linked to its case, which is the only way readers find it.
+func (f *driverFixture) putLinkedAccepted(t *testing.T, caseID domain.ID, raw []byte) {
+	t.Helper()
+	object, err := f.evidenceStore.Put(f.ctx, strings.NewReader(string(raw)), evidence.Metadata{
 		MediaType: ghtriage.DecisionMediaType, Kind: ghtriage.KindAccepted,
-	}); err != nil {
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.evidenceStore.LinkSubject(f.ctx, ghtriage.KindAccepted, string(caseID), object.ID); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1302,12 +1311,23 @@ func TestDriverRecoversEveryCaseWhoseAcceptedIndexIsNotTheNewest(t *testing.T) {
 	}
 }
 
-func TestDriverBackfillsCaseScopedLinkForLegacyAcceptedIndex(t *testing.T) {
+func TestLegacyAcceptedIndexMigrationLinksOnceForTheDriver(t *testing.T) {
 	f := newDriverFixture(t)
 	f.simulateRestartAfterAcceptance(t, fixtureIssue, fixtureRevision)
 	c := f.casesByRev[fixtureRevision]
+	if _, err := f.store.DB().ExecContext(f.ctx, `DELETE FROM evidence_subjects WHERE kind = ?`, ghtriage.KindAccepted); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, found, err := f.evidenceStore.FindBySubject(f.ctx, ghtriage.KindAccepted, string(c.ID)); err != nil || found {
 		t.Fatalf("legacy index unexpectedly linked: found=%v err=%v", found, err)
+	}
+	if result, err := f.driver.Tick(f.ctx, f.missionID); err != nil || len(result.Failures) != 1 {
+		t.Fatalf("readers must not scan for unlinked records: result=%+v err=%v", result, err)
+	}
+	for i := 0; i < 2; i++ { // idempotent
+		if err := ghtriage.LinkLegacyAcceptedIndexes(f.ctx, f.evidenceStore); err != nil {
+			t.Fatal(err)
+		}
 	}
 	result, err := f.driver.Tick(f.ctx, f.missionID)
 	if err != nil || len(result.Failures) != 0 {
@@ -1517,5 +1537,68 @@ func TestDriverWritesTheAcceptedIndexUnderTheIdentityItReadsItBy(t *testing.T) {
 	}
 	if result.Accepted != 0 {
 		t.Fatalf("second tick accepted %d tasks, want the task already accepted", result.Accepted)
+	}
+}
+
+// setTaskClassAndState turns the fixture's triage task into later work (plan
+// review, implementation) in a given state, the shape a case has once triage
+// is behind it.
+func (f *driverFixture) setTaskClassAndState(t *testing.T, revision, class string, state domain.TaskState) {
+	t.Helper()
+	if _, err := f.store.DB().ExecContext(f.ctx,
+		`UPDATE tasks SET task_class = ?, state = ? WHERE task_id = ?`, class, state, f.tasksByRev[revision].ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDriverIgnoresSucceededPlanReviewTask(t *testing.T) {
+	f := newDriverFixture(t)
+	f.registerRevision(t, fixtureRevision)
+	f.setTaskClassAndState(t, fixtureRevision, ghtriage.PlanReviewWorkKind, domain.TaskSucceeded)
+
+	result, err := f.driver.Tick(f.ctx, f.missionID)
+	if err != nil || len(result.Failures) != 0 {
+		t.Fatalf("tick over a succeeded plan-review task: result=%+v err=%v", result, err)
+	}
+	newer := "2026-09-28T11:00:00Z"
+	f.registerRevision(t, newer)
+	result, err = f.driver.Tick(f.ctx, f.missionID)
+	if err != nil || result.Superseded != 1 {
+		t.Fatalf("supersession: result=%+v err=%v", result, err)
+	}
+	if got := f.caseState(t, fixtureRevision); got != "BLOCKED" {
+		t.Fatalf("older case state = %q, want BLOCKED", got)
+	}
+}
+
+func TestDriverDoesNotRecordImplementationFailureAsTriageFailed(t *testing.T) {
+	f := newDriverFixture(t)
+	f.registerRevision(t, fixtureRevision)
+	f.setTaskClassAndState(t, fixtureRevision, ghtriage.ImplementationWorkKind, domain.TaskBlocked)
+
+	result, err := f.driver.Tick(f.ctx, f.missionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.assessmentCount(t, fixtureRevision) != 0 || f.caseState(t, fixtureRevision) != "ACTIVE" || result.Blocked != 0 {
+		t.Fatalf("implementation failure was handled as triage: result=%+v", result)
+	}
+}
+
+func TestReadDecisionRejectsStage3Mismatch(t *testing.T) {
+	f := newDriverFixture(t)
+	decision := readyToPlanDecision(42, fixtureRevision)
+	decision.Stage3 = &ghtriage.Stage3Result{Disposition: ghtriage.DispositionNeedsHuman, Rule: "needs-repro-required"}
+	f.completeTaskWithDecision(t, fixtureRevision, decision)
+
+	result, err := f.driver.Tick(f.ctx, f.missionID)
+	if err == nil && len(result.Failures) == 0 {
+		t.Fatalf("a stage 3 that does not follow from stage 2 was accepted: %+v", result)
+	}
+	if got := f.taskState(t, fixtureRevision); got != "AWAITING_VERIFICATION" {
+		t.Fatalf("task state = %q, want it left unaccepted", got)
+	}
+	if f.assessmentCount(t, fixtureRevision) != 0 {
+		t.Fatal("the recorded disposition was applied")
 	}
 }

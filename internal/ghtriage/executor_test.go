@@ -456,3 +456,15 @@ func TestExecutorFailsWhenTheSnapshotDoesNotMatchThePayload(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadSnapshotRejectsRevisionMismatch(t *testing.T) {
+	exec, _, evidenceStore := newExecutorFixture(t)
+	snap := ghtriage.Snapshot{
+		Repo: "o/r", Issue: 42, Title: "Crash", Body: "boom",
+		Triage: "bug", Labels: []string{"bug"}, UpdatedAt: "2026-09-28T09:00:00Z",
+	}
+	_, err := exec.Start(context.Background(), envelopeFor(t, putSnapshot(t, evidenceStore, snap)))
+	if err == nil || !strings.Contains(err.Error(), "revision") {
+		t.Fatalf("a snapshot of another revision was accepted: %v", err)
+	}
+}

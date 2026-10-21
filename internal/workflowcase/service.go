@@ -200,7 +200,7 @@ func (s *Service) ListAssessments(ctx context.Context, caseID domain.ID) ([]Asse
 	}
 	rows, err := s.store.DB().QueryContext(ctx,
 		`SELECT assessment_id, work_id, request_json, result_json, created_at
-		 FROM workflow_assessments WHERE case_id = ? ORDER BY created_at, assessment_id`, caseID)
+		 FROM workflow_assessments WHERE case_id = ? ORDER BY created_at, rowid`, caseID)
 	if err != nil {
 		return nil, fmt.Errorf("list workflow assessments: %w", err)
 	}

@@ -29,14 +29,6 @@ const (
 
 	ReasonTriageFailed   = "triage-failed"
 	supersededReasonHead = "superseded-by:"
-
-	// acceptedIndexScanLimit applies only to accepted records written before
-	// the case-scoped subject index existed. A successful legacy lookup links
-	// the record to its case, so subsequent reads use the indexed path.
-	//
-	// Legacy records have no case key, so the fallback must walk every record
-	// of the kind: a fixed lower limit would silently lose older cases.
-	acceptedIndexScanLimit = math.MaxInt
 )
 
 type DriverResult struct {
@@ -199,6 +191,17 @@ func (d *Driver) advanceAccepted(ctx context.Context, cases []workflowcase.Case,
 			return accepted, err
 		}
 		if !found {
+			continue
+		}
+		if task.TaskClass != TaskClass {
+			// Later work (plan review, implementation) is not triage: none of
+			// the triage handling below applies to its task, whatever its
+			// state. The case only has to stay supersedable by a newer revision,
+			// which challenges the active task and blocks the case.
+			accepted = append(accepted, acceptedRevision{
+				c: c, revision: parseRevision(c.RevisionID),
+				evidenceID: domain.ID(c.ObservationEvidenceID),
+			})
 			continue
 		}
 		switch task.State {
@@ -398,9 +401,28 @@ func (d *Driver) recordAccepted(ctx context.Context, c workflowcase.Case, eviden
 	return d.evidence.LinkSubject(ctx, KindAccepted, string(c.ID), object.ID)
 }
 
-// findAccepted uses the case-scoped subject index. Older stores may still have
-// unlinked accepted records; one legacy walk finds and links each such record.
-// The recorded task ID is the case's work ID and the task's idempotency key,
+// LinkLegacyAcceptedIndexes is the one-time migration for accepted records
+// written before the case-scoped subject index existed. It links each unlinked
+// record to its case, newest first, so a case with several records keeps the
+// newest. It is idempotent, and readers no longer fall back to scanning.
+func LinkLegacyAcceptedIndexes(ctx context.Context, store *evidence.Store) error {
+	var linkErr error
+	_, _, _, err := store.FindByKind(ctx, KindAccepted, math.MaxInt, func(object evidence.EvidenceObject, raw []byte) bool {
+		var record acceptedIndex
+		if json.Unmarshal(raw, &record) != nil || record.CaseID == "" || linkErr != nil {
+			return false
+		}
+		_, _, linked, err := store.FindBySubject(ctx, KindAccepted, string(record.CaseID))
+		if err == nil && !linked {
+			err = store.LinkSubject(ctx, KindAccepted, string(record.CaseID), object.ID)
+		}
+		linkErr = err
+		return false
+	})
+	return errors.Join(err, linkErr)
+}
+
+// findAccepted uses the case-scoped subject index. The recorded task ID is the case's work ID and the task's idempotency key,
 // rather than the task row's ID.
 func (d *Driver) findAccepted(ctx context.Context, c workflowcase.Case, task domain.Task) ([]byte, bool, error) {
 	if d.evidence == nil {
@@ -423,14 +445,7 @@ func (d *Driver) findAccepted(ctx context.Context, c workflowcase.Case, task dom
 		}
 		return linkedRaw, true, nil
 	}
-	object, raw, found, err := d.evidence.FindByKind(ctx, KindAccepted, acceptedIndexScanLimit, matches)
-	if err != nil || !found {
-		return nil, false, err
-	}
-	if err := d.evidence.LinkSubject(ctx, KindAccepted, string(c.ID), object.ID); err != nil {
-		return nil, false, err
-	}
-	return raw, true, nil
+	return nil, false, nil
 }
 
 func (d *Driver) readDecision(ctx context.Context, refs []runmanifest.EvidenceRef, c workflowcase.Case) (*Decision, domain.ID, error) {
@@ -466,6 +481,12 @@ func (d *Driver) readDecision(ctx context.Context, refs []runmanifest.EvidenceRe
 	}
 	if found.SnapshotEvidenceID == "" {
 		return nil, domain.ID(""), errors.New("decision carries no snapshot evidence id")
+	}
+	// The driver acts on the recorded disposition, so it re-derives it rather
+	// than trusting the stored stage 3.
+	if found.Stage2 != nil && found.DispositionRulesVersion == DispositionRulesVersion &&
+		*found.Stage3 != Stage3(*found.Stage2) {
+		return nil, domain.ID(""), fmt.Errorf("decision %s stage 3 does not follow from its stage 2", foundID)
 	}
 	return found, foundID, nil
 }

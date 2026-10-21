@@ -1268,6 +1268,9 @@ func runGHIntake(ctx context.Context, args []string) error {
 		return fmt.Errorf("open read-only Box runtime: %w", err)
 	}
 	defer box.Close()
+	if err := ghtriage.LinkLegacyAcceptedIndexes(ctx, box.Evidence); err != nil {
+		return fmt.Errorf("link legacy accepted triage indexes: %w", err)
+	}
 	cases := workflowcase.New(box.Store, box.Clock, box.Purpose)
 	return ghissue.RunReporting(ctx, client, cases, box.Execution, box.Evidence, observerCfg, pollInterval,
 		ghIntakeTickReporter(os.Stderr))

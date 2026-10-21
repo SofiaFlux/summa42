@@ -334,14 +334,21 @@ func (r *Reviewer) stateMatches(ctx context.Context, c workflowcase.Case, record
 	}
 	switch decision.FinalDisposition() {
 	case DispositionReadyToPlan:
-		if c.State != workflowcase.Active {
-			return false
-		}
 		if reason == "" {
-			return len(records) == 0
+			return len(records) == 0 && c.State == workflowcase.Active
 		}
-		if reason != PlanningAssessmentReason || c.NextWork.Kind != PlanReviewWorkKind || len(records) != 1 {
+		// The planning assessment is the first record. Any later record is plan
+		// review's (a verdict or a held failure), which moves the case on.
+		if len(records) == 0 || recordReason(records[0]) != PlanningAssessmentReason {
 			return false
+		}
+		if len(records) == 1 && (c.State != workflowcase.Active || c.NextWork.Kind != PlanReviewWorkKind) {
+			return false
+		}
+		for _, record := range records[1:] {
+			if !strings.HasPrefix(recordReason(record), "plan-review") {
+				return false
+			}
 		}
 		var request workflowcase.AssessmentRequest
 		if err := json.Unmarshal([]byte(records[0].RequestJSON), &request); err != nil ||
@@ -521,8 +528,8 @@ func (r *Reviewer) loadDecision(ctx context.Context, revision, evidenceID string
 	return &decision, domain.ID(evidenceID), true, nil
 }
 
-// findAcceptedIndex uses the case-scoped subject index and links legacy records
-// after finding them. The reviewer has no task to match once the case has been
+// findAcceptedIndex uses the case-scoped subject index; legacy records are
+// linked once by LinkLegacyAcceptedIndexes. The reviewer has no task to match once the case has been
 // assessed, so the case ID is the identity it can check.
 func findAcceptedIndex(ctx context.Context, store *evidence.Store, c workflowcase.Case) ([]byte, bool, error) {
 	if store == nil {
@@ -545,14 +552,7 @@ func findAcceptedIndex(ctx context.Context, store *evidence.Store, c workflowcas
 		}
 		return linkedRaw, true, nil
 	}
-	object, raw, found, err := store.FindByKind(ctx, KindAccepted, acceptedIndexScanLimit, matches)
-	if err != nil || !found {
-		return nil, false, err
-	}
-	if err := store.LinkSubject(ctx, KindAccepted, string(c.ID), object.ID); err != nil {
-		return nil, false, err
-	}
-	return raw, true, nil
+	return nil, false, nil
 }
 
 // stateFingerprint is the canonical pair of the case state and its latest
@@ -563,6 +563,14 @@ func stateFingerprint(c workflowcase.Case, records []workflowcase.AssessmentReco
 	}
 	latest := records[len(records)-1].ID
 	return string(c.State) + "|" + latest, &latest
+}
+
+func recordReason(record workflowcase.AssessmentRecord) string {
+	var result workflowcase.AssessmentResult
+	if err := json.Unmarshal([]byte(record.ResultJSON), &result); err != nil {
+		return ""
+	}
+	return result.Decision.Reason
 }
 
 func latestReason(records []workflowcase.AssessmentRecord, latest *string) string {
