@@ -37,7 +37,7 @@ type API interface {
 	ExperienceEvaluate(context.Context, domain.ID) (ExperienceRuleDTO, error)
 	ExperienceRules(context.Context) ([]ExperienceRuleDTO, error)
 	ExperienceRule(context.Context, domain.ID) (ExperienceRuleDTO, error)
-	Approve(context.Context, domain.ID, identity.Signer) (ApprovalDTO, error)
+	Approve(ctx context.Context, id domain.ID, signer identity.Signer, expectedDigest string) (ApprovalDTO, error)
 	Reject(context.Context, domain.ID, identity.Signer) (ApprovalDTO, error)
 	Attempt(context.Context, domain.ID) (AttemptDTO, error)
 	Operation(context.Context, domain.ID) (OperationDTO, error)
@@ -207,15 +207,16 @@ func (c *Client) ExperienceRule(ctx context.Context, id domain.ID) (ExperienceRu
 	return result, err
 }
 
-func (c *Client) Approve(ctx context.Context, id domain.ID, signer identity.Signer) (ApprovalDTO, error) {
-	return c.decideApproval(ctx, id, signer, "APPROVE")
+// Approve signs only a challenge whose digest equals expectedDigest, the digest the Owner was shown.
+func (c *Client) Approve(ctx context.Context, id domain.ID, signer identity.Signer, expectedDigest string) (ApprovalDTO, error) {
+	return c.decideApproval(ctx, id, signer, "APPROVE", expectedDigest)
 }
 
 func (c *Client) Reject(ctx context.Context, id domain.ID, signer identity.Signer) (ApprovalDTO, error) {
-	return c.decideApproval(ctx, id, signer, "REJECT")
+	return c.decideApproval(ctx, id, signer, "REJECT", "")
 }
 
-func (c *Client) decideApproval(ctx context.Context, id domain.ID, signer identity.Signer, action string) (ApprovalDTO, error) {
+func (c *Client) decideApproval(ctx context.Context, id domain.ID, signer identity.Signer, action, expectedDigest string) (ApprovalDTO, error) {
 	if signer == nil {
 		return ApprovalDTO{}, errors.New("Owner signer is required")
 	}
@@ -226,6 +227,9 @@ func (c *Client) decideApproval(ctx context.Context, id domain.ID, signer identi
 	}
 	if challenge.Action != action {
 		return ApprovalDTO{}, errors.New("approval challenge action mismatch")
+	}
+	if expectedDigest != "" && challenge.RequestDigest != expectedDigest {
+		return ApprovalDTO{}, errors.New("approval challenge digest differs from the displayed digest; refusing to sign")
 	}
 	signature, err := signer.Sign(ApprovalSigningMessage(challenge.Challenge, challenge.RequestDigest, challenge.Action))
 	if err != nil {

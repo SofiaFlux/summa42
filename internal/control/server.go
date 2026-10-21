@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -133,10 +134,13 @@ type ApprovalDTO struct {
 	Status            string               `json:"status"`
 	// Provider, EffectSlotID, CanonicalIntent and Attributes describe the bound
 	// operation so the Owner sees what the signed digest covers.
-	Provider        string          `json:"provider,omitempty"`
-	EffectSlotID    domain.ID       `json:"effect_slot_id,omitempty"`
-	CanonicalIntent json.RawMessage `json:"canonical_intent,omitempty"`
-	Attributes      map[string]any  `json:"attributes,omitempty"`
+	Provider          string          `json:"provider,omitempty"`
+	EffectSlotID      domain.ID       `json:"effect_slot_id,omitempty"`
+	DescriptorType    string          `json:"descriptor_type,omitempty"`
+	IntentFingerprint string          `json:"intent_fingerprint,omitempty"`
+	IntentRevision    int64           `json:"intent_revision,omitempty"`
+	CanonicalIntent   json.RawMessage `json:"canonical_intent,omitempty"`
+	Attributes        map[string]any  `json:"attributes,omitempty"`
 }
 
 type StatusProvider interface {
@@ -673,8 +677,12 @@ func (s *Server) approvalDTO(ctx context.Context, record domain.ApprovalRequestR
 		ApprovedBy: record.ApproverID, Status: string(record.State),
 	}
 	if record.SubjectKind == "EXTERNAL_OPERATION" {
-		if operation, err := s.deps.Operations.Operation(ctx, record.SubjectID); err == nil {
+		operation, err := s.deps.Operations.Operation(ctx, record.SubjectID)
+		if err != nil {
+			log.Printf("control: load operation %s for approval %s: %v", record.SubjectID, record.ID, err)
+		} else {
 			dto.Provider, dto.EffectSlotID = operation.Provider, operation.EffectSlotID
+			dto.DescriptorType, dto.IntentFingerprint, dto.IntentRevision = operation.DescriptorType, operation.IntentFingerprint, operation.IntentRevision
 			dto.CanonicalIntent, dto.Attributes = json.RawMessage(operation.CanonicalIntent), operation.Attributes
 		}
 	}

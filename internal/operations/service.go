@@ -870,15 +870,15 @@ func loadOperationQuery(ctx context.Context, q operationQuery, operationID domai
 	var op domain.ExternalOperation
 	var createdAt string
 	var dispatched, settled sql.NullString
-	var providerReference, canonical, attributes string
+	var providerReference, canonical, attributes, descriptorType string
 	err := q.QueryRowContext(ctx, `
 		SELECT o.operation_id, o.task_id, o.attempt_id, o.effect_slot_id, o.state, o.intent_fingerprint, o.intent_revision,
 		       o.provider, COALESCE(o.provider_reference, ''), o.reservation_id, COALESCE(o.approval_id, ''),
-		       o.created_at, o.dispatched_at, o.settled_at, s.canonical_intent_json, o.caller_attributes_json
+		       o.created_at, o.dispatched_at, o.settled_at, s.canonical_intent_json, o.caller_attributes_json, s.descriptor_type
 		FROM external_operations o JOIN effect_slots s ON s.effect_slot_id = o.effect_slot_id
 		WHERE o.operation_id = ?`, operationID,
 	).Scan(&op.ID, &op.TaskID, &op.AttemptID, &op.EffectSlotID, &op.State, &op.IntentFingerprint, &op.IntentRevision,
-		&op.Provider, &providerReference, &op.ReservationID, &op.ApprovalID, &createdAt, &dispatched, &settled, &canonical, &attributes)
+		&op.Provider, &providerReference, &op.ReservationID, &op.ApprovalID, &createdAt, &dispatched, &settled, &canonical, &attributes, &descriptorType)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.ExternalOperation{}, fmt.Errorf("operation %q not found", operationID)
 	}
@@ -890,6 +890,7 @@ func loadOperationQuery(ctx context.Context, q operationQuery, operationID domai
 	}
 	op.ProviderReference = providerReference
 	op.CanonicalIntent = []byte(canonical)
+	op.DescriptorType = descriptorType
 	if op.Attributes, err = decodeCallerAttributes(attributes); err != nil {
 		return domain.ExternalOperation{}, fmt.Errorf("decode operation caller attributes: %w", err)
 	}

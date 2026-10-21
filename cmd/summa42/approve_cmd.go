@@ -16,6 +16,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/identity"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
+	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/spf13/cobra"
 )
 
@@ -29,7 +30,7 @@ var stdinIsTTY = func() bool {
 func describeApproval(w io.Writer, a control.ApprovalDTO) {
 	fmt.Fprintf(w, "Approval %s (%s %s) digest %s expires %s\n", a.ApprovalID, a.SubjectKind, a.SubjectID, a.RequestDigest, a.ExpiresAt.Format(time.RFC3339))
 	if a.Provider != "" || a.EffectSlotID != "" {
-		fmt.Fprintf(w, "Provider: %s\nEffect slot: %s\n", a.Provider, a.EffectSlotID)
+		fmt.Fprintf(w, "Provider: %s\nDescriptor: %s\nEffect slot: %s\nFingerprint: %s (revision %d)\n", a.Provider, a.DescriptorType, a.EffectSlotID, a.IntentFingerprint, a.IntentRevision)
 	}
 	if len(a.CanonicalIntent) > 0 {
 		var pretty bytes.Buffer
@@ -41,7 +42,7 @@ func describeApproval(w io.Writer, a control.ApprovalDTO) {
 	}
 	if len(a.Attributes) > 0 {
 		attributes, _ := json.MarshalIndent(a.Attributes, "", "  ")
-		fmt.Fprintf(w, "Attributes:\n%s\n", attributes)
+		fmt.Fprintf(w, "Attributes (informational, not signed):\n%s\n", attributes)
 	}
 }
 
@@ -82,6 +83,13 @@ func newApproveCommand(api control.API, jsonOutput *bool) *cobra.Command {
 			if pending.SubjectKind == "EXTERNAL_OPERATION" && len(pending.CanonicalIntent) == 0 {
 				return errors.New("refusing to approve: the server did not return the operation's canonical intent")
 			}
+			if pending.SubjectKind == "EXTERNAL_OPERATION" {
+				recomputed, err := operations.OperationApprovalDigest(pending.Provider, pending.DescriptorType, pending.EffectSlotID,
+					pending.IntentFingerprint, pending.IntentRevision, pending.CanonicalIntent)
+				if err != nil || recomputed != pending.RequestDigest {
+					return fmt.Errorf("refusing to approve: displayed intent does not match request digest (%v)", err)
+				}
+			}
 			describeApproval(cmd.ErrOrStderr(), pending)
 			if !assumeYes {
 				fmt.Fprint(cmd.ErrOrStderr(), "Type 'yes' to approve: ")
@@ -90,7 +98,7 @@ func newApproveCommand(api control.API, jsonOutput *bool) *cobra.Command {
 					return errors.New("approval not confirmed")
 				}
 			}
-			approval, err := api.Approve(cmd.Context(), domain.ID(args[0]), signer)
+			approval, err := api.Approve(cmd.Context(), domain.ID(args[0]), signer, pending.RequestDigest)
 			if err != nil {
 				return err
 			}

@@ -597,3 +597,21 @@ func TestApprovalDTOIncludesCanonicalIntent(t *testing.T) {
 		t.Fatalf("operation DTO lacks intent: %+v", operation)
 	}
 }
+
+func TestClientApproveRefusesChallengeWithDifferentDigest(t *testing.T) {
+	server, _, _, approvals, _, _, _ := newTestServer(t)
+	signer, err := identity.NewLocalEd25519(filepath.Join(t.TempDir(), "owner.key"), "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.config.OwnerPublicKey = signer.PublicKey()
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	client := NewClient(httpServer.URL, "control-secret", httpServer.Client())
+	if _, err := client.Approve(context.Background(), "approval-1", signer, "some-other-digest"); err == nil || approvals.calls != 0 {
+		t.Fatalf("signed a challenge with a different digest: err=%v calls=%d", err, approvals.calls)
+	}
+	if _, err := client.Approve(context.Background(), "approval-1", signer, "durable-digest-1"); err != nil || approvals.calls != 1 {
+		t.Fatalf("matching digest: err=%v calls=%d", err, approvals.calls)
+	}
+}

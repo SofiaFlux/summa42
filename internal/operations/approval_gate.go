@@ -99,7 +99,8 @@ func approvalIDsEqual(a, b []domain.ID) bool {
 	return true
 }
 
-func operationApprovalDigest(
+// OperationApprovalDigest is the digest an Owner approval signs; it covers identity and intent, not caller attributes.
+func OperationApprovalDigest(
 	provider, descriptorType string,
 	effectSlotID domain.ID,
 	intentFingerprint string,
@@ -161,7 +162,7 @@ func (s *Service) prepareApprovalInTx(
 	if len(required) == 0 {
 		return "", "", fmt.Errorf("%w: approval required but no required approver is defined", domain.ErrPolicyDenied)
 	}
-	digest, err := operationApprovalDigest(
+	digest, err := OperationApprovalDigest(
 		provider.Name(), descriptorType, result.EffectSlotID,
 		result.IntentFingerprint, result.IntentRevision, canonical,
 	)
@@ -215,7 +216,7 @@ func (s *Service) preparedApprovalMatchesInTx(
 	if err != nil {
 		return false, err
 	}
-	digest, err := operationApprovalDigest(
+	digest, err := OperationApprovalDigest(
 		provider.Name(), descriptorType, op.EffectSlotID,
 		op.IntentFingerprint, op.IntentRevision, canonical,
 	)
@@ -259,7 +260,7 @@ func (s *Service) validateAndConsumeApprovalInTx(
 	if err != nil {
 		return fmt.Errorf("%w: load approval: %v", domain.ErrPolicyDenied, err)
 	}
-	digest, err := operationApprovalDigest(
+	digest, err := OperationApprovalDigest(
 		provider.Name(), descriptorType, op.EffectSlotID,
 		op.IntentFingerprint, op.IntentRevision, canonical,
 	)

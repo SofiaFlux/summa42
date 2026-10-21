@@ -10,6 +10,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/control"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/identity"
+	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/spf13/cobra"
 )
 
@@ -21,6 +22,8 @@ type fakeControlAPI struct {
 	created                 control.CreateTaskRequest
 	missionStatement        string
 	approveCalls            int
+	approval                *control.ApprovalDTO
+	approveDigest           string
 	rejectCalls             int
 	feedbackEmitCalls       int
 	feedbackObserveCalls    int
@@ -50,6 +53,9 @@ func (f *fakeControlAPI) Task(context.Context, domain.ID) (control.TaskDTO, erro
 }
 func (f *fakeControlAPI) Approvals(context.Context) ([]control.ApprovalDTO, error) { return nil, nil }
 func (f *fakeControlAPI) Approval(context.Context, domain.ID) (control.ApprovalDTO, error) {
+	if f.approval != nil {
+		return *f.approval, nil
+	}
 	return control.ApprovalDTO{ApprovalID: "approval-1", Status: "PENDING"}, nil
 }
 func (f *fakeControlAPI) Feedback(context.Context) ([]control.FeedbackCandidateDTO, error) {
@@ -112,7 +118,8 @@ func (f *fakeControlAPI) ExperienceRules(context.Context) ([]control.ExperienceR
 func (f *fakeControlAPI) ExperienceRule(context.Context, domain.ID) (control.ExperienceRuleDTO, error) {
 	return control.ExperienceRuleDTO{ID: "rule-1", ScopeKey: "repo.review", PreferredExecutor: "codex", State: domain.ExperienceActive}, nil
 }
-func (f *fakeControlAPI) Approve(_ context.Context, _ domain.ID, signer identity.Signer) (control.ApprovalDTO, error) {
+func (f *fakeControlAPI) Approve(_ context.Context, _ domain.ID, signer identity.Signer, digest string) (control.ApprovalDTO, error) {
+	f.approveDigest = digest
 	f.approveCalls++
 	return control.ApprovalDTO{ApprovalID: "approval-1", ApprovedBy: signer.PrincipalID(), Status: "APPROVED"}, nil
 }
@@ -293,5 +300,42 @@ func TestApproveNonInteractiveNeedsExplicitEnv(t *testing.T) {
 	t.Setenv("SUMMA42_APPROVE_NONINTERACTIVE", "1")
 	if _, err := approveWith(t, api, false, "", "--yes"); err != nil || api.approveCalls != 1 {
 		t.Fatalf("explicit non-interactive: err=%v calls=%d", err, api.approveCalls)
+	}
+}
+
+func opApproval(t *testing.T, mutate func(*control.ApprovalDTO)) *control.ApprovalDTO {
+	t.Helper()
+	intent := []byte(`{"branch":"fix/x"}`)
+	digest, err := operations.OperationApprovalDigest("github", "github.branch", "slot-1", "fp-1", 1, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &control.ApprovalDTO{ApprovalID: "approval-1", SubjectKind: "EXTERNAL_OPERATION", SubjectID: "op-1", RequestDigest: digest,
+		Provider: "github", DescriptorType: "github.branch", EffectSlotID: "slot-1", IntentFingerprint: "fp-1", IntentRevision: 1,
+		CanonicalIntent: intent, Attributes: map[string]any{"caller": "cube"}}
+	if mutate != nil {
+		mutate(a)
+	}
+	return a
+}
+
+func TestApproveDisplaysIntentAndBindsDigest(t *testing.T) {
+	api := &fakeControlAPI{approval: opApproval(t, nil)}
+	shown, err := approveWith(t, api, true, "yes\n")
+	if err != nil || api.approveCalls != 1 || api.approveDigest != api.approval.RequestDigest {
+		t.Fatalf("err=%v calls=%d digest=%q", err, api.approveCalls, api.approveDigest)
+	}
+	for _, want := range []string{"fix/x", "github.branch", "informational, not signed"} {
+		if !strings.Contains(shown, want) {
+			t.Fatalf("output lacks %q: %s", want, shown)
+		}
+	}
+	api = &fakeControlAPI{approval: opApproval(t, func(a *control.ApprovalDTO) { a.CanonicalIntent = nil })}
+	if _, err := approveWith(t, api, true, "yes\n"); err == nil || api.approveCalls != 0 {
+		t.Fatalf("approved without intent: err=%v", err)
+	}
+	api = &fakeControlAPI{approval: opApproval(t, func(a *control.ApprovalDTO) { a.CanonicalIntent = []byte(`{"branch":"evil"}`) })}
+	if _, err := approveWith(t, api, true, "yes\n"); err == nil || api.approveCalls != 0 {
+		t.Fatalf("approved intent not matching digest: err=%v", err)
 	}
 }
