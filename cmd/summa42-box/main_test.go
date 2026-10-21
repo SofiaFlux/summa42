@@ -83,7 +83,7 @@ func TestServeControlClosesServerWhenContextIsCancelled(t *testing.T) {
 func TestBuildFeedbackSinkDoesNotRequireCredentialWhenDisabled(t *testing.T) {
 	t.Setenv("SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE", "")
 	cfg := localconfig.Config{FieldFeedback: localconfig.FieldFeedbackConfig{Enabled: false, Mode: localconfig.FeedbackModeLocalOnly}}
-	sink, err := buildFeedbackSink(cfg)
+	sink, err := buildFeedbackSink(cfg, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestBuildFeedbackSinkFailsClosedWhenGitHubExportEnabledWithoutCredentialFil
 	cfg := localconfig.Config{FieldFeedback: localconfig.FieldFeedbackConfig{
 		Enabled: true, Mode: localconfig.FeedbackModeAutoIfAllowed, Provider: "github", Destination: "owner/repo",
 	}}
-	if _, err := buildFeedbackSink(cfg); err == nil {
+	if _, err := buildFeedbackSink(cfg, ""); err == nil {
 		t.Fatal("GitHub export started without credential file")
 	}
 }

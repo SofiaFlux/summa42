@@ -251,3 +251,51 @@ func TestConfigRejectsPlaintextNonLoopbackAPI(t *testing.T) {
 		t.Fatal("plaintext non-loopback GitHub API accepted")
 	}
 }
+
+func findByMarkerClient(t *testing.T, serverURL, botLogin string) *client {
+	t.Helper()
+	c, err := newClient(Config{
+		APIBaseURL: serverURL, Repository: "owner/repo", BotLogin: botLogin,
+		CredentialSource: FileCredentialSource{Path: writeTokenFile(t, "token-value", 0o600)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestFindByMarkerIgnoresForeignAuthors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"number":1,"html_url":"https://x/1","body":"<!-- m -->","user":{"login":"mallory"}},` +
+			`{"number":2,"html_url":"https://x/2","body":"<!-- m -->","user":{"login":"App[bot]"}}]`))
+	}))
+	defer server.Close()
+	ref, found, err := findByMarkerClient(t, server.URL, "app[bot]").findByMarker(context.Background(), "m")
+	if err != nil || !found || ref != "https://x/2" {
+		t.Fatalf("ref=%q found=%v err=%v, want the bot's issue", ref, found, err)
+	}
+	_, found, err = findByMarkerClient(t, server.URL, "someone-else").findByMarker(context.Background(), "m")
+	if err != nil || found {
+		t.Fatalf("found=%v err=%v, want no match for a non-matching bot login", found, err)
+	}
+}
+
+func TestFindByMarkerBoundsPagination(t *testing.T) {
+	var pages int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		items := make([]string, 100)
+		for i := range items {
+			items[i] = `{"number":1,"body":"other","user":{"login":"a"}}`
+		}
+		_, _ = w.Write([]byte("[" + strings.Join(items, ",") + "]"))
+	}))
+	defer server.Close()
+	_, found, err := findByMarkerClient(t, server.URL, "").findByMarker(context.Background(), "m")
+	if err == nil || found {
+		t.Fatalf("found=%v err=%v, want a bounded-walk error", found, err)
+	}
+	if pages != 10 {
+		t.Fatalf("pages = %d, want 10", pages)
+	}
+}

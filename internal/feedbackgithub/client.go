@@ -23,6 +23,8 @@ const (
 	defaultAPIBaseURL = "https://api.github.com"
 	maxResponseBytes  = 1 << 20
 	userAgent         = "summa42-feedback/1"
+	// maxReconcilePages bounds findByMarker's walk of the issue history.
+	maxReconcilePages = 10
 )
 
 var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
@@ -66,6 +68,8 @@ type Config struct {
 	Repository       string
 	CredentialSource CredentialSource
 	HTTPClient       *http.Client
+	// BotLogin, when set, restricts reconciliation matches to issues it authored.
+	BotLogin string
 }
 
 type client struct {
@@ -73,12 +77,16 @@ type client struct {
 	repository string
 	credential CredentialSource
 	http       *http.Client
+	botLogin   string
 }
 
 type issueResponse struct {
 	Number  int64  `json:"number"`
 	HTMLURL string `json:"html_url"`
 	Body    string `json:"body"`
+	User    struct {
+		Login string `json:"login"`
+	} `json:"user"`
 }
 
 func newClient(cfg Config) (*client, error) {
@@ -115,6 +123,7 @@ func newClient(cfg Config) (*client, error) {
 	return &client{
 		baseURL: parsed, repository: repository,
 		credential: cfg.CredentialSource, http: httpClient,
+		botLogin: strings.TrimSpace(cfg.BotLogin),
 	}, nil
 }
 
@@ -162,7 +171,7 @@ func (c *client) findByMarker(ctx context.Context, marker string) (string, bool,
 	// created while reconciliation is walking the repository history.
 	query.Set("direction", "asc")
 	exact := "<!-- " + marker + " -->"
-	for page := 1; ; page++ {
+	for page := 1; page <= maxReconcilePages; page++ {
 		query.Set("page", fmt.Sprintf("%d", page))
 		parsed.RawQuery = query.Encode()
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
@@ -181,6 +190,9 @@ func (c *client) findByMarker(ctx context.Context, marker string) (string, bool,
 			if !strings.Contains(issue.Body, exact) {
 				continue
 			}
+			if c.botLogin != "" && !strings.EqualFold(issue.User.Login, c.botLogin) {
+				continue
+			}
 			reference := strings.TrimSpace(issue.HTMLURL)
 			if reference == "" && issue.Number > 0 {
 				reference = fmt.Sprintf("github:%s#%d", c.repository, issue.Number)
@@ -194,6 +206,9 @@ func (c *client) findByMarker(ctx context.Context, marker string) (string, bool,
 			return "", false, nil
 		}
 	}
+	// ponytail: a repository with more than maxReconcilePages*100 issues cannot be
+	// walked; fail closed rather than report "not found" and risk a duplicate.
+	return "", false, fmt.Errorf("GitHub reconciliation did not finish within %d pages", maxReconcilePages)
 }
 
 func (c *client) doJSON(req *http.Request, out any) (int, error) {

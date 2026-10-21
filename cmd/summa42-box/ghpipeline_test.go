@@ -229,7 +229,7 @@ func TestPipelineStageArgvParsesWithEachStageParser(t *testing.T) {
 		},
 		"triage-driver": func(args []string) error { _, err := parseGHTriageDriverFlags(args); return err },
 		"worker": func(args []string) error {
-			once, root, _, lease, model, err := parseWorkerArgs(args)
+			once, root, _, _, lease, model, err := parseWorkerArgs(args)
 			if err == nil && (!once || root != "/work" || lease != pipelineWorkerLease) {
 				err = fmt.Errorf("worker once=%v root=%q lease=%v", once, root, lease)
 			}

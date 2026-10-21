@@ -144,7 +144,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	feedbackSink, err := buildFeedbackSink(cfg)
+	feedbackSink, err := buildFeedbackSink(cfg, "")
 	if err != nil {
 		return err
 	}
@@ -371,20 +371,38 @@ func assessConfiguredProviders(ctx context.Context, assessor capabilityAssessor,
 	return err
 }
 
-func buildFeedbackSink(cfg localconfig.Config) (fieldfeedback.Sink, error) {
+var feedbackEnvDeprecation sync.Once
+
+// feedbackTokenFile prefers --credential-file; SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE
+// is a deprecated alias that logs once.
+func feedbackTokenFile(credentialFile string) string {
+	if file := strings.TrimSpace(credentialFile); file != "" {
+		return file
+	}
+	file := strings.TrimSpace(os.Getenv("SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE"))
+	if file != "" {
+		feedbackEnvDeprecation.Do(func() {
+			fmt.Fprintln(os.Stderr, "SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE is deprecated: use --credential-file")
+		})
+	}
+	return file
+}
+
+func buildFeedbackSink(cfg localconfig.Config, credentialFile string) (fieldfeedback.Sink, error) {
 	if !cfg.FieldFeedback.Enabled || cfg.FieldFeedback.Mode == localconfig.FeedbackModeLocalOnly {
 		return nil, nil
 	}
 	switch cfg.FieldFeedback.Provider {
 	case "github":
-		tokenFile := strings.TrimSpace(os.Getenv("SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE"))
+		tokenFile := feedbackTokenFile(credentialFile)
 		if tokenFile == "" {
-			return nil, errors.New("GitHub feedback export requires SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE")
+			return nil, errors.New("GitHub feedback export requires --credential-file (or the deprecated SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE)")
 		}
 		apiBaseURL := strings.TrimSpace(os.Getenv("SUMMA42_FEEDBACK_GITHUB_API_BASE_URL"))
 		sink, err := feedbackgithub.NewSink(feedbackgithub.Config{
 			APIBaseURL:       apiBaseURL,
 			Repository:       cfg.FieldFeedback.Destination,
+			BotLogin:         strings.TrimSpace(os.Getenv("SUMMA42_FEEDBACK_GITHUB_BOT_LOGIN")),
 			CredentialSource: feedbackgithub.FileCredentialSource{Path: tokenFile},
 		})
 		if err != nil {
@@ -553,25 +571,31 @@ func main() {
 	}
 }
 
-func parseWorkerFlags(args []string) (pollInterval time.Duration, leaseDuration time.Duration, modelConfig climodel.Config, err error) {
+func parseWorkerArgs(args []string) (once bool, workspaceRoot, credentialFile string, pollInterval, leaseDuration time.Duration, modelConfig climodel.Config, err error) {
 	flags := flag.NewFlagSet("run-worker", flag.ContinueOnError)
+	flags.BoolVar(&once, "once", false, "run one scheduler pass and exit")
+	flags.StringVar(&workspaceRoot, "workspace-root", "", "absolute directory for attempt workspaces")
+	flags.StringVar(&credentialFile, "credential-file", "", "private GitHub token file for feedback export (preferred over SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE)")
 	flags.DurationVar(&pollInterval, "poll-interval", 30*time.Second, "interval between scheduler polls")
 	flags.DurationVar(&leaseDuration, "lease-duration", 0, "attempt lease duration (0 uses Box default)")
 	registerTriageModelFlags(flags, "model binary classifying a triage issue")
-	if err := flags.Parse(args); err != nil {
-		return 0, 0, climodel.Config{}, err
+	if err = flags.Parse(args); err != nil {
+		return
 	}
 	if pollInterval <= 0 {
-		return 0, 0, climodel.Config{}, errors.New("run-worker requires a positive --poll-interval")
+		err = errors.New("run-worker requires a positive --poll-interval")
+		return
 	}
 	if leaseDuration < 0 {
-		return 0, 0, climodel.Config{}, errors.New("run-worker requires a non-negative --lease-duration")
+		err = errors.New("run-worker requires a non-negative --lease-duration")
+		return
+	}
+	if strings.TrimSpace(workspaceRoot) == "" {
+		err = errors.New("run-worker requires --workspace-root")
+		return
 	}
 	modelConfig, err = triageModelConfig(flags)
-	if err != nil {
-		return 0, 0, climodel.Config{}, err
-	}
-	return pollInterval, leaseDuration, modelConfig, nil
+	return
 }
 
 // registerTriageModelFlags puts the three model flags on a flag set, so the
@@ -781,27 +805,6 @@ func openWorkerBox(ctx context.Context, runtimeCfg summa42runtime.Config, modelC
 	return box, verdict, nil
 }
 
-func splitWorkspaceRootArg(args []string) (workspaceRoot string, rest []string, err error) {
-	rest = make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--workspace-root" {
-			if i+1 >= len(args) {
-				return "", nil, errors.New("run-worker requires a value for --workspace-root")
-			}
-			workspaceRoot = args[i+1]
-			i++
-			continue
-		}
-		if value, ok := strings.CutPrefix(arg, "--workspace-root="); ok {
-			workspaceRoot = value
-			continue
-		}
-		rest = append(rest, arg)
-	}
-	return workspaceRoot, rest, nil
-}
-
 func workerCapacity(box *summa42runtime.Box) (scheduler.CapacitySnapshot, error) {
 	capacity := scheduler.CapacityForExecutors(box.Executors)
 	if len(capacity.Executors) == 0 {
@@ -810,35 +813,11 @@ func workerCapacity(box *summa42runtime.Box) (scheduler.CapacitySnapshot, error)
 	return capacity, nil
 }
 
-// parseWorkerArgs is run-worker's whole argument parsing: --once and
-// --workspace-root, then parseWorkerFlags.
-func parseWorkerArgs(args []string) (once bool, workspaceRoot string, pollInterval, leaseDuration time.Duration, modelConfig climodel.Config, err error) {
-	filteredArgs := make([]string, 0, len(args))
-	for _, a := range args {
-		if a == "--once" {
-			once = true
-			continue
-		}
-		filteredArgs = append(filteredArgs, a)
-	}
-	workspaceRoot, rest, err := splitWorkspaceRootArg(filteredArgs)
-	if err != nil {
-		return
-	}
-	if pollInterval, leaseDuration, modelConfig, err = parseWorkerFlags(rest); err != nil {
-		return
-	}
-	if strings.TrimSpace(workspaceRoot) == "" {
-		err = errors.New("run-worker requires --workspace-root")
-	}
-	return
-}
-
 func runWorker(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	once, workspaceRoot, pollInterval, leaseDuration, modelConfig, err := parseWorkerArgs(args)
+	once, workspaceRoot, credentialFile, pollInterval, leaseDuration, modelConfig, err := parseWorkerArgs(args)
 	if err != nil {
 		return err
 	}
@@ -854,7 +833,7 @@ func runWorker(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	feedbackSink, err := buildFeedbackSink(cfg)
+	feedbackSink, err := buildFeedbackSink(cfg, credentialFile)
 	if err != nil {
 		return err
 	}
@@ -1051,7 +1030,7 @@ func runObserver(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	feedbackSink, err := buildFeedbackSink(cfg)
+	feedbackSink, err := buildFeedbackSink(cfg, "")
 	if err != nil {
 		return err
 	}
@@ -1095,6 +1074,7 @@ func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, er
 	var pollInterval time.Duration
 	var once bool
 	var botLogin string
+	var credentialFile string
 
 	flags := flag.NewFlagSet("run-gh-intake", flag.ContinueOnError)
 	flags.StringVar(&mission, "mission", "", "mission ID for GitHub issue cases")
@@ -1104,6 +1084,7 @@ func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, er
 	flags.Var(&grantActions, "grant-action", "action granted to issue cases (repeatable; must also be a --grant-capability)")
 	flags.Var(&workCaps, "work-capability", "additional work capability (repeatable)")
 	flags.StringVar(&botLogin, "bot-login", "", "GitHub App bot login whose comments must not create new issue revisions (optional)")
+	flags.StringVar(&credentialFile, "credential-file", "", "private GitHub token file (preferred over SUMMA42_GITHUB_TOKEN_FILE)")
 	flags.BoolVar(&once, "once", false, "run one observe pass and exit")
 	flags.StringVar(&envelope, "envelope", "", "resource envelope ID for triage tasks")
 	flags.IntVar(&maxSteps, "max-steps", 3, "maximum workflow steps per issue case")
@@ -1186,6 +1167,7 @@ func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, er
 	cfg.Grant = workflow.Grant{Capabilities: capabilities, Actions: actions}
 	cfg.Once = once
 	cfg.BotLogin = strings.TrimSpace(botLogin)
+	cfg.CredentialFile = strings.TrimSpace(credentialFile)
 	cfg.WorkCapabilities = work
 	cfg.ResourceEnvelopeID = domain.ID(strings.TrimSpace(envelope))
 	cfg.MaxSteps = maxSteps
@@ -1212,11 +1194,15 @@ func openGHIntakeBox(ctx context.Context, cfg summa42runtime.Config) (*summa42ru
 // resolved repository and the environment. BaseURL stays unset so the client
 // applies its api.github.com default: the loopback override is a test seam the
 // CLI cannot reach.
-func ghIntakeClientConfig(repository, botLogin string) ghissue.Config {
+func ghIntakeClientConfig(repository, botLogin, credentialFile string) ghissue.Config {
+	tokenFile := strings.TrimSpace(credentialFile)
+	if tokenFile == "" {
+		tokenFile = strings.TrimSpace(os.Getenv("SUMMA42_GITHUB_TOKEN_FILE"))
+	}
 	return ghissue.Config{
 		Repository: repository,
 		BotLogin:   botLogin,
-		TokenFile:  strings.TrimSpace(os.Getenv("SUMMA42_GITHUB_TOKEN_FILE")),
+		TokenFile:  tokenFile,
 	}
 }
 
@@ -1294,7 +1280,7 @@ func runGHIntake(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	client, err := ghissue.New(ghIntakeClientConfig(observerCfg.Repository, observerCfg.BotLogin))
+	client, err := ghissue.New(ghIntakeClientConfig(observerCfg.Repository, observerCfg.BotLogin, observerCfg.CredentialFile))
 	if err != nil {
 		return fmt.Errorf("construct read-only GitHub issues client: %w", err)
 	}
@@ -1366,7 +1352,7 @@ func runDriver(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	feedbackSink, err := buildFeedbackSink(cfg)
+	feedbackSink, err := buildFeedbackSink(cfg, "")
 	if err != nil {
 		return err
 	}
@@ -1542,22 +1528,6 @@ func parseGHTriageReviewFlags(args []string) (domain.ID, climodel.Config, error)
 	return domain.ID(strings.TrimSpace(mission)), modelConfig, nil
 }
 
-// runGHTriageReview reviews every GitHub case of the mission once per observed
-// state - that is, once per (decision, reviewer version, case state and latest
-// assessment) it has not already recorded - and prints the result as JSON on
-// stdout. A per-case failure is reported inside
-// that JSON and on stderr, and it decides the exit code, because the reviewer
-// records nothing for a case it could not review, and the case is not marked
-// reviewed, so the next tick tries it again: the exit code is the only signal an
-// operator gating on it alone ever gets that a case is failing. The result is
-// encoded before the failure is reported, so the verdicts the tick did write are
-// on stdout either way.
-//
-// The box is the driver's composition - no executor, no capability provider, no
-// operation provider - because the reviewer changes nothing and calls none of
-// them. It is not the worker's: the model is handed to the reviewer directly
-// rather than registered as an executor, so a missing model is this command's
-// error and not a box that starts without a triage kind.
 // plannerConfig reserves tick budget by the operator's --model-timeout.
 func plannerConfig(modelConfig climodel.Config) ghtriage.PlannerConfig {
 	return ghtriage.PlannerConfig{ModelTimeout: modelConfig.Timeout}
@@ -1638,6 +1608,22 @@ func runGHPlan(ctx context.Context, args []string) error {
 	return nil
 }
 
+// runGHTriageReview reviews every GitHub case of the mission once per observed
+// state - that is, once per (decision, reviewer version, case state and latest
+// assessment) it has not already recorded - and prints the result as JSON on
+// stdout. A per-case failure is reported inside
+// that JSON and on stderr, and it decides the exit code, because the reviewer
+// records nothing for a case it could not review, and the case is not marked
+// reviewed, so the next tick tries it again: the exit code is the only signal an
+// operator gating on it alone ever gets that a case is failing. The result is
+// encoded before the failure is reported, so the verdicts the tick did write are
+// on stdout either way.
+//
+// The box is the driver's composition - no executor, no capability provider, no
+// operation provider - because the reviewer changes nothing and calls none of
+// them. It is not the worker's: the model is handed to the reviewer directly
+// rather than registered as an executor, so a missing model is this command's
+// error and not a box that starts without a triage kind.
 func runGHTriageReview(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
@@ -1765,7 +1751,7 @@ func runFinalVerifier(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	feedbackSink, err := buildFeedbackSink(cfg)
+	feedbackSink, err := buildFeedbackSink(cfg, "")
 	if err != nil {
 		return err
 	}

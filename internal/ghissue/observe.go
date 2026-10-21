@@ -43,6 +43,9 @@ type ObserveConfig struct {
 	BotLogin string
 	// Once makes RunReporting run a single observe pass and return its result.
 	Once bool
+	// CredentialFile is the CLI's --credential-file, carried to the client
+	// configuration; the observer itself never reads it.
+	CredentialFile string
 }
 
 // normalized trims and deduplicates every string collection so validation,

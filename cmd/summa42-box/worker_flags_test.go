@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/executors"
+	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 	summa42runtime "github.com/SofiaFlux/summa42/internal/runtime"
 )
 
@@ -64,52 +65,30 @@ func TestParseWorkerFlagsRejectsUnusableModelValues(t *testing.T) {
 	}
 }
 
-func TestSplitWorkspaceRootArgEqualsForm(t *testing.T) {
-	root, rest, err := splitWorkspaceRootArg([]string{"--workspace-root=/tmp/ws", "--poll-interval=5s"})
+// parseWorkerFlags parses the model and timing flags with a dummy workspace root.
+func parseWorkerFlags(args []string) (time.Duration, time.Duration, climodel.Config, error) {
+	_, _, _, poll, lease, model, err := parseWorkerArgs(append([]string{"--workspace-root=/ws"}, args...))
+	return poll, lease, model, err
+}
+
+func TestWorkerOnceInsideModelArgIsPreserved(t *testing.T) {
+	once, root, _, _, _, model, err := parseWorkerArgs([]string{"--workspace-root", "/ws", "--model-arg=exec", "--model-arg", "--once"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if root != "/tmp/ws" {
-		t.Fatalf("root = %q, want /tmp/ws", root)
+	if once {
+		t.Fatal("--once consumed from inside a --model-arg value")
 	}
-	if len(rest) != 1 || rest[0] != "--poll-interval=5s" {
-		t.Fatalf("rest = %v, want [--poll-interval=5s]", rest)
+	if root != "/ws" || len(model.Args) != 2 || model.Args[1] != "--once" {
+		t.Fatalf("root=%q model args=%v, want /ws and [exec --once]", root, model.Args)
 	}
-}
-
-func TestSplitWorkspaceRootArgSeparateForm(t *testing.T) {
-	root, rest, err := splitWorkspaceRootArg([]string{"--workspace-root", "/tmp/ws", "--poll-interval=5s"})
-	if err != nil {
-		t.Fatal(err)
+	once, _, _, _, _, _, err = parseWorkerArgs([]string{"--once", "--workspace-root=/ws"})
+	if err != nil || !once {
+		t.Fatalf("once=%v err=%v, want true", once, err)
 	}
-	if root != "/tmp/ws" {
-		t.Fatalf("root = %q, want /tmp/ws", root)
+	if _, _, _, _, _, _, err = parseWorkerArgs([]string{"--once"}); err == nil {
+		t.Fatal("missing --workspace-root accepted")
 	}
-	if len(rest) != 1 || rest[0] != "--poll-interval=5s" {
-		t.Fatalf("rest = %v, want [--poll-interval=5s]", rest)
-	}
-}
-
-func TestSplitWorkspaceRootArgMissingValue(t *testing.T) {
-	if _, _, err := splitWorkspaceRootArg([]string{"--workspace-root"}); err == nil {
-		t.Fatal("expected error for missing --workspace-root value")
-	}
-}
-
-func TestSplitWorkspaceRootArgEmptyReject(t *testing.T) {
-	root, _, err := splitWorkspaceRootArg([]string{"--workspace-root="})
-	if err != nil {
-		return
-	}
-	if strings.TrimSpace(root) != "" {
-		t.Fatalf("root = %q, want empty", root)
-	}
-	if strings.TrimSpace(root) == "" {
-		// runWorker rejects an empty workspace root; split must surface it as empty
-		// so the caller-side guard triggers.
-		return
-	}
-	t.Fatal("expected empty workspace root to be rejected downstream")
 }
 
 func TestWorkerCapacityEmptyRegistryErrors(t *testing.T) {
@@ -118,5 +97,29 @@ func TestWorkerCapacityEmptyRegistryErrors(t *testing.T) {
 		t.Fatal("expected explicit error for empty executor registry")
 	} else if !strings.Contains(err.Error(), "no schedulable capabilities") {
 		t.Fatalf("error = %q, want explicit empty-registry message", err)
+	}
+}
+
+func TestWorkerCredentialFileFlag(t *testing.T) {
+	_, _, cred, _, _, _, err := parseWorkerArgs([]string{"--workspace-root=/ws", "--credential-file=/tok"})
+	if err != nil || cred != "/tok" {
+		t.Fatalf("cred=%q err=%v", cred, err)
+	}
+}
+
+func TestFeedbackTokenFilePrefersFlagOverDeprecatedEnv(t *testing.T) {
+	t.Setenv("SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE", "/env")
+	if got := feedbackTokenFile(" /flag "); got != "/flag" {
+		t.Fatalf("got %q, want /flag", got)
+	}
+	if got := feedbackTokenFile(""); got != "/env" {
+		t.Fatalf("got %q, want /env alias", got)
+	}
+}
+
+func TestGHIntakeCredentialFilePreferredOverEnv(t *testing.T) {
+	t.Setenv("SUMMA42_GITHUB_TOKEN_FILE", "/env")
+	if got := ghIntakeClientConfig("o/r", "", "/flag").TokenFile; got != "/flag" {
+		t.Fatalf("token file = %q, want /flag", got)
 	}
 }

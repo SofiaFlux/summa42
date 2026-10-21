@@ -22,7 +22,7 @@ class ValidationError(Exception):
 def github_anchor(heading: str) -> str:
     """Return the lowercase, hyphenated anchor GitHub derives from a heading."""
     normalized = heading.strip().lower()
-    normalized = re.sub(r"[^a-z0-9\s-]", "", normalized)
+    normalized = re.sub(r"[^a-z0-9_\s-]", "", normalized)
     normalized = re.sub(r"\s+", "-", normalized)
     return normalized
 
@@ -54,6 +54,14 @@ def markdown_anchors(path: Path) -> set[str]:
     return anchors
 
 
+def repo_root(source: Path) -> Path:
+    """Return the nearest ancestor holding .git or go.mod, else the source's directory."""
+    for candidate in source.resolve().parents:
+        if (candidate / ".git").exists() or (candidate / "go.mod").exists():
+            return candidate
+    return source.resolve().parent
+
+
 def local_link_target(source: Path, destination: str) -> tuple[Path, str | None] | None:
     """Return a local target and optional fragment, ignoring external links."""
     destination = destination.strip()
@@ -61,7 +69,12 @@ def local_link_target(source: Path, destination: str) -> tuple[Path, str | None]
     if re.match(r"(?:https?|mailto):", destination, flags=re.IGNORECASE):
         return None
     path_text, separator, fragment = destination.partition("#")
-    target = source if not path_text else source.parent / unquote(path_text)
+    if not path_text:
+        target = source
+    elif path_text.startswith("/"):
+        target = repo_root(source) / unquote(path_text).lstrip("/")
+    else:
+        target = source.parent / unquote(path_text)
     return target, unquote(fragment) if separator else None
 
 
