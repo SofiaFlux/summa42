@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.request
 import jwt
@@ -72,7 +73,9 @@ def main():
     if args.refresh_if_older_than is not None and os.path.exists(TOKEN_FILE_PATH):
         age = time.time() - os.path.getmtime(TOKEN_FILE_PATH)
         if age < args.refresh_if_older_than:
-            print(f"Token file is {int(age)}s old (< {args.refresh_if_older_than}s); not refreshing.")
+            # Status goes to stderr so `TOKEN=$(... -p ...)` captures only the token.
+            print(f"Token file is {int(age)}s old (< {args.refresh_if_older_than}s); not refreshing.",
+                  file=sys.stderr)
             if args.print_token:
                 with open(TOKEN_FILE_PATH, "r") as f:
                     print(f.read().strip())
@@ -131,12 +134,23 @@ def main():
     token = token_data.get("token")
     expires_at = token_data.get("expires_at")
 
+    # Validate before touching the existing token file, so a bad response never clobbers it.
+    if not isinstance(token, str) or not token.strip():
+        print("Error: GitHub returned no usable token; existing token file left unchanged.", file=sys.stderr)
+        sys.exit(1)
+
     os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
-    # Mode is applied at open time, so the token is never world-readable, even briefly.
-    fd = os.open(TOKEN_FILE_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        os.fchmod(f.fileno(), 0o600)  # also tightens a pre-existing file
-        f.write(token.strip())
+    # mkstemp creates the temp file with mode 0600 at open time, in the same directory,
+    # so os.replace is an atomic swap and the token is never world-readable.
+    fd, tmp_path = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".github_token.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(token.strip())
+        os.replace(tmp_path, TOKEN_FILE_PATH)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
 
     if args.print_token:
         print(token)

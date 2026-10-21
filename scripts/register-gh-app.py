@@ -116,7 +116,7 @@ class ManifestHandler(http.server.BaseHTTPRequestHandler):
         elif parsed.path == "/callback":
             params = urllib.parse.parse_qs(parsed.query)
             state = params.get("state", [""])[0]
-            if not hmac.compare_digest(state, self.server.expected_state):
+            if not hmac.compare_digest(state.encode("utf-8"), self.server.expected_state.encode("utf-8")):
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(b"State mismatch; callback rejected.")

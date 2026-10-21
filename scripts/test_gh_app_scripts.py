@@ -10,7 +10,9 @@ Run with:
 The GitHub HTTP layer and JWT signing are stubbed; nothing calls GitHub.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import stat
@@ -82,11 +84,40 @@ class GhAppTokenTests(unittest.TestCase):
                                return_value={"token": "ghs_test", "expires_at": "later"}), \
              mock.patch.object(token_mod.os, "open", wraps=real_open) as open_spy:
             self._run_main()
-        # The token file must be opened with 0600 in the same call, not chmod'd afterwards.
-        open_spy.assert_any_call(self.token_file, mock.ANY, 0o600)
+        # The temp file must be created with 0600 in the same open() call, not chmod'd afterwards.
+        modes = [c.args[2] for c in open_spy.call_args_list if len(c.args) >= 3]
+        self.assertIn(0o600, modes)
         self.assertEqual(stat.S_IMODE(os.stat(self.token_file).st_mode), 0o600)
         with open(self.token_file) as f:
             self.assertEqual(f.read(), "ghs_test")
+        # No temp files left behind after the atomic replace.
+        self.assertEqual(sorted(os.listdir(self.config_dir)),
+                         sorted(["gh-app.json", "gh-app.pem", "github_token"]))
+
+    def test_bad_token_leaves_existing_token_file_untouched(self):
+        self._write_meta(installation_id=42)
+        with open(self.token_file, "w") as f:
+            f.write("ghs_old")
+        for bad in [{}, {"token": None}, {"token": ""}, {"token": "   "}, {"token": 123}]:
+            with self.subTest(response=bad), \
+                 mock.patch.object(token_mod, "get_installation_token", return_value=bad), \
+                 mock.patch("sys.stderr"):
+                with self.assertRaises(SystemExit) as cm:
+                    self._run_main()
+                self.assertEqual(cm.exception.code, 1)
+                with open(self.token_file) as f:
+                    self.assertEqual(f.read(), "ghs_old")
+
+    def test_print_token_with_fresh_file_writes_only_token_to_stdout(self):
+        with open(self.token_file, "w") as f:
+            f.write("ghs_fresh")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(token_mod, "get_installation_token") as get_tok, \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self._run_main(["gh-app-token.py", "-p", "--refresh-if-older-than", "50m"])
+        get_tok.assert_not_called()
+        self.assertEqual(out.getvalue(), "ghs_fresh\n")
+        self.assertIn("not refreshing", err.getvalue())
 
     def test_missing_expected_account_is_an_error_not_first_installation(self):
         self._write_meta()
@@ -154,6 +185,10 @@ class RegisterGhAppTests(unittest.TestCase):
 
     def test_missing_state_is_rejected(self):
         self.assertEqual(self._get("code=abc"), 400)
+        self.assertIsNone(register_mod.captured_code)
+
+    def test_non_ascii_state_is_rejected_not_raised(self):
+        self.assertEqual(self._get("code=abc&state=%C3%A9"), 400)
         self.assertIsNone(register_mod.captured_code)
 
     def test_correct_state_captures_code(self):
