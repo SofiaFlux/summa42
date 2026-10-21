@@ -163,7 +163,19 @@ func prefixFixture(t *testing.T) ghtriage.GroundingConfig {
 		}
 		return strings.TrimSpace(string(raw))
 	}
-	git("add", "internal/purpose/research.go")
+	for _, name := range []string{"a/a.go", "ab/x.go"} {
+		full := filepath.Join(dir, "internal", filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(full), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("package x\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("purpose", filepath.Join(dir, "internal", "link")); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "internal")
 	git("commit", "-qm", "purpose")
 	cfg.Source.Commit = git("rev-parse", "HEAD")
 	cfg.Source.Paths = nil
@@ -172,21 +184,25 @@ func prefixFixture(t *testing.T) ghtriage.GroundingConfig {
 	return cfg
 }
 
-func prefixPlanner(t *testing.T, selection ghtriage.FileSelection) (*driverFixture, *selectingModel, *ghtriage.Planner) {
+func prefixPlanner(t *testing.T, selection ghtriage.FileSelection, prefixes ...string) (*driverFixture, *selectingModel, *ghtriage.Planner) {
 	t.Helper()
 	f, inner := readyPlannerFixture(t)
 	model := &selectingModel{plannerModel: inner, selection: selection}
 	planner := ghtriage.NewPlanner(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model)
-	if err := planner.SetGrounding(prefixFixture(t)); err != nil {
+	cfg := prefixFixture(t)
+	if len(prefixes) > 0 {
+		cfg.AllowedPrefixes = prefixes
+	}
+	if err := planner.SetGrounding(cfg); err != nil {
 		t.Fatal(err)
 	}
 	return f, model, planner
 }
 
 // rejectedSelection asserts the tick failed before the plan call and recorded a counted validation failure.
-func rejectedSelection(t *testing.T, selection ghtriage.FileSelection) {
+func rejectedSelection(t *testing.T, selection ghtriage.FileSelection, prefixes ...string) {
 	t.Helper()
-	f, model, planner := prefixPlanner(t, selection)
+	f, model, planner := prefixPlanner(t, selection, prefixes...)
 	result, err := planner.Tick(f.ctx, f.missionID)
 	if err != nil || result.Planned != 0 || len(result.Failures) != 1 || model.selCalls != 1 || model.calls != 0 {
 		t.Fatalf("selection %+v accepted: result=%+v sel=%d plan=%d err=%v", selection, result, model.selCalls, model.calls, err)
@@ -240,7 +256,7 @@ func TestPrefixModeRecordsSelectedPathsInPlanSource(t *testing.T) {
 		t.Fatalf("%+v %v", result, err)
 	}
 	if in := model.selInput; in.Schema != ghtriage.FileSelectionSchema || in.Snapshot.Title != "Crash on save" ||
-		strings.Join(in.TrackedFiles, ",") != "internal/purpose/research.go" {
+		strings.Join(in.TrackedFiles, ",") != "internal/a/a.go,internal/ab/x.go,internal/purpose/research.go" {
 		t.Fatalf("selection input %+v", in)
 	}
 	p, _ := storedPlan(t, f)
@@ -250,5 +266,27 @@ func TestPrefixModeRecordsSelectedPathsInPlanSource(t *testing.T) {
 	files := model.input.Grounding.Context.Files
 	if len(files) != 1 || files[0].Path != "internal/purpose/research.go" {
 		t.Fatalf("context files %+v", files)
+	}
+}
+
+func TestFileSelectionRejectsGitComponent(t *testing.T) {
+	research := []string{"internal/purpose/research.go"}
+	for _, p := range []string{"internal/x/.git/hooks/y", "internal/.GIT/config", "internal/purpose/.Git"} {
+		rejectedSelection(t, ghtriage.FileSelection{ContextFiles: research, AllowedPaths: []string{p}})
+	}
+}
+
+func TestFileSelectionRejectsSiblingPrefix(t *testing.T) {
+	rejectedSelection(t, ghtriage.FileSelection{ContextFiles: []string{"internal/a/a.go"}, AllowedPaths: []string{"internal/ab/x.go"}}, "internal/a/")
+}
+
+func TestPrefixMustBeTrackedDirectory(t *testing.T) {
+	research := []string{"internal/purpose/research.go"}
+	for _, prefix := range []string{"internal/link/", "internal/purpose/research.go/", "missing/", "internal/link/sub/"} {
+		f, model, planner := prefixPlanner(t, ghtriage.FileSelection{ContextFiles: research, AllowedPaths: research}, prefix)
+		result, err := planner.Tick(f.ctx, f.missionID)
+		if err != nil || result.Planned != 0 || len(result.Failures) != 1 || model.selCalls != 0 {
+			t.Fatalf("prefix %q: result=%+v selCalls=%d err=%v", prefix, result, model.selCalls, err)
+		}
 	}
 }

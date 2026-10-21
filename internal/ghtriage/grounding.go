@@ -212,6 +212,11 @@ func checkSelection(s FileSelection, cfg *GroundingConfig, tracked map[string]bo
 		return err
 	}
 	under := func(p string) bool {
+		for _, part := range strings.Split(p, "/") {
+			if strings.EqualFold(part, ".git") {
+				return false // never let a model-chosen path reach Git metadata
+			}
+		}
 		for _, prefix := range cfg.AllowedPrefixes {
 			if strings.HasPrefix(p, prefix) {
 				return true

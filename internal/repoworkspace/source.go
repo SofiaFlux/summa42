@@ -212,11 +212,24 @@ func Checkout(ctx context.Context, cfg Config, destination string) (Snapshot, er
 }
 
 // TrackedFiles lists the paths tracked under prefixes at commit, mapped to
-// whether each is a regular file (not a symlink or submodule).
+// whether each is a regular file (not a symlink or submodule). Each prefix and
+// every ancestor must be a tracked directory, and each prefix must hold entries.
 // ponytail: the listing shares the 256 KiB Git output cap; an oversized prefix fails closed.
 func TrackedFiles(ctx context.Context, localPath, commit string, prefixes []string) (map[string]bool, error) {
 	if !FullCommit(commit) || !filepath.IsAbs(localPath) || len(prefixes) < 1 {
 		return nil, errors.New("explicit absolute local repository, full commit and prefixes required")
+	}
+	for _, prefix := range prefixes {
+		dir := strings.TrimSuffix(prefix, "/")
+		for p := dir; p != "."; p = path.Dir(p) {
+			entry, err := git(ctx, localPath, "ls-tree", "-z", commit, "--", p)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.HasPrefix(string(entry), "040000 tree ") || !strings.HasSuffix(string(entry), "\t"+p+"\x00") {
+				return nil, fmt.Errorf("prefix %q: %q is not a tracked directory", prefix, p)
+			}
+		}
 	}
 	raw, err := git(ctx, localPath, append([]string{"ls-tree", "-r", "-z", commit, "--"}, prefixes...)...)
 	if err != nil {
@@ -233,6 +246,18 @@ func TrackedFiles(ctx context.Context, localPath, commit string, prefixes []stri
 			return nil, errors.New("unexpected git ls-tree output")
 		}
 		files[name] = (fields[0] == "100644" || fields[0] == "100755") && fields[1] == "blob"
+	}
+	for _, prefix := range prefixes {
+		empty := true
+		for name := range files {
+			if strings.HasPrefix(name, prefix) {
+				empty = false
+				break
+			}
+		}
+		if empty {
+			return nil, fmt.Errorf("prefix %q holds no tracked entries", prefix)
+		}
 	}
 	return files, nil
 }
