@@ -95,10 +95,10 @@ func (s *Service) Preference(ctx context.Context,q PreferenceQuery)(Preference,b
 	if err:=s.configured();err!=nil{return Preference{},false,err}
 	q.ScopeKey=strings.TrimSpace(q.ScopeKey)
 	if q.ScopeKey==""{return Preference{},false,errors.New("preference scope is required")}
-	args:=[]any{q.ScopeKey,domain.ExperienceActive,formatTime(s.clock.Now().UTC())}
+	args:=[]any{q.ScopeKey,AdaptationExecutorPreference,domain.ExperienceActive,formatTime(s.clock.Now().UTC())}
 	query:="WITH latest AS ("+
 		"SELECT r.*, ROW_NUMBER() OVER (PARTITION BY r.proposal_id ORDER BY r.version DESC) AS rn FROM experience_rules r"+
-		") SELECT r.rule_id, r.preferred_executor FROM latest r JOIN adaptation_grants g ON g.grant_id = r.grant_id WHERE r.rn = 1 AND r.scope_key = ? AND r.state = ? AND g.expires_at > ?"
+		") SELECT r.rule_id, r.preferred_executor FROM latest r JOIN adaptation_grants g ON g.grant_id = r.grant_id WHERE r.rn = 1 AND r.scope_key = ? AND r.adaptation_kind = ? AND r.state = ? AND g.expires_at > ?"
 	if q.GenericTaskClass!=""{
 		if !q.GenericTaskClass.Valid(){return Preference{},false,errors.New("invalid preference task class")}
 		query+=" AND r.generic_task_class = ?";args=append(args,q.GenericTaskClass)
@@ -110,7 +110,14 @@ func (s *Service) Preference(ctx context.Context,q PreferenceQuery)(Preference,b
 	for rows.Next(){var p Preference;if err:=rows.Scan(&p.RuleID,&p.ExecutorKind);err!=nil{return Preference{},false,err};out=append(out,p)}
 	if err:=rows.Err();err!=nil{return Preference{},false,err}
 	if len(out)==0{return Preference{},false,nil}
-	if len(out)>1&&out[0].ExecutorKind!=out[1].ExecutorKind{return Preference{},false,errors.New("ambiguous active experience preferences")}
+	if len(out)>1&&out[0].ExecutorKind!=out[1].ExecutorKind{
+		// Ambiguity is not an error: fall back to the baseline and leave an audit record.
+		_,_ = s.audit.Append(ctx,audit.Event{
+			Kind:"EXPERIENCE_PREFERENCE_AMBIGUOUS",ActorID:"experience-service",SubjectID:domain.ID(q.ScopeKey),
+			Payload:map[string]any{"scope_key":q.ScopeKey,"rule_ids":[]domain.ID{out[0].RuleID,out[1].RuleID},"executors":[]string{out[0].ExecutorKind,out[1].ExecutorKind}},
+		})
+		return Preference{},false,nil
+	}
 	return out[0],true,nil
 }
 

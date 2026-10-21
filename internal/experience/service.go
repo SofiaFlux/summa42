@@ -21,7 +21,6 @@ import (
 
 const (
 	AdaptationExecutorPreference = "EXECUTOR_PREFERENCE"
-	AdaptationAuthorityPromotion = "AUTHORITY_PROMOTION"
 )
 
 type GrantInput struct {
@@ -247,7 +246,7 @@ func (s *Service) Propose(ctx context.Context, input ProposalInput) (domain.Expe
 	if !grant.ExpiresAt.After(s.clock.Now().UTC()) {
 		return domain.ExperienceProposal{}, errors.New("adaptation grant expired")
 	}
-	if grant.Kind != AdaptationExecutorPreference && grant.Kind != AdaptationAuthorityPromotion {
+	if grant.Kind != AdaptationExecutorPreference {
 		return domain.ExperienceProposal{}, errors.New("grant does not authorize adaptation")
 	}
 	canonicalScope := strings.TrimSpace(grant.ScopeKey)
@@ -462,8 +461,8 @@ func normalizeGrantInput(input GrantInput, now time.Time) (GrantInput, []byte, s
 	input.Kind = strings.TrimSpace(input.Kind)
 	input.ScopeKey = strings.TrimSpace(input.ScopeKey)
 	input.AllowedExecutors = cleanStrings(input.AllowedExecutors)
-	if input.Kind != AdaptationExecutorPreference && input.Kind != AdaptationAuthorityPromotion {
-		return GrantInput{}, nil, "", errors.New("only EXECUTOR_PREFERENCE and AUTHORITY_PROMOTION adaptations are permitted")
+	if input.Kind != AdaptationExecutorPreference {
+		return GrantInput{}, nil, "", errors.New("only EXECUTOR_PREFERENCE adaptation is permitted")
 	}
 	if input.ScopeKey == "" || len(input.AllowedExecutors) == 0 || input.MinVerifiedSamples <= 0 {
 		return GrantInput{}, nil, "", errors.New("grant requires scope, allowed executors, and positive sample threshold")
@@ -539,38 +538,6 @@ func nullableInt(v *int64) any {
 	return *v
 }
 func formatTime(v time.Time) string { return v.UTC().Format(time.RFC3339Nano) }
-
-// HasAuthorityPromotion returns true if an active, unexpired experience rule has promoted
-// autonomous authority for the specified scope key without regression.
-func (s *Service) HasAuthorityPromotion(ctx context.Context, scopeKey string) (bool, domain.ID, error) {
-	if err := s.configured(); err != nil {
-		return false, "", err
-	}
-	scopeKey = strings.TrimSpace(scopeKey)
-	if scopeKey == "" {
-		return false, "", errors.New("scope key is required")
-	}
-	var ruleID domain.ID
-	query := `WITH latest AS (
-		SELECT r.*, ROW_NUMBER() OVER (PARTITION BY r.proposal_id ORDER BY r.version DESC) AS rn
-		FROM experience_rules r
-		WHERE r.scope_key = ? AND r.adaptation_kind = ?
-	)
-	SELECT l.rule_id FROM latest l
-	JOIN adaptation_grants g ON g.grant_id = l.grant_id
-	WHERE l.rn = 1 AND l.state = ? AND g.expires_at > ?
-	LIMIT 1`
-	err := s.store.DB().QueryRowContext(ctx, query,
-		scopeKey, AdaptationAuthorityPromotion, domain.ExperienceActive, formatTime(s.clock.Now().UTC()),
-	).Scan(&ruleID)
-	if err == nil {
-		return true, ruleID, nil
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, "", nil
-	}
-	return false, "", err
-}
 
 func (s *Service) configured() error {
 	if s == nil || s.store == nil || s.store.DB() == nil || s.clock == nil || s.approvals == nil || s.audit == nil || s.ownerID == "" {

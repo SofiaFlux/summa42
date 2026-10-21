@@ -3,6 +3,7 @@ package experience
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,4 +104,66 @@ func insertVerifiedTask(t *testing.T,svc *Service,name,executor string,accepted 
 			domain.NewID("event"),taskID,attemptID,now);err!=nil{t.Fatal(err)}
 	}
 	return taskID
+}
+
+func TestAuthorityPromotionKindRejected(t *testing.T) {
+	svc, _, clk := newExpHarness(t)
+	ctx := context.Background()
+	if _, err := svc.RequestGrant(ctx, GrantInput{
+		Kind: "AUTHORITY_PROMOTION", ScopeKey: "github.pr.review", AllowedExecutors: []string{"copilot"},
+		MinVerifiedSamples: 2, ExpiresAt: clk.Now().Add(24 * time.Hour),
+	}, "requester-1"); err == nil {
+		t.Fatal("AUTHORITY_PROMOTION grant accepted")
+	}
+	// The DB trigger rejects it even when the Go check is bypassed.
+	_, err := svc.store.DB().Exec(`INSERT INTO adaptation_grants(grant_id, grant_request_id, adaptation_kind, scope_key, allowed_executors_json, min_verified_samples, max_acceptance_regression_bps, max_cost_regression_bps, owner_principal_id, expires_at, activated_at)
+		VALUES ('g-auth','r-auth','AUTHORITY_PROMOTION','s','["x"]',1,0,0,'owner','2030-01-01T00:00:00Z','2026-01-01T00:00:00Z')`)
+	if err == nil || !strings.Contains(err.Error(), "only EXECUTOR_PREFERENCE adaptation is permitted") {
+		t.Fatalf("grant trigger err=%v", err)
+	}
+	_, err = svc.store.DB().Exec(`INSERT INTO experience_rules(rule_id, proposal_id, grant_id, version, adaptation_kind, scope_key, generic_task_class, preferred_executor, state, verified_samples, created_at, updated_at)
+		VALUES ('rule-auth','p','g',1,'AUTHORITY_PROMOTION','s','REVIEW','x','ACTIVE',1,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`)
+	if err == nil || !strings.Contains(err.Error(), "only EXECUTOR_PREFERENCE adaptation is permitted") {
+		t.Fatalf("rule trigger err=%v", err)
+	}
+}
+
+func TestAmbiguousPreferenceFallsBackToBaseline(t *testing.T) {
+	svc, ap, clk := newExpHarness(t)
+	ctx := context.Background()
+	req, err := svc.RequestGrant(ctx, GrantInput{
+		Kind: AdaptationExecutorPreference, ScopeKey: "repo.review", AllowedExecutors: []string{"codex", "claude"},
+		MinVerifiedSamples: 1, ExpiresAt: clk.Now().Add(24 * time.Hour),
+	}, "requester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ap.Approve(ctx, req.ApprovalID, "owner-1", req.Digest); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := svc.ActivateGrant(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := formatTime(clk.Now().UTC())
+	for i, exec := range []string{"codex", "claude"} {
+		pid := fmt.Sprintf("p%d", i)
+		if _, err := svc.store.DB().Exec(`INSERT INTO experience_proposals(proposal_id, grant_id, generic_task_class, scope_key, preferred_executor, state, created_at, updated_at) VALUES (?, ?, 'REVIEW', 'repo.review', ?, 'ACTIVE', ?, ?)`, pid, grant.ID, exec, now, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.store.DB().Exec(`INSERT INTO experience_rules(rule_id, proposal_id, grant_id, version, adaptation_kind, scope_key, generic_task_class, preferred_executor, state, verified_samples, activated_at, created_at, updated_at) VALUES (?, ?, ?, 1, 'EXECUTOR_PREFERENCE', 'repo.review', 'REVIEW', ?, 'ACTIVE', 1, ?, ?, ?)`, "rule"+pid, pid, grant.ID, exec, now, now, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, found, err := svc.Preference(ctx, PreferenceQuery{ScopeKey: "repo.review"})
+	if err != nil || found {
+		t.Fatalf("ambiguous preference found=%v err=%v", found, err)
+	}
+	if _, found, err := svc.PreferredExecutor(ctx, domain.Task{TaskClass: "repo.review"}, []string{"codex", "claude"}); err != nil || found {
+		t.Fatalf("PreferredExecutor found=%v err=%v", found, err)
+	}
+	var n int
+	if err := svc.store.DB().QueryRow(`SELECT count(*) FROM audit_events WHERE kind = 'EXPERIENCE_PREFERENCE_AMBIGUOUS'`).Scan(&n); err != nil || n == 0 {
+		t.Fatalf("ambiguity audit events=%d err=%v", n, err)
+	}
 }

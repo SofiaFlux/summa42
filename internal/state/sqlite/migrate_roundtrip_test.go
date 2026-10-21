@@ -440,3 +440,65 @@ func TestMigration00015RejectsDuplicateVerificationCase(t *testing.T) {
 		t.Fatalf("verification rows=%d,want 1", count)
 	}
 }
+
+func TestMigration00021RollsBackNonPreferenceRulesAndEnforcesKind(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "adaptation-kind.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB().Close()
+	migrations, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := goose.NewProvider(goose.DialectSQLite3, store.DB(), migrations, goose.WithTableName("schema_migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, 20); err != nil {
+		t.Fatalf("down to v20: %v", err)
+	}
+	conn := store.DB()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	const ts = "2026-09-24T10:00:00Z"
+	for _, kind := range []string{"AUTHORITY_PROMOTION", "EXECUTOR_PREFERENCE"} {
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO experience_rules(rule_id,proposal_id,grant_id,version,adaptation_kind,scope_key,generic_task_class,
+				preferred_executor,state,verified_samples,activated_at,created_at,updated_at)
+			VALUES (?,?,'g',1,?,'s','REVIEW','codex','ACTIVE',1,?,?,?)`, "rule-"+kind, "p-"+kind, kind, ts, ts, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := provider.UpTo(ctx, 21); err != nil {
+		t.Fatalf("up to v21: %v", err)
+	}
+	for kind, want := range map[string]string{"AUTHORITY_PROMOTION": "ROLLED_BACK", "EXECUTOR_PREFERENCE": "ACTIVE"} {
+		var state string
+		if err := conn.QueryRowContext(ctx, `SELECT state FROM experience_rules WHERE rule_id=?`, "rule-"+kind).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state != want {
+			t.Fatalf("%s rule state=%s want %s", kind, state, want)
+		}
+	}
+	if _, err := conn.ExecContext(ctx, `UPDATE experience_rules SET state='RETIRED' WHERE rule_id='rule-EXECUTOR_PREFERENCE'`); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("experience_rules update guard lost: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO experience_rules(rule_id,proposal_id,grant_id,version,adaptation_kind,scope_key,generic_task_class,
+			preferred_executor,state,verified_samples,created_at,updated_at)
+		VALUES ('rule-new','p-new','g',1,'AUTHORITY_PROMOTION','s','REVIEW','codex','ACTIVE',1,?,?)`, ts, ts); err == nil ||
+		!strings.Contains(err.Error(), "only EXECUTOR_PREFERENCE adaptation is permitted") {
+		t.Fatalf("kind trigger missing: %v", err)
+	}
+	if _, err := provider.DownTo(ctx, 20); err != nil {
+		t.Fatalf("down to v20: %v", err)
+	}
+	var n int
+	if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE '%_kind_%'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("kind triggers after down: %d err=%v", n, err)
+	}
+}
