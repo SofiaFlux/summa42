@@ -414,3 +414,64 @@ func TestGHIntakeTickReporterAccountsForMixedBatch(t *testing.T) {
 		t.Fatalf("clean first tick reported a failure: %q", lines[0])
 	}
 }
+
+func TestIntakeGrantActionSubsetOfCapabilities(t *testing.T) {
+	t.Setenv("SUMMA42_GITHUB_REPOSITORY", "")
+	bad := append(append([]string{}, validGHIntakeArgs()...), "--grant-action", "workspace.test")
+	_, _, err := parseGHIntakeFlags(bad)
+	if err == nil || err.Error() != `grant-action "workspace.test" must also be a granted capability` {
+		t.Fatalf("err = %v, want grant-action subset error", err)
+	}
+	good := append(append([]string{}, validGHIntakeArgs()...),
+		"--grant-capability", "workspace.repo.write", "--grant-capability", "workspace.test",
+		"--grant-action", "workspace.repo.write", "--grant-action", "workspace.test")
+	cfg, _, err := parseGHIntakeFlags(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"workspace.repo.write", "workspace.test"}; !reflect.DeepEqual(cfg.Grant.Actions, want) {
+		t.Fatalf("actions = %q, want %q", cfg.Grant.Actions, want)
+	}
+}
+
+func TestIntakeWithoutGrantActionHasNoActions(t *testing.T) {
+	t.Setenv("SUMMA42_GITHUB_REPOSITORY", "")
+	args := append(append([]string{}, validGHIntakeArgs()...), "--grant-capability", "workspace.repo.write")
+	cfg, _, err := parseGHIntakeFlags(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Grant.Actions) != 0 {
+		t.Fatalf("actions = %q, want none (never inferred from capabilities)", cfg.Grant.Actions)
+	}
+}
+
+type countingLister struct{ calls int }
+
+func (l *countingLister) ListIssues(context.Context, string) ([]any, []ghissue.Unparseable, string, error) {
+	l.calls++
+	return []any{intakeWireIssue()}, nil, "", nil
+}
+func (l *countingLister) Name() string { return "o/r" }
+
+func TestIntakeOnceRunsSinglePass(t *testing.T) {
+	t.Setenv("SUMMA42_GITHUB_REPOSITORY", "")
+	cfg, _, err := parseGHIntakeFlags(append(append([]string{}, validGHIntakeArgs()...), "--once"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Once {
+		t.Fatal("--once did not set cfg.Once")
+	}
+	f := setupIntakeTick(t)
+	f.cfg.Once = true
+	lister := &countingLister{}
+	ticks := 0
+	if err := ghissue.RunReporting(context.Background(), lister, f.cases, f.execSvc, f.evidenceStore, f.cfg, time.Millisecond,
+		func(ghissue.ObserveResult, error) { ticks++ }); err != nil {
+		t.Fatalf("RunReporting = %v, want nil", err)
+	}
+	if lister.calls != 1 || ticks != 1 {
+		t.Fatalf("list calls = %d, ticks = %d, want 1 and 1", lister.calls, ticks)
+	}
+}

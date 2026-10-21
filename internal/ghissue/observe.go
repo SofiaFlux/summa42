@@ -38,6 +38,8 @@ type ObserveConfig struct {
 	ResourceEnvelopeID domain.ID
 	MaxSteps           int
 	RemainingBudget    int64
+	// Once makes RunReporting run a single observe pass and return its result.
+	Once bool
 }
 
 // normalized trims and deduplicates every string collection so validation,
@@ -52,6 +54,7 @@ func (c ObserveConfig) normalized() ObserveConfig {
 		ResourceEnvelopeID: domain.ID(strings.TrimSpace(string(c.ResourceEnvelopeID))),
 		MaxSteps:           c.MaxSteps,
 		RemainingBudget:    c.RemainingBudget,
+		Once:               c.Once,
 	}
 	return normalized
 }
@@ -394,7 +397,10 @@ func RunReporting(ctx context.Context, lister IssueLister, cases *workflowcase.S
 		return nil
 	}
 	var backoff time.Duration
-	if err := observeTick(ctx, lister, cases, execSvc, evidenceStore, cfg, report); err != nil {
+	if err := observeTick(ctx, lister, cases, execSvc, evidenceStore, cfg, report); err != nil || cfg.Once {
+		if cfg.Once {
+			return err
+		}
 		if ctx.Err() != nil {
 			return nil
 		}

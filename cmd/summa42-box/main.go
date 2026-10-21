@@ -1052,17 +1052,20 @@ func runObserver(ctx context.Context, args []string) error {
 func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, error) {
 	var cfg ghissue.ObserveConfig
 	var mission, envelope, repository string
-	var maintainers, grantCaps, workCaps stringSlice
+	var maintainers, grantCaps, grantActions, workCaps stringSlice
 	var maxSteps int
 	var remainingBudget int64
 	var pollInterval time.Duration
+	var once bool
 
 	flags := flag.NewFlagSet("run-gh-intake", flag.ContinueOnError)
 	flags.StringVar(&mission, "mission", "", "mission ID for GitHub issue cases")
 	flags.StringVar(&repository, "repo", "", "GitHub repository as owner/name")
 	flags.Var(&maintainers, "maintainer", "maintainer login eligible to open issues (repeatable)")
 	flags.Var(&grantCaps, "grant-capability", "capability granted to issue cases (repeatable; must include github.issue.read)")
+	flags.Var(&grantActions, "grant-action", "action granted to issue cases (repeatable; must also be a --grant-capability)")
 	flags.Var(&workCaps, "work-capability", "additional work capability (repeatable)")
+	flags.BoolVar(&once, "once", false, "run one observe pass and exit")
 	flags.StringVar(&envelope, "envelope", "", "resource envelope ID for triage tasks")
 	flags.IntVar(&maxSteps, "max-steps", 3, "maximum workflow steps per issue case")
 	flags.Int64Var(&remainingBudget, "remaining-budget", 10, "remaining workflow budget per issue case")
@@ -1113,6 +1116,14 @@ func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, er
 	if _, ok := granted["github.issue.read"]; !ok {
 		return ghissue.ObserveConfig{}, 0, errors.New("run-gh-intake grant must include github.issue.read")
 	}
+	actions := make([]string, 0, len(grantActions))
+	for _, action := range grantActions {
+		trimmed := strings.TrimSpace(action)
+		if _, ok := granted[trimmed]; !ok {
+			return ghissue.ObserveConfig{}, 0, fmt.Errorf("grant-action %q must also be a granted capability", trimmed)
+		}
+		actions = append(actions, trimmed)
+	}
 	work := make([]string, 0, len(workCaps))
 	for _, capability := range workCaps {
 		trimmed := strings.TrimSpace(capability)
@@ -1133,7 +1144,8 @@ func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, er
 	cfg.MissionID = domain.ID(strings.TrimSpace(mission))
 	cfg.Repository = strings.TrimSpace(repository)
 	cfg.Maintainers = logins
-	cfg.Grant = workflow.Grant{Capabilities: capabilities}
+	cfg.Grant = workflow.Grant{Capabilities: capabilities, Actions: actions}
+	cfg.Once = once
 	cfg.WorkCapabilities = work
 	cfg.ResourceEnvelopeID = domain.ID(strings.TrimSpace(envelope))
 	cfg.MaxSteps = maxSteps
