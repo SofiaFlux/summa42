@@ -729,5 +729,5 @@ Each item is an outward-facing or live-data action. Present them to the owner as
    - review the 12 EXPIRED attempts with no events;
    - run `summa42 policy upgrade`.
 2. **GitHub:** audit and close the duplicated decomposition issues (#31–#112) after owner review of the list.
-3. **History note:** record that PR #21's plan and code reviews were produced by a canned adapter (S-C6).
+3. **History note:** PR #21's plan and code reviews were produced by a canned adapter (S-C6). Commit 84485a6 ("Prepare supervised implementation candidate (#21)") contains byte-for-byte the canned README strings from `bin/agy-model`. The verification evidence is fabricated. (Confirmed during Task 1, 2026-10-21.)
 4. **Deploy:** rebuild `bin/summa42` and `bin/summa42-box`; replace the reconciler loop with `run-gh-intake` plus `run-gh-pipeline --interval`, logging to `~/.summa42/logs/`.
