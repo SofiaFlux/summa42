@@ -312,7 +312,8 @@ func (p *VoteProvider) Dispatch(ctx context.Context, request operations.Provider
 	callCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	defer cancel()
 	// The check precedes the write, so a NoEffect here is truthful: nothing
-	// has been sent yet.
+	// has been sent yet. Check-then-write is not atomic: the commit can still
+	// move between this read and the write.
 	if moved, err := sourceCommitMoved(callCtx, p.read, intent.Project, intent.Repository, intent.PR, intent.SourceCommit); err != nil {
 		return operations.ProviderOutcome{}, err
 	} else if moved {
@@ -335,8 +336,17 @@ func (p *VoteProvider) Dispatch(ctx context.Context, request operations.Provider
 		// identity, so derive a stable reference from the confirmed intent.
 		reference = voteReference(intent)
 	}
+	// Transport success is not proof the vote is attributed to ReviewerID (a
+	// wrong configured id would give false provenance). A write happened, so
+	// anything short of an identity-matched read-back is UNKNOWN, not NoEffect;
+	// reconcile settles it later through LookupOutcome.
+	state := domain.OperationOutcomeUnknown
+	if raw, err := p.read(callCtx, "ado.pr.get", map[string]any{"action": "get", "project": intent.Project, "repositoryId": intent.Repository, "pullRequestId": intent.PR}); err == nil &&
+		reviewerHasVote(raw, intent.ReviewerID, intent.Vote) {
+		state = domain.OperationConfirmedEffect
+	}
 	return operations.ProviderOutcome{
-		State:             domain.OperationConfirmedEffect,
+		State:             state,
 		ProviderReference: reference,
 		ActualCost:        1,
 	}, nil

@@ -554,3 +554,60 @@ func TestCommentSendsThreadContext(t *testing.T) {
 		t.Fatalf("rightFileStart = %#v", ctxArg["rightFileStart"])
 	}
 }
+
+func TestVoteDispatchWrongReviewerReadbackIsUnknown(t *testing.T) {
+	dial := &fakeDial{pages: []map[string]any{{"id": "v1"}}}
+	vote := mustVoteProvider(t, func(context.Context, string, any) (any, error) {
+		return map[string]any{"sourceCommit": "src1", "reviewers": []any{map[string]any{"id": "other", "vote": float64(10)}}}, nil
+	})
+	vote.dial = dial.dial
+	request := voteTestRequest(t, vote, VoteIntent{Project: "proj", Repository: "shop", PR: 7, Vote: 10, SourceCommit: "src1", TargetCommit: "tgt1", ReviewerID: "me"})
+	outcome, err := vote.Dispatch(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dial.calls) != 1 || outcome.State != domain.OperationOutcomeUnknown {
+		t.Fatalf("state = %q calls = %d, want OUTCOME_UNKNOWN after one write", outcome.State, len(dial.calls))
+	}
+}
+
+func TestDispatchUnreadablePRErrorsWithoutWrite(t *testing.T) {
+	failing := func(context.Context, string, any) (any, error) { return nil, errors.New("boom") }
+	dial := &fakeDial{}
+	vote := mustVoteProvider(t, failing)
+	vote.dial = dial.dial
+	if _, err := vote.Dispatch(context.Background(), voteTestRequest(t, vote, VoteIntent{Project: "p", Repository: "r", PR: 7, Vote: 10, SourceCommit: "s", TargetCommit: "t", ReviewerID: "me"})); err == nil {
+		t.Fatal("vote dispatch succeeded with unreadable PR")
+	}
+	comment := mustCommentProvider(t, failing)
+	comment.dial = dial.dial
+	canonical, err := comment.CanonicalIntent(CommentIntent{Project: "p", Repository: "r", PR: 7, Body: "x", Marker: "[m]", SourceCommit: "s", TargetCommit: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := comment.Dispatch(context.Background(), operations.ProviderDispatchRequest{CanonicalIntent: canonical}); err == nil {
+		t.Fatal("comment dispatch succeeded with unreadable PR")
+	}
+	if len(dial.calls) != 0 {
+		t.Fatalf("writes = %d, want 0", len(dial.calls))
+	}
+}
+
+func TestCommentDispatchRefusesMovedSourceCommit(t *testing.T) {
+	dial := &fakeDial{}
+	comment := mustCommentProvider(t, func(context.Context, string, any) (any, error) {
+		return map[string]any{"sourceCommit": "moved"}, nil
+	})
+	comment.dial = dial.dial
+	canonical, err := comment.CanonicalIntent(CommentIntent{Project: "p", Repository: "r", PR: 7, Body: "x", Marker: "[m]", SourceCommit: "src1", TargetCommit: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := comment.Dispatch(context.Background(), operations.ProviderDispatchRequest{CanonicalIntent: canonical})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.State != domain.OperationConfirmedNoEffect || len(dial.calls) != 0 {
+		t.Fatalf("state = %q calls = %d", outcome.State, len(dial.calls))
+	}
+}

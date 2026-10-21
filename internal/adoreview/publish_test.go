@@ -569,3 +569,12 @@ func TestApproveIntentCarriesCommitsAndReviewer(t *testing.T) {
 		t.Fatal("vote intent without reviewer id was accepted")
 	}
 }
+
+func TestPublishRejectsMalformedRevision(t *testing.T) {
+	for _, revision := range []string{"nocolon", ":b", "a:", "a:b:c"} {
+		payload := PublishPayload{CaseID: "c", WorkID: "w", Project: "p", Repo: "r", PR: 1, Revision: revision, ReviewerID: "svc"}
+		if _, err := buildPublishIntents(payload, ReviewDecision{Action: DecisionApproveAction, Vote: "approve"}); err == nil {
+			t.Fatalf("revision %q accepted", revision)
+		}
+	}
+}

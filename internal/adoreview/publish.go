@@ -217,7 +217,7 @@ func buildPublishIntents(payload PublishPayload, decision ReviewDecision) ([]pub
 		return nil, err
 	}
 	sourceCommit, targetCommit, ok := strings.Cut(payload.Revision, ":")
-	if !ok || sourceCommit == "" || targetCommit == "" {
+	if !ok || sourceCommit == "" || targetCommit == "" || strings.Contains(targetCommit, ":") {
 		return nil, fmt.Errorf("publish revision %q is not source:target commits", payload.Revision)
 	}
 	intents := make([]publishIntent, 0, len(decision.Comments)+1)
