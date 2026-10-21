@@ -28,7 +28,7 @@ func (t TaskDTO) MarshalJSON() ([]byte, error) {
 	return json.Marshal(wireTask{
 		ID: t.ID, ParentTaskID: t.ParentTaskID,
 		Purpose: purposeDTO{Kind: string(t.Purpose.Kind), ID: string(t.Purpose.ID)},
-		State: t.State, CurrentAttemptID: t.CurrentAttemptID, CurrentFence: t.CurrentFence,
+		State:   t.State, CurrentAttemptID: t.CurrentAttemptID, CurrentFence: t.CurrentFence,
 		AcceptanceCriteria: t.AcceptanceCriteria, RequiredCapabilities: t.RequiredCapabilities,
 		RequiredEnforcement: t.RequiredEnforcement, AuthorityCeiling: t.AuthorityCeiling,
 		ResourceEnvelopeID: t.ResourceEnvelopeID, Priority: t.Priority,

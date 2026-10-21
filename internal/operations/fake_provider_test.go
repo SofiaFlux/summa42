@@ -36,7 +36,7 @@ func (p *fakeProvider) Capability() string                        { return "exte
 func (p *fakeProvider) EnforcementLevel() domain.EnforcementLevel { return domain.EnforcementEnforced }
 func (p *fakeProvider) AdapterVersion() string                    { return "fake-v1" }
 func (p *fakeProvider) AdapterVersionSemanticallyRelevant() bool  { return false }
-func (p *fakeProvider) SettleWindow() time.Duration              { return p.settleWindow }
+func (p *fakeProvider) SettleWindow() time.Duration               { return p.settleWindow }
 func (p *fakeProvider) MinimumRisk() string {
 	if p.minimumRisk == "" {
 		return "LOW"

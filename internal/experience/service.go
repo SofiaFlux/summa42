@@ -48,11 +48,11 @@ type ProposalInput struct {
 }
 
 type VerifiedOutcome struct {
-	TaskID            domain.ID
-	GenericTaskClass  domain.GenericTaskClass
-	ScopeKey          string
-	ExecutorKind      string
-	Accepted          bool
+	TaskID           domain.ID
+	GenericTaskClass domain.GenericTaskClass
+	ScopeKey         string
+	ExecutorKind     string
+	Accepted         bool
 }
 
 type PreferenceQuery struct {

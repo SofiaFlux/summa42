@@ -68,7 +68,6 @@ func TestResolveHomeUsesEnvironmentOverride(t *testing.T) {
 	}
 }
 
-
 func TestFieldFeedbackDefaultsToDisabledLocalOnly(t *testing.T) {
 	cfg := FieldFeedbackConfig{}.withDefaults()
 	if cfg.Enabled {

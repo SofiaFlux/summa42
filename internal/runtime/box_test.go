@@ -24,7 +24,7 @@ func (lostAckProvider) EnforcementLevel() domain.EnforcementLevel { return domai
 func (lostAckProvider) AdapterVersion() string                    { return "v1" }
 func (lostAckProvider) AdapterVersionSemanticallyRelevant() bool  { return false }
 func (lostAckProvider) SettleWindow() time.Duration               { return 0 }
-func (lostAckProvider) MinimumRisk() string                        { return "LOW" }
+func (lostAckProvider) MinimumRisk() string                       { return "LOW" }
 func (lostAckProvider) CanonicalIntent(d operations.IntentDescriptor) ([]byte, error) {
 	return json.Marshal(d)
 }
@@ -104,4 +104,3 @@ func TestBoxStartupReconcilesDispatchedOperation(t *testing.T) {
 		t.Fatalf("state = %s, want CONFIRMED_EFFECT", stored)
 	}
 }
-

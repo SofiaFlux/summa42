@@ -180,6 +180,7 @@ func (*BranchProvider) MinimumRisk() string { return "MEDIUM" }
 func (*PRProvider) MinimumRisk() string     { return "MEDIUM" }
 
 const settleWindow = 10 * time.Minute
+
 func (p *BranchProvider) validate(v BranchIntent) error {
 	if v.Repository != p.c.repo || !validRef(v.BaseBranch) || !managedHead.MatchString(v.HeadBranch) || v.BaseBranch == v.HeadBranch {
 		return errors.New("invalid branch publication intent")
@@ -357,6 +358,7 @@ func (p *PRProvider) find(ctx context.Context, v PRIntent) (operations.ProviderO
 	}
 	return unknown(), errors.New("GitHub PR pagination limit")
 }
+
 // pinned reports whether both refs still sit at the reviewed SHAs; err means a ref could not be read.
 func (p *PRProvider) pinned(ctx context.Context, v PRIntent) (bool, error) {
 	base, _, e := p.c.ref(ctx, v.BaseBranch)

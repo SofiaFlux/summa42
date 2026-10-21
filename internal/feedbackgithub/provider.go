@@ -16,9 +16,9 @@ func NewSink(cfg Config) (fieldfeedback.Sink, error) {
 
 type githubSink struct{ client *client }
 
-func (s githubSink) Create(ctx context.Context, payload fieldfeedback.IssuePayload) (string,int64,error) {
-	return s.client.createIssue(ctx,payload)
+func (s githubSink) Create(ctx context.Context, payload fieldfeedback.IssuePayload) (string, int64, error) {
+	return s.client.createIssue(ctx, payload)
 }
-func (s githubSink) FindByMarker(ctx context.Context, marker string) (string,bool,error) {
-	return s.client.findByMarker(ctx,marker)
+func (s githubSink) FindByMarker(ctx context.Context, marker string) (string, bool, error) {
+	return s.client.findByMarker(ctx, marker)
 }

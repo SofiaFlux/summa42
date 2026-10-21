@@ -127,7 +127,6 @@ func TestPendingReturnsOnlyLivePendingRequests(t *testing.T) {
 	}
 }
 
-
 func TestAllRequiredApproversMustApprove(t *testing.T) {
 	svc, clk, owner := newHarness(t)
 	ctx := context.Background()

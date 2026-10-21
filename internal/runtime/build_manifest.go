@@ -49,8 +49,8 @@ func capturePolicySnapshot(engine policy.PolicyEngine) (runmanifest.PolicySnapsh
 		return runmanifest.PolicySnapshot{}, err
 	}
 	return runmanifest.PolicySnapshot{
-		PolicySetID: metadata.PolicySetID,
-		PolicySetHash: metadata.PolicySetHash,
+		PolicySetID:            metadata.PolicySetID,
+		PolicySetHash:          metadata.PolicySetHash,
 		PolicyCapabilitiesHash: metadata.PolicyCapabilitiesHash,
 	}, nil
 }

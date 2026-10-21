@@ -91,8 +91,8 @@ func TestUsefulWorkVerticalSlice(t *testing.T) {
 	}
 
 	commandExecutor, err := executors.NewCommandExecutor(executors.CommandConfig{
-		Path: "/bin/sh",
-		Args: []string{"-c", `read value < fixture.txt; [ "$value" = repaired ]`},
+		Path:    "/bin/sh",
+		Args:    []string{"-c", `read value < fixture.txt; [ "$value" = repaired ]`},
 		Timeout: time.Second,
 	})
 	if err != nil {
@@ -101,12 +101,12 @@ func TestUsefulWorkVerticalSlice(t *testing.T) {
 	pol := &mutablePolicy{outcome: domain.PolicyAllow, hash: "policy-v1"}
 	agenticExecutor := &diagnosticExecutor{}
 	box, err := summa42runtime.Open(ctx, summa42runtime.Config{
-		StatePath: statePath,
-		EvidencePath: evidencePath,
-		Clock: clk,
-		CollectiveID: initResult.CollectiveID,
+		StatePath:        statePath,
+		EvidencePath:     evidencePath,
+		Clock:            clk,
+		CollectiveID:     initResult.CollectiveID,
 		OwnerPrincipalID: initResult.OwnerPrincipalID,
-		PolicyEngine: pol,
+		PolicyEngine:     pol,
 		Executors: map[string]executors.Executor{
 			"agentic-fake": agenticExecutor,
 			"command":      commandExecutor,
@@ -139,25 +139,25 @@ func TestUsefulWorkVerticalSlice(t *testing.T) {
 	}
 
 	mainTask, err := box.Execution.CreateTask(ctx, execution.TaskRequest{
-		Purpose: domain.PurposeRef{Kind: domain.PurposeMission, ID: missionID},
-		AcceptanceCriteria: []string{"fixture repository check passes"},
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeMission, ID: missionID},
+		AcceptanceCriteria:   []string{"fixture repository check passes"},
 		RequiredCapabilities: []string{"repo.repair"},
-		RequiredEnforcement: domain.EnforcementEnforced,
-		AuthorityCeiling: []string{"repo.repair", "repo.diagnose"},
-		ResourceEnvelopeID: envelopeID,
-		Priority: 100,
+		RequiredEnforcement:  domain.EnforcementEnforced,
+		AuthorityCeiling:     []string{"repo.repair", "repo.diagnose"},
+		ResourceEnvelopeID:   envelopeID,
+		Priority:             100,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	downstream, err := box.Execution.CreateTask(ctx, execution.TaskRequest{
-		Purpose: domain.PurposeRef{Kind: domain.PurposeMission, ID: missionID},
-		AcceptanceCriteria: []string{"record post-repair success"},
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeMission, ID: missionID},
+		AcceptanceCriteria:   []string{"record post-repair success"},
 		RequiredCapabilities: []string{"repo.repair"},
-		RequiredEnforcement: domain.EnforcementEnforced,
-		AuthorityCeiling: []string{"repo.repair"},
-		ResourceEnvelopeID: envelopeID,
-		Priority: 10,
+		RequiredEnforcement:  domain.EnforcementEnforced,
+		AuthorityCeiling:     []string{"repo.repair"},
+		ResourceEnvelopeID:   envelopeID,
+		Priority:             10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +172,7 @@ func TestUsefulWorkVerticalSlice(t *testing.T) {
 	}
 
 	capacity := scheduler.CapacitySnapshot{Capabilities: map[string]scheduler.CapabilityCapacity{
-		"repo.repair": {Accessible: true, Enforcement: domain.EnforcementEnforced},
+		"repo.repair":   {Accessible: true, Enforcement: domain.EnforcementEnforced},
 		"repo.diagnose": {Accessible: true, Enforcement: domain.EnforcementEnforced},
 	}}
 	candidate, err := box.Scheduler.Next(ctx, capacity)
@@ -320,16 +320,16 @@ func TestUsefulWorkVerticalSlice(t *testing.T) {
 	completeAndAccept(t, ctx, box, downstream.ID, downstreamAttempt.ID, initResult.OwnerPrincipalID, downstreamEvidence.ID)
 
 	decision, err := box.Audit.RecordDecision(ctx, audit.DecisionRecord{
-		Trigger: "fixture repair accepted",
-		Alternatives: []string{"keep broken fixture", "repair fixture"},
-		BasisClass: "VERIFIED_ACCEPTANCE",
-		EvidenceIDs: []domain.ID{mainEvidence.ID},
-		PolicyDecisionID: domain.ID("policy_decision_vertical"),
-		AuthorityIDs: []domain.ID{initResult.OwnerPrincipalID, missionID},
-		ExpectedOutcome: "fixture remains green",
-		Confidence: 1,
+		Trigger:            "fixture repair accepted",
+		Alternatives:       []string{"keep broken fixture", "repair fixture"},
+		BasisClass:         "VERIFIED_ACCEPTANCE",
+		EvidenceIDs:        []domain.ID{mainEvidence.ID},
+		PolicyDecisionID:   domain.ID("policy_decision_vertical"),
+		AuthorityIDs:       []domain.ID{initResult.OwnerPrincipalID, missionID},
+		ExpectedOutcome:    "fixture remains green",
+		Confidence:         1,
 		ResourceEnvelopeID: envelopeID,
-		ActorID: initResult.CubePrincipalID,
+		ActorID:            initResult.CubePrincipalID,
 	})
 	if err != nil {
 		t.Fatal(err)

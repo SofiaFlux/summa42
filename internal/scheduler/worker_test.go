@@ -2,8 +2,8 @@ package scheduler_test
 
 import (
 	"context"
-	"encoding/json"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -16,9 +16,9 @@ import (
 	"github.com/SofiaFlux/summa42/internal/execution"
 	"github.com/SofiaFlux/summa42/internal/executors"
 	"github.com/SofiaFlux/summa42/internal/purpose"
-	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 	"github.com/SofiaFlux/summa42/internal/resources"
 	"github.com/SofiaFlux/summa42/internal/scheduler"
+	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 	"github.com/SofiaFlux/summa42/internal/testutil"
 	"github.com/SofiaFlux/summa42/internal/verification"
 	"github.com/SofiaFlux/summa42/internal/wake"

@@ -254,9 +254,9 @@ func TestGovernanceStateSurvivesCloseAndReopen(t *testing.T) {
 		}
 	}
 	for name, statement := range map[string]string{
-		"approval request subject/digest": `INSERT OR REPLACE INTO approval_requests(approval_id,subject_kind,subject_id,request_digest,policy_decision_id,required_approvers_json,requested_by,state,expires_at,created_at) VALUES ('approval-replaced','EXTERNAL_OPERATION','operation-1','digest-1','decision-2','[]','attacker','PENDING','2026-09-22T18:00:00Z','2026-09-21T18:01:00Z')`,
+		"approval request subject/digest":  `INSERT OR REPLACE INTO approval_requests(approval_id,subject_kind,subject_id,request_digest,policy_decision_id,required_approvers_json,requested_by,state,expires_at,created_at) VALUES ('approval-replaced','EXTERNAL_OPERATION','operation-1','digest-1','decision-2','[]','attacker','PENDING','2026-09-22T18:00:00Z','2026-09-21T18:01:00Z')`,
 		"experience rule proposal/version": `INSERT OR REPLACE INTO experience_rules(rule_id,proposal_id,grant_id,version,adaptation_kind,scope_key,generic_task_class,preferred_executor,state,verified_samples,created_at,updated_at) VALUES ('rule-replaced','proposal-1','grant-1',1,'EXECUTOR_PREFERENCE','repo.review','REVIEW','other','ACTIVE',3,'2026-09-21T18:03:00Z','2026-09-21T18:04:00Z')`,
-		"experience outcome dedupe": `INSERT OR REPLACE INTO experience_outcomes(outcome_id,task_id,generic_task_class,scope_key,executor_kind,accepted,human_intervention,retry_count,recorded_at) VALUES ('outcome-replaced','task-1','REVIEW','repo.review','codex',1,1,1,'2026-09-21T18:04:00Z')`,
+		"experience outcome dedupe":        `INSERT OR REPLACE INTO experience_outcomes(outcome_id,task_id,generic_task_class,scope_key,executor_kind,accepted,human_intervention,retry_count,recorded_at) VALUES ('outcome-replaced','task-1','REVIEW','repo.review','codex',1,1,1,'2026-09-21T18:04:00Z')`,
 	} {
 		if _, err := db.ExecContext(ctx, statement); err == nil {
 			t.Fatalf("INSERT OR REPLACE rewrote immutable %s", name)

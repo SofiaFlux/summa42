@@ -66,10 +66,12 @@ func newFakeOperationProvider(name string) *fakeOperationProvider {
 	return &fakeOperationProvider{name: name, outcomes: make(map[domain.ID]operations.ProviderOutcome)}
 }
 
-func (p *fakeOperationProvider) Name() string { return p.name }
+func (p *fakeOperationProvider) Name() string       { return p.name }
 func (p *fakeOperationProvider) Capability() string { return "external:" + p.name }
-func (p *fakeOperationProvider) EnforcementLevel() domain.EnforcementLevel { return domain.EnforcementEnforced }
-func (p *fakeOperationProvider) AdapterVersion() string { return "acceptance-v1" }
+func (p *fakeOperationProvider) EnforcementLevel() domain.EnforcementLevel {
+	return domain.EnforcementEnforced
+}
+func (p *fakeOperationProvider) AdapterVersion() string                   { return "acceptance-v1" }
 func (p *fakeOperationProvider) AdapterVersionSemanticallyRelevant() bool { return false }
 func (p *fakeOperationProvider) SettleWindow() time.Duration              { return 0 }
 func (p *fakeOperationProvider) MinimumRisk() string                      { return "LOW" }
@@ -90,9 +92,9 @@ func (p *fakeOperationProvider) CostProfile(descriptor operations.IntentDescript
 	return operations.CostProfile{
 		MaxExposure: int64(intent.Quantity * 10),
 		Enforceability: resources.Enforceability{
-			CostControl: resources.CostTechnicallyCapped,
+			CostControl:    resources.CostTechnicallyCapped,
 			RequireHardCap: true,
-			Source: "acceptance-provider-cap",
+			Source:         "acceptance-provider-cap",
 		},
 	}, nil
 }
@@ -106,9 +108,9 @@ func (p *fakeOperationProvider) Dispatch(_ context.Context, request operations.P
 		return operations.ProviderOutcome{}, err
 	}
 	outcome := operations.ProviderOutcome{
-		State: domain.OperationConfirmedEffect,
+		State:             domain.OperationConfirmedEffect,
 		ProviderReference: "acceptance-" + string(request.OperationID),
-		ActualCost: int64(intent.Quantity * 10),
+		ActualCost:        int64(intent.Quantity * 10),
 	}
 	p.outcomes[request.OperationID] = outcome
 	if p.loseAcknowledgement {
@@ -154,20 +156,20 @@ func (p *fakeCapabilityProvider) Call(context.Context, string, any) (any, error)
 }
 func (p *fakeCapabilityProvider) Advertise(context.Context) ([]capabilities.Definition, error) {
 	return []capabilities.Definition{{
-		ID: domain.ID("cap_safe_read"),
-		Skill: capabilities.Skill{Name: "safe.read", Version: "v1"},
-		Access: capabilities.Access{Provider: p.Name(), Context: "acceptance"},
-		Authority: capabilities.AuthorityRequirement{Capabilities: []string{"safe.read"}},
+		ID:          domain.ID("cap_safe_read"),
+		Skill:       capabilities.Skill{Name: "safe.read", Version: "v1"},
+		Access:      capabilities.Access{Provider: p.Name(), Context: "acceptance"},
+		Authority:   capabilities.AuthorityRequirement{Capabilities: []string{"safe.read"}},
 		Environment: capabilities.EnvironmentRequirement{MinimumEnforcement: domain.EnforcementEnforced},
 	}}, nil
 }
 func (p *fakeCapabilityProvider) Probe(context.Context, capabilities.Definition) (capabilities.ProbeResult, error) {
 	return capabilities.ProbeResult{
-		Enforcement: domain.EnforcementEnforced,
-		Evidence: []string{"acceptance-probe"},
+		Enforcement:  domain.EnforcementEnforced,
+		Evidence:     []string{"acceptance-probe"},
 		CostMetadata: map[string]any{"unit": "test"},
-		Health: capabilities.HealthHealthy,
-		Available: true,
+		Health:       capabilities.HealthHealthy,
+		Available:    true,
 	}, nil
 }
 func (p *fakeCapabilityProvider) callCount() int {
@@ -199,15 +201,15 @@ func newFixture(t *testing.T, hardLimit int64) *fixture {
 	provider := newFakeOperationProvider("fake")
 	caps := &fakeCapabilityProvider{}
 	config := summa42runtime.Config{
-		StatePath: filepath.Join(dir, "state.db"),
-		EvidencePath: filepath.Join(dir, "evidence"),
-		Clock: clk,
-		CollectiveID: domain.ID("collective_acceptance"),
-		OwnerPrincipalID: domain.ID("owner_acceptance"),
-		PolicyEngine: pol,
-		OperationProviders: []operations.Provider{provider},
+		StatePath:           filepath.Join(dir, "state.db"),
+		EvidencePath:        filepath.Join(dir, "evidence"),
+		Clock:               clk,
+		CollectiveID:        domain.ID("collective_acceptance"),
+		OwnerPrincipalID:    domain.ID("owner_acceptance"),
+		PolicyEngine:        pol,
+		OperationProviders:  []operations.Provider{provider},
 		CapabilityProviders: []capabilities.Provider{caps},
-		LeaseDuration: time.Minute,
+		LeaseDuration:       time.Minute,
 	}
 	box, err := summa42runtime.Open(ctx, config)
 	if err != nil {
@@ -231,12 +233,12 @@ func newFixture(t *testing.T, hardLimit int64) *fixture {
 		t.Fatal(err)
 	}
 	task, err := box.Execution.CreateTask(ctx, execution.TaskRequest{
-		Purpose: domain.PurposeRef{Kind: domain.PurposeMission, ID: missionID},
-		AcceptanceCriteria: []string{"verified"},
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeMission, ID: missionID},
+		AcceptanceCriteria:   []string{"verified"},
 		RequiredCapabilities: []string{provider.Capability()},
-		RequiredEnforcement: domain.EnforcementEnforced,
-		AuthorityCeiling: []string{provider.Capability()},
-		ResourceEnvelopeID: envelope,
+		RequiredEnforcement:  domain.EnforcementEnforced,
+		AuthorityCeiling:     []string{provider.Capability()},
+		ResourceEnvelopeID:   envelope,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -251,11 +253,11 @@ func newFixture(t *testing.T, hardLimit int64) *fixture {
 func (f *fixture) prepare(t *testing.T, attemptID domain.ID, key string, quantity int) domain.ExternalOperation {
 	t.Helper()
 	op, err := f.box.Operations.Prepare(f.ctx, operations.PrepareRequest{
-		AttemptID: attemptID,
-		Provider: f.provider.Name(),
+		AttemptID:      attemptID,
+		Provider:       f.provider.Name(),
 		TrustedSlotKey: key,
-		Intent: testutil.PurchaseIntent{SKU: "sku-1", Quantity: quantity},
-		Risk: "LOW",
+		Intent:         testutil.PurchaseIntent{SKU: "sku-1", Quantity: quantity},
+		Risk:           "LOW",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -449,12 +451,12 @@ func testCapabilityBypassBlockedInEnforcedProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	task, err := f.box.Execution.CreateTask(f.ctx, execution.TaskRequest{
-		Purpose: domain.PurposeRef{Kind: domain.PurposeMission, ID: f.missionID},
-		AcceptanceCriteria: []string{"capability access mediated"},
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeMission, ID: f.missionID},
+		AcceptanceCriteria:   []string{"capability access mediated"},
 		RequiredCapabilities: []string{"safe.read"},
-		RequiredEnforcement: domain.EnforcementEnforced,
-		AuthorityCeiling: []string{"safe.read"},
-		ResourceEnvelopeID: f.envelope,
+		RequiredEnforcement:  domain.EnforcementEnforced,
+		AuthorityCeiling:     []string{"safe.read"},
+		ResourceEnvelopeID:   f.envelope,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -478,18 +480,18 @@ func testCapabilityBypassBlockedInEnforcedProfile(t *testing.T) {
 func testConstraintPrecedenceBlocksIllegalGoalPath(t *testing.T) {
 	f := newFixture(t, 100)
 	parent, err := f.box.Execution.CreateTask(f.ctx, execution.TaskRequest{
-		Purpose: domain.PurposeRef{Kind: domain.PurposeMission, ID: f.missionID},
-		AcceptanceCriteria: []string{"stay within authority"},
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeMission, ID: f.missionID},
+		AcceptanceCriteria:   []string{"stay within authority"},
 		RequiredCapabilities: []string{"read"},
-		RequiredEnforcement: domain.EnforcementPartial,
-		AuthorityCeiling: []string{"read"},
-		ResourceEnvelopeID: f.envelope,
+		RequiredEnforcement:  domain.EnforcementPartial,
+		AuthorityCeiling:     []string{"read"},
+		ResourceEnvelopeID:   f.envelope,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = f.box.Execution.CreateChildTask(f.ctx, parent.ID, execution.TaskRequest{
-		AcceptanceCriteria: []string{"illegal escalation"},
+		AcceptanceCriteria:   []string{"illegal escalation"},
 		RequiredCapabilities: []string{"admin"},
 	})
 	if err == nil {
@@ -507,9 +509,9 @@ func testConstraintPrecedenceBlocksIllegalGoalPath(t *testing.T) {
 func testHardBudgetRequiresEnforceableCeiling(t *testing.T) {
 	f := newFixture(t, 100)
 	_, err := reserveInOwnTx(f.ctx, f.box, f.envelope, 10, resources.Enforceability{
-		CostControl: resources.CostEstimatedOnly,
+		CostControl:    resources.CostEstimatedOnly,
 		RequireHardCap: true,
-		Source: "model-estimate",
+		Source:         "model-estimate",
 	})
 	if !errors.Is(err, resources.ErrHardCapUnavailable) {
 		t.Fatalf("reserve err=%v, want ErrHardCapUnavailable", err)
@@ -546,11 +548,11 @@ func testEffectSlotParameterDriftConflicts(t *testing.T) {
 	first := f.prepare(t, f.attempt.ID, "purchase-primary", 1)
 	replacement := f.replacementAttempt(t)
 	second, err := f.box.Operations.Prepare(f.ctx, operations.PrepareRequest{
-		AttemptID: replacement.ID,
-		Provider: f.provider.Name(),
+		AttemptID:      replacement.ID,
+		Provider:       f.provider.Name(),
 		TrustedSlotKey: "purchase-primary",
-		Intent: testutil.PurchaseIntent{SKU: "sku-1", Quantity: 2},
-		Risk: "LOW",
+		Intent:         testutil.PurchaseIntent{SKU: "sku-1", Quantity: 2},
+		Risk:           "LOW",
 	})
 	if !errors.Is(err, domain.ErrIntentConflict) {
 		t.Fatalf("drift err=%v, want ErrIntentConflict", err)
@@ -636,7 +638,7 @@ func testOPAErrorTimeoutInvalidOutputFailClosed(t *testing.T) {
 		Module: `package summa42
 	decision := {"outcome": "ALLOW", "reason_codes": ["bad"]}`,
 		PolicySetID: "policy_acceptance",
-		Timeout: 250 * time.Millisecond,
+		Timeout:     250 * time.Millisecond,
 	})
 	if _, err := engine.Evaluate(ctx, policy.PolicyInput{Risk: "LOW", AuthorityValid: true, Now: acceptanceNow}); err == nil {
 		t.Fatal("expired evaluation context authorized policy")

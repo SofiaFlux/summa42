@@ -32,7 +32,7 @@ type OPAEngine struct {
 	policySetID            domain.ID
 	policySetHash          string
 	policyCapabilitiesHash string
-	timeout                 time.Duration
+	timeout                time.Duration
 }
 
 type OPAMetadata struct {

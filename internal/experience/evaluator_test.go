@@ -11,97 +11,156 @@ import (
 )
 
 func TestVerifiedOutcomesPromoteThenRollbackWithoutInventingMissingCost(t *testing.T) {
-	svc,ap,clk:=newExpHarness(t)
-	ctx:=context.Background()
-	obsID:=insertObservation(t,svc,"obs-1")
-	req,err:=svc.RequestGrant(ctx,GrantInput{
-		Kind:AdaptationExecutorPreference,ScopeKey:"repo.review",AllowedExecutors:[]string{"codex","claude"},
-		MinVerifiedSamples:3,MaxAcceptanceRegressionBps:0,MaxCostRegressionBps:0,ExpiresAt:clk.Now().Add(24*time.Hour),
-	},"requester");if err!=nil{t.Fatal(err)}
-	if err:=ap.Approve(ctx,req.ApprovalID,"owner-1",req.Digest);err!=nil{t.Fatal(err)}
-	grant,err:=svc.ActivateGrant(ctx,req.ID);if err!=nil{t.Fatal(err)}
-	proposal,err:=svc.Propose(ctx,ProposalInput{
-		GrantID:grant.ID,GenericTaskClass:domain.GenericTaskReview,ScopeKey:"repo.review",
-		PreferredExecutor:"codex",EvidenceObservationIDs:[]domain.ID{obsID},
-	});if err!=nil{t.Fatal(err)}
-
-	for i:=0;i<2;i++{
-		taskID:=insertVerifiedTask(t,svc,fmt.Sprintf("accepted-%d",i),"codex",true)
-		if err:=svc.ObserveVerifiedOutcome(ctx,VerifiedOutcome{
-			TaskID:taskID,GenericTaskClass:domain.GenericTaskReview,ScopeKey:"repo.review",ExecutorKind:"codex",
-			Accepted:true,
-		});err!=nil{t.Fatal(err)}
+	svc, ap, clk := newExpHarness(t)
+	ctx := context.Background()
+	obsID := insertObservation(t, svc, "obs-1")
+	req, err := svc.RequestGrant(ctx, GrantInput{
+		Kind: AdaptationExecutorPreference, ScopeKey: "repo.review", AllowedExecutors: []string{"codex", "claude"},
+		MinVerifiedSamples: 3, MaxAcceptanceRegressionBps: 0, MaxCostRegressionBps: 0, ExpiresAt: clk.Now().Add(24 * time.Hour),
+	}, "requester")
+	if err != nil {
+		t.Fatal(err)
 	}
-	rule,err:=svc.Evaluate(ctx,proposal.ID);if err!=nil{t.Fatal(err)}
-	if rule.State!=domain.ExperienceShadow||rule.VerifiedSamples!=2{t.Fatalf("rule=%+v",rule)}
+	if err := ap.Approve(ctx, req.ApprovalID, "owner-1", req.Digest); err != nil {
+		t.Fatal(err)
+	}
+	grant, err := svc.ActivateGrant(ctx, req.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := svc.Propose(ctx, ProposalInput{
+		GrantID: grant.ID, GenericTaskClass: domain.GenericTaskReview, ScopeKey: "repo.review",
+		PreferredExecutor: "codex", EvidenceObservationIDs: []domain.ID{obsID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	taskID:=insertVerifiedTask(t,svc,"accepted-2","codex",true)
-	if err:=svc.ObserveVerifiedOutcome(ctx,VerifiedOutcome{
-		TaskID:taskID,GenericTaskClass:domain.GenericTaskReview,ScopeKey:"repo.review",ExecutorKind:"codex",Accepted:true,
-	});err!=nil{t.Fatal(err)}
-	rule,err=svc.Evaluate(ctx,proposal.ID);if err!=nil{t.Fatal(err)}
-	if rule.State!=domain.ExperienceActive||rule.VerifiedSamples!=3{t.Fatalf("active rule=%+v",rule)}
-	pref,found,err:=svc.Preference(ctx,PreferenceQuery{ScopeKey:"repo.review",GenericTaskClass:domain.GenericTaskReview})
-	if err!=nil||!found||pref.ExecutorKind!="codex"{t.Fatalf("preference=%+v found=%v err=%v",pref,found,err)}
+	for i := 0; i < 2; i++ {
+		taskID := insertVerifiedTask(t, svc, fmt.Sprintf("accepted-%d", i), "codex", true)
+		if err := svc.ObserveVerifiedOutcome(ctx, VerifiedOutcome{
+			TaskID: taskID, GenericTaskClass: domain.GenericTaskReview, ScopeKey: "repo.review", ExecutorKind: "codex",
+			Accepted: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rule, err := svc.Evaluate(ctx, proposal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.State != domain.ExperienceShadow || rule.VerifiedSamples != 2 {
+		t.Fatalf("rule=%+v", rule)
+	}
 
-	badTask:=insertVerifiedTask(t,svc,"challenged-1","codex",false)
-	if err:=svc.ObserveVerifiedOutcome(ctx,VerifiedOutcome{
-		TaskID:badTask,GenericTaskClass:domain.GenericTaskReview,ScopeKey:"repo.review",ExecutorKind:"codex",Accepted:false,
-	});err!=nil{t.Fatal(err)}
-	rule,err=svc.Evaluate(ctx,proposal.ID);if err!=nil{t.Fatal(err)}
-	if rule.State!=domain.ExperienceRolledBack{t.Fatalf("rollback rule=%+v",rule)}
-	if _,found,err:=svc.Preference(ctx,PreferenceQuery{ScopeKey:"repo.review"});err!=nil||found{
-		t.Fatalf("rolled-back preference found=%v err=%v",found,err)
+	taskID := insertVerifiedTask(t, svc, "accepted-2", "codex", true)
+	if err := svc.ObserveVerifiedOutcome(ctx, VerifiedOutcome{
+		TaskID: taskID, GenericTaskClass: domain.GenericTaskReview, ScopeKey: "repo.review", ExecutorKind: "codex", Accepted: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rule, err = svc.Evaluate(ctx, proposal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.State != domain.ExperienceActive || rule.VerifiedSamples != 3 {
+		t.Fatalf("active rule=%+v", rule)
+	}
+	pref, found, err := svc.Preference(ctx, PreferenceQuery{ScopeKey: "repo.review", GenericTaskClass: domain.GenericTaskReview})
+	if err != nil || !found || pref.ExecutorKind != "codex" {
+		t.Fatalf("preference=%+v found=%v err=%v", pref, found, err)
+	}
+
+	badTask := insertVerifiedTask(t, svc, "challenged-1", "codex", false)
+	if err := svc.ObserveVerifiedOutcome(ctx, VerifiedOutcome{
+		TaskID: badTask, GenericTaskClass: domain.GenericTaskReview, ScopeKey: "repo.review", ExecutorKind: "codex", Accepted: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rule, err = svc.Evaluate(ctx, proposal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.State != domain.ExperienceRolledBack {
+		t.Fatalf("rollback rule=%+v", rule)
+	}
+	if _, found, err := svc.Preference(ctx, PreferenceQuery{ScopeKey: "repo.review"}); err != nil || found {
+		t.Fatalf("rolled-back preference found=%v err=%v", found, err)
 	}
 }
 
 func TestUnverifiedOutcomeIsRejected(t *testing.T) {
-	svc,_,_:=newExpHarness(t)
-	taskID:=insertBareTask(t,svc,"unverified","codex")
-	err:=svc.ObserveVerifiedOutcome(context.Background(),VerifiedOutcome{
-		TaskID:taskID,GenericTaskClass:domain.GenericTaskReview,ScopeKey:"repo.review",ExecutorKind:"codex",Accepted:true,
+	svc, _, _ := newExpHarness(t)
+	taskID := insertBareTask(t, svc, "unverified", "codex")
+	err := svc.ObserveVerifiedOutcome(context.Background(), VerifiedOutcome{
+		TaskID: taskID, GenericTaskClass: domain.GenericTaskReview, ScopeKey: "repo.review", ExecutorKind: "codex", Accepted: true,
 	})
-	if err==nil{t.Fatal("unverified accepted outcome counted")}
+	if err == nil {
+		t.Fatal("unverified accepted outcome counted")
+	}
 }
 
-func insertObservation(t *testing.T,svc *Service,id domain.ID) domain.ID {
-	t.Helper();now:=formatTime(svc.clock.Now().UTC())
-	if _,err:=svc.store.DB().Exec(
+func insertObservation(t *testing.T, svc *Service, id domain.ID) domain.ID {
+	t.Helper()
+	now := formatTime(svc.clock.Now().UTC())
+	if _, err := svc.store.DB().Exec(
 		"INSERT INTO field_observations(observation_id, collective_id, category, basis_class, source_kind, summary_local, metrics_json, runtime_version, executor_kind, executor_version, enforcement, created_at) VALUES (?, 'collective', 'TEST', 'TEST', 'TEST', 'local', '{}', '', '', '', 'ENFORCED', ?)",
-		id,now);err!=nil{t.Fatal(err)}
+		id, now); err != nil {
+		t.Fatal(err)
+	}
 	return id
 }
 
-func insertBareTask(t *testing.T,svc *Service,name,executor string) domain.ID {
-	t.Helper();ctx:=context.Background();now:=formatTime(svc.clock.Now().UTC())
-	taskID:=domain.ID("task-"+name);attemptID:=domain.ID("attempt-"+name)
-	if _,err:=svc.store.DB().ExecContext(ctx,
+func insertBareTask(t *testing.T, svc *Service, name, executor string) domain.ID {
+	t.Helper()
+	ctx := context.Background()
+	now := formatTime(svc.clock.Now().UTC())
+	taskID := domain.ID("task-" + name)
+	attemptID := domain.ID("attempt-" + name)
+	if _, err := svc.store.DB().ExecContext(ctx,
 		"INSERT INTO tasks(task_id,purpose_kind,purpose_id,state,current_attempt_id,current_fence,acceptance_criteria_json,required_capabilities_json,required_enforcement,authority_ceiling_json,resource_envelope_id,priority,created_at,updated_at,task_class) VALUES (?, 'OWNER_DIRECTIVE', ?, 'SUCCEEDED', ?, 1, '[]', '[]', 'ENFORCED', '[]', 'env', 0, ?, ?, 'repo.review')",
-		taskID,name,attemptID,now,now);err!=nil{t.Fatal(err)}
-	if _,err:=svc.store.DB().ExecContext(ctx,
+		taskID, name, attemptID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.store.DB().ExecContext(ctx,
 		"INSERT INTO attempts(attempt_id,task_id,state,fence_generation,lease_state,lease_expires_at,started_at,completed_at,executor_kind) VALUES (?, ?, 'COMPLETED', 1, 'REVOKED', ?, ?, ?, ?)",
-		attemptID,taskID,formatTime(svc.clock.Now().Add(time.Hour)),now,now,executor);err!=nil{t.Fatal(err)}
+		attemptID, taskID, formatTime(svc.clock.Now().Add(time.Hour)), now, now, executor); err != nil {
+		t.Fatal(err)
+	}
 	return taskID
 }
 
-func insertVerifiedTask(t *testing.T,svc *Service,name,executor string,accepted bool) domain.ID {
-	t.Helper();ctx:=context.Background();taskID:=insertBareTask(t,svc,name,executor);now:=formatTime(svc.clock.Now().UTC())
+func insertVerifiedTask(t *testing.T, svc *Service, name, executor string, accepted bool) domain.ID {
+	t.Helper()
+	ctx := context.Background()
+	taskID := insertBareTask(t, svc, name, executor)
+	now := formatTime(svc.clock.Now().UTC())
 	var attemptID domain.ID
-	if err:=svc.store.DB().QueryRowContext(ctx,"SELECT current_attempt_id FROM tasks WHERE task_id = ?",taskID).Scan(&attemptID);err!=nil{t.Fatal(err)}
-	if accepted{
-		if _,err:=svc.store.DB().ExecContext(ctx,
+	if err := svc.store.DB().QueryRowContext(ctx, "SELECT current_attempt_id FROM tasks WHERE task_id = ?", taskID).Scan(&attemptID); err != nil {
+		t.Fatal(err)
+	}
+	if accepted {
+		if _, err := svc.store.DB().ExecContext(ctx,
 			"INSERT INTO acceptance_records(acceptance_id,task_id,attempt_id,verifier_id,verifier_type,criteria_result_json,evidence_ids_json,created_at) VALUES (?, ?, ?, 'verifier', 'TEST', '{\"met\":true}', '[]', ?)",
-			domain.NewID("acceptance"),taskID,attemptID,now);err!=nil{t.Fatal(err)}
-	}else{
-		if _,err:=svc.store.DB().ExecContext(ctx,
+			domain.NewID("acceptance"), taskID, attemptID, now); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		if _, err := svc.store.DB().ExecContext(ctx,
 			"UPDATE tasks SET state = 'CHALLENGED', updated_at = ? WHERE task_id = ?",
-			now,taskID);err!=nil{t.Fatal(err)}
-		if _,err:=svc.store.DB().ExecContext(ctx,
+			now, taskID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.store.DB().ExecContext(ctx,
 			"INSERT INTO task_challenges(challenge_id,task_id,scope,reason,evidence_ids_json,created_at) VALUES (?, ?, 'TASK', 'verified regression', '[]', ?)",
-			domain.NewID("challenge"),taskID,now);err!=nil{t.Fatal(err)}
-		if _,err:=svc.store.DB().ExecContext(ctx,
+			domain.NewID("challenge"), taskID, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := svc.store.DB().ExecContext(ctx,
 			"INSERT INTO execution_events(event_id,task_id,attempt_id,event_type,details_json,created_at) VALUES (?, ?, ?, 'TASK_CHALLENGED', '{}', ?)",
-			domain.NewID("event"),taskID,attemptID,now);err!=nil{t.Fatal(err)}
+			domain.NewID("event"), taskID, attemptID, now); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return taskID
 }

@@ -26,13 +26,13 @@ type FeedbackCandidateDTO struct {
 }
 
 type SanitizedFeedbackDTO struct {
-	ID              domain.ID `json:"id"`
-	CandidateID     domain.ID `json:"candidate_id"`
-	SchemaVersion   int       `json:"schema_version"`
-	ContentJSON     string    `json:"content_json"`
-	ContentHash     string    `json:"content_hash"`
-	CorrelationKey  string    `json:"correlation_key"`
-	Fingerprint     string    `json:"fingerprint"`
+	ID             domain.ID `json:"id"`
+	CandidateID    domain.ID `json:"candidate_id"`
+	SchemaVersion  int       `json:"schema_version"`
+	ContentJSON    string    `json:"content_json"`
+	ContentHash    string    `json:"content_hash"`
+	CorrelationKey string    `json:"correlation_key"`
+	Fingerprint    string    `json:"fingerprint"`
 }
 
 type FeedbackInspectDTO struct {
@@ -50,35 +50,35 @@ type FeedbackObserveRequest struct {
 }
 
 type FeedbackCandidateCreateRequest struct {
-	ObservationIDs     []domain.ID                     `json:"observation_ids"`
-	GenericTaskClass   domain.GenericTaskClass          `json:"generic_task_class"`
-	Category           string                           `json:"category"`
-	ExpectedBehavior   string                           `json:"expected_behavior"`
-	ObservedBehavior   string                           `json:"observed_behavior"`
-	StateTransitions   []string                         `json:"state_transitions,omitempty"`
-	Metrics            fieldfeedback.NormalizedMetrics  `json:"metrics,omitempty"`
-	HumanIntervention  bool                             `json:"human_intervention,omitempty"`
-	RecoveryResult     string                           `json:"recovery_result,omitempty"`
-	RuntimeVersion     string                           `json:"runtime_version,omitempty"`
-	ExecutorKind       string                           `json:"executor_kind,omitempty"`
-	ExecutorVersion    string                           `json:"executor_version,omitempty"`
-	Enforcement        domain.EnforcementLevel          `json:"enforcement"`
+	ObservationIDs    []domain.ID                     `json:"observation_ids"`
+	GenericTaskClass  domain.GenericTaskClass         `json:"generic_task_class"`
+	Category          string                          `json:"category"`
+	ExpectedBehavior  string                          `json:"expected_behavior"`
+	ObservedBehavior  string                          `json:"observed_behavior"`
+	StateTransitions  []string                        `json:"state_transitions,omitempty"`
+	Metrics           fieldfeedback.NormalizedMetrics `json:"metrics,omitempty"`
+	HumanIntervention bool                            `json:"human_intervention,omitempty"`
+	RecoveryResult    string                          `json:"recovery_result,omitempty"`
+	RuntimeVersion    string                          `json:"runtime_version,omitempty"`
+	ExecutorKind      string                          `json:"executor_kind,omitempty"`
+	ExecutorVersion   string                          `json:"executor_version,omitempty"`
+	Enforcement       domain.EnforcementLevel         `json:"enforcement"`
 }
 
 type FeedbackSanitizeDTO struct {
 	CandidateID domain.ID                  `json:"candidate_id"`
 	Outcome     domain.SanitizationOutcome `json:"outcome"`
 	ReasonCodes []string                   `json:"reason_codes,omitempty"`
-	Artifact    *SanitizedFeedbackDTO       `json:"artifact,omitempty"`
+	Artifact    *SanitizedFeedbackDTO      `json:"artifact,omitempty"`
 }
 
 type FeedbackObservationDTO struct {
-	ID         domain.ID `json:"id"`
-	TaskID     domain.ID `json:"task_id,omitempty"`
-	AttemptID  domain.ID `json:"attempt_id,omitempty"`
+	ID          domain.ID `json:"id"`
+	TaskID      domain.ID `json:"task_id,omitempty"`
+	AttemptID   domain.ID `json:"attempt_id,omitempty"`
 	OperationID domain.ID `json:"operation_id,omitempty"`
-	Category   string    `json:"category"`
-	SourceKind string    `json:"source_kind"`
+	Category    string    `json:"category"`
+	SourceKind  string    `json:"source_kind"`
 }
 
 type FeedbackEmitDTO struct {
@@ -136,7 +136,9 @@ func (s *Server) handleFeedbackSanitize(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	id, ok := pathID(w, r)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	artifact, result, err := s.deps.Sanitizer.Sanitize(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -149,7 +151,7 @@ func (s *Server) handleFeedbackSanitize(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	dto := FeedbackSanitizeDTO{CandidateID:id, Outcome:result.Outcome, ReasonCodes:reasons}
+	dto := FeedbackSanitizeDTO{CandidateID: id, Outcome: result.Outcome, ReasonCodes: reasons}
 	if result.Outcome == domain.SanitizationPass {
 		if artifact.ID == "" {
 			writeError(w, http.StatusInternalServerError, "sanitization PASS produced no immutable artifact")

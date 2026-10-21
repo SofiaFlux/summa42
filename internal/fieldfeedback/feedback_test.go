@@ -20,13 +20,13 @@ func TestCandidateCorrelationUsesOnlyControlledSafeShape(t *testing.T) {
 	}
 	feedback := NewFeedback(observer.store, observer.clock)
 	first, err := feedback.CreateCandidate(ctx, CandidateInput{
-		ObservationIDs: []domain.ID{observation.ID},
-		GenericTaskClass: domain.GenericTaskDebugging,
-		Category: "RECOVERY_FRICTION",
-		ExpectedBehavior: "recover without operator",
-		ObservedBehavior: "operator intervened for client A",
-		StateTransitions: []string{"EXECUTING", "FAILED", "ELIGIBLE", "EXECUTING"},
-		Metrics: NormalizedMetrics{RetryCount: int64ptr(2)},
+		ObservationIDs:    []domain.ID{observation.ID},
+		GenericTaskClass:  domain.GenericTaskDebugging,
+		Category:          "RECOVERY_FRICTION",
+		ExpectedBehavior:  "recover without operator",
+		ObservedBehavior:  "operator intervened for client A",
+		StateTransitions:  []string{"EXECUTING", "FAILED", "ELIGIBLE", "EXECUTING"},
+		Metrics:           NormalizedMetrics{RetryCount: int64ptr(2)},
 		HumanIntervention: true, RecoveryResult: "RECOVERED",
 		RuntimeVersion: "v1", ExecutorKind: "codex", ExecutorVersion: "x",
 		Enforcement: domain.EnforcementEnforced,
@@ -35,13 +35,13 @@ func TestCandidateCorrelationUsesOnlyControlledSafeShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, err := feedback.CreateCandidate(ctx, CandidateInput{
-		ObservationIDs: []domain.ID{observation.ID},
-		GenericTaskClass: domain.GenericTaskDebugging,
-		Category: "RECOVERY_FRICTION",
-		ExpectedBehavior: "different free text",
-		ObservedBehavior: "different customer-specific text",
-		StateTransitions: []string{"EXECUTING", "FAILED", "ELIGIBLE", "EXECUTING"},
-		Metrics: NormalizedMetrics{RetryCount: int64ptr(999)},
+		ObservationIDs:    []domain.ID{observation.ID},
+		GenericTaskClass:  domain.GenericTaskDebugging,
+		Category:          "RECOVERY_FRICTION",
+		ExpectedBehavior:  "different free text",
+		ObservedBehavior:  "different customer-specific text",
+		StateTransitions:  []string{"EXECUTING", "FAILED", "ELIGIBLE", "EXECUTING"},
+		Metrics:           NormalizedMetrics{RetryCount: int64ptr(999)},
 		HumanIntervention: false, RecoveryResult: "FAILED",
 		RuntimeVersion: "v999", ExecutorKind: "codex", ExecutorVersion: "other",
 		Enforcement: domain.EnforcementEnforced,
@@ -70,17 +70,17 @@ func TestCandidateRejectsUnsafeClassificationAndTransitionTokens(t *testing.T) {
 	feedback := NewFeedback(observer.store, observer.clock)
 
 	if _, err := feedback.CreateCandidate(ctx, CandidateInput{
-		ObservationIDs: []domain.ID{observation.ID},
+		ObservationIDs:   []domain.ID{observation.ID},
 		GenericTaskClass: domain.GenericTaskClass("client-x/payment-migration"),
-		Category: "TEST", ExpectedBehavior: "x", ObservedBehavior: "y",
+		Category:         "TEST", ExpectedBehavior: "x", ObservedBehavior: "y",
 		StateTransitions: []string{"EXECUTING"}, Enforcement: domain.EnforcementEnforced,
 	}); err == nil {
 		t.Fatal("organization-specific GenericTaskClass was accepted")
 	}
 	if _, err := feedback.CreateCandidate(ctx, CandidateInput{
-		ObservationIDs: []domain.ID{observation.ID},
+		ObservationIDs:   []domain.ID{observation.ID},
 		GenericTaskClass: domain.GenericTaskOther,
-		Category: "TEST", ExpectedBehavior: "x", ObservedBehavior: "y",
+		Category:         "TEST", ExpectedBehavior: "x", ObservedBehavior: "y",
 		StateTransitions: []string{"client/internal/path"}, Enforcement: domain.EnforcementEnforced,
 	}); err == nil {
 		t.Fatal("arbitrary transition token was accepted")
@@ -99,11 +99,11 @@ func TestCandidateLifecycleRejectsIllegalTerminalTransitions(t *testing.T) {
 	}
 	feedback := NewFeedback(observer.store, observer.clock)
 	candidate, err := feedback.CreateCandidate(ctx, CandidateInput{
-		ObservationIDs: []domain.ID{observation.ID},
+		ObservationIDs:   []domain.ID{observation.ID},
 		GenericTaskClass: domain.GenericTaskTesting,
-		Category: "TEST", ExpectedBehavior: "x", ObservedBehavior: "y",
+		Category:         "TEST", ExpectedBehavior: "x", ObservedBehavior: "y",
 		StateTransitions: []string{"EXECUTING", "AWAITING_VERIFICATION"},
-		Enforcement: domain.EnforcementEnforced,
+		Enforcement:      domain.EnforcementEnforced,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -125,9 +125,9 @@ func TestCandidateLifecycleRejectsIllegalTerminalTransitions(t *testing.T) {
 	}
 
 	second, err := feedback.CreateCandidate(ctx, CandidateInput{
-		ObservationIDs: []domain.ID{observation.ID},
+		ObservationIDs:   []domain.ID{observation.ID},
 		GenericTaskClass: domain.GenericTaskTesting,
-		Category: "TEST", ExpectedBehavior: "x", ObservedBehavior: "z",
+		Category:         "TEST", ExpectedBehavior: "x", ObservedBehavior: "z",
 		StateTransitions: []string{"EXECUTING"}, Enforcement: domain.EnforcementEnforced,
 	})
 	if err != nil {

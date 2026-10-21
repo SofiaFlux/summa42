@@ -100,9 +100,9 @@ func (s *Service) Init(ctx context.Context, request InitRequest) (InitResult, er
 		}
 
 		for _, principal := range []struct {
-			id      domain.ID
-			kind    string
-			signer  identity.Signer
+			id     domain.ID
+			kind   string
+			signer identity.Signer
 		}{
 			{id: ownerID, kind: "OWNER", signer: request.Owner},
 			{id: cubeID, kind: "CUBE", signer: request.Cube},

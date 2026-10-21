@@ -111,7 +111,6 @@ const (
 	FailureExecution           FailureClass = "EXECUTION"
 )
 
-
 type FeedbackCandidateState string
 
 const (

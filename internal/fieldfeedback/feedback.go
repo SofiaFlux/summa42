@@ -23,19 +23,19 @@ var (
 )
 
 type CandidateInput struct {
-	ObservationIDs     []domain.ID
-	GenericTaskClass   domain.GenericTaskClass
-	Category           string
-	ExpectedBehavior   string
-	ObservedBehavior   string
-	StateTransitions   []string
-	Metrics            NormalizedMetrics
-	HumanIntervention  bool
-	RecoveryResult     string
-	RuntimeVersion     string
-	ExecutorKind       string
-	ExecutorVersion    string
-	Enforcement        domain.EnforcementLevel
+	ObservationIDs    []domain.ID
+	GenericTaskClass  domain.GenericTaskClass
+	Category          string
+	ExpectedBehavior  string
+	ObservedBehavior  string
+	StateTransitions  []string
+	Metrics           NormalizedMetrics
+	HumanIntervention bool
+	RecoveryResult    string
+	RuntimeVersion    string
+	ExecutorKind      string
+	ExecutorVersion   string
+	Enforcement       domain.EnforcementLevel
 }
 
 type NormalizedMetrics struct {

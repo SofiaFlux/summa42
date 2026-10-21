@@ -167,11 +167,11 @@ func (s *Observer) recordWithDetectorKey(ctx context.Context, input ObservationI
 		}
 		payload, err := json.Marshal(map[string]any{
 			"observation_id": result.ID,
-			"category": result.Category,
-			"task_id": result.TaskID,
-			"attempt_id": result.AttemptID,
-			"operation_id": result.OperationID,
-			"source_kind": result.SourceKind,
+			"category":       result.Category,
+			"task_id":        result.TaskID,
+			"attempt_id":     result.AttemptID,
+			"operation_id":   result.OperationID,
+			"source_kind":    result.SourceKind,
 		})
 		if err != nil {
 			return err

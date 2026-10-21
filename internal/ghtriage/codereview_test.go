@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
-	"github.com/SofiaFlux/summa42/internal/testutil"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/testutil"
 	"github.com/SofiaFlux/summa42/internal/verification"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )

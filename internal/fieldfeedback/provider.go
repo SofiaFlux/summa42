@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"time"
 	"strings"
+	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/operations"
@@ -112,9 +112,9 @@ func (p *Provider) CostProfile(descriptor operations.IntentDescriptor) (operatio
 	return operations.CostProfile{
 		MaxExposure: 1,
 		Enforceability: resources.Enforceability{
-			CostControl: resources.CostTechnicallyCapped,
+			CostControl:    resources.CostTechnicallyCapped,
 			RequireHardCap: false,
-			Source: "feedback issue emission",
+			Source:         "feedback issue emission",
 		},
 	}, nil
 }
@@ -142,9 +142,9 @@ func (p *Provider) Dispatch(ctx context.Context, request operations.ProviderDisp
 		return operations.ProviderOutcome{}, errors.New("feedback sink returned negative actual cost")
 	}
 	return operations.ProviderOutcome{
-		State: domain.OperationConfirmedEffect,
+		State:             domain.OperationConfirmedEffect,
 		ProviderReference: strings.TrimSpace(reference),
-		ActualCost: actualCost,
+		ActualCost:        actualCost,
 	}, nil
 }
 
@@ -168,9 +168,9 @@ func (p *Provider) LookupOutcome(ctx context.Context, request operations.Provide
 		return operations.ProviderOutcome{}, errors.New("feedback sink found marker without provider reference")
 	}
 	return operations.ProviderOutcome{
-		State: domain.OperationConfirmedEffect,
+		State:             domain.OperationConfirmedEffect,
 		ProviderReference: strings.TrimSpace(reference),
-		ActualCost: 0,
+		ActualCost:        0,
 	}, nil
 }
 
@@ -216,8 +216,8 @@ func issuePayload(artifact domain.SanitizedFeedback) (IssuePayload, error) {
 		category = "FIELD_FEEDBACK"
 	}
 	return IssuePayload{
-		Title: "[Summa42] " + category,
-		Body: artifact.ContentJSON,
+		Title:  "[Summa42] " + category,
+		Body:   artifact.ContentJSON,
 		Marker: "summa42-feedback:" + artifact.Fingerprint,
 	}, nil
 }

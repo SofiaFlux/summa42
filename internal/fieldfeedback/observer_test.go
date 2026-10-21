@@ -66,7 +66,7 @@ func TestObservationRecordValidatesReferencesAndKeepsLocalSummaryOutOfAudit(t *t
 	if _, err := observer.Record(ctx, ObservationInput{
 		TaskID: taskID, AttemptID: attemptID, Category: "APPROVAL_FRICTION",
 		BasisClass: "OPERATOR_OBSERVATION", SourceKind: "OPERATOR", SummaryLocal: secretSummary,
-		Metrics: map[string]any{"retry_count": 2, "arbitrary_local_note": "keep local"},
+		Metrics:        map[string]any{"retry_count": 2, "arbitrary_local_note": "keep local"},
 		RuntimeVersion: "test", ExecutorKind: "test-executor", Enforcement: domain.EnforcementEnforced,
 		EvidenceIDs: []domain.ID{evidenceID},
 	}); err != nil {

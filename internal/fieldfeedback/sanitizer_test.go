@@ -31,8 +31,8 @@ func TestSanitizerLeakCorpusNeverPassesSensitiveMarker(t *testing.T) {
 		t.Run(tc.Name, func(t *testing.T) {
 			feedback, candidate := sanitizerCandidate(t, "Observed behavior included "+tc.Marker)
 			sanitizer, err := NewDeterministicSanitizer(feedback.store, feedback.clock, feedback, DeterministicSanitizerConfig{
-				Version: "test-v1",
-				DenyPatterns: []*regexp.Regexp{regexp.MustCompile(`(?i)ACME-SECRET`)},
+				Version:               "test-v1",
+				DenyPatterns:          []*regexp.Regexp{regexp.MustCompile(`(?i)ACME-SECRET`)},
 				AllowExecutorMetadata: true,
 			})
 			if err != nil {
@@ -93,11 +93,11 @@ func TestSanitizedContentHashAndFingerprintAreCanonicalAndImmutable(t *testing.T
 func TestSameSafeContentHasStableFingerprintButDistinctArtifacts(t *testing.T) {
 	feedback, firstCandidate := sanitizerCandidate(t, "Generic stable safe behavior")
 	secondCandidate, err := feedback.CreateCandidate(context.Background(), CandidateInput{
-		ObservationIDs: []domain.ID{candidateObservationID(t, feedback, firstCandidate.ID)},
+		ObservationIDs:   []domain.ID{candidateObservationID(t, feedback, firstCandidate.ID)},
 		GenericTaskClass: domain.GenericTaskDebugging, Category: "RECOVERY_FRICTION",
 		ExpectedBehavior: "recover automatically", ObservedBehavior: "Generic stable safe behavior",
 		StateTransitions: []string{"EXECUTING", "FAILED", "ELIGIBLE", "EXECUTING"},
-		Metrics: NormalizedMetrics{}, RuntimeVersion: "runtime-v1", ExecutorKind: "codex",
+		Metrics:          NormalizedMetrics{}, RuntimeVersion: "runtime-v1", ExecutorKind: "codex",
 		ExecutorVersion: "executor-v1", Enforcement: domain.EnforcementEnforced,
 	})
 	if err != nil {
@@ -176,11 +176,11 @@ func sanitizerCandidate(t *testing.T, observed string) (*Feedback, domain.Feedba
 	}
 	feedback := NewFeedback(observer.store, observer.clock)
 	candidate, err := feedback.CreateCandidate(ctx, CandidateInput{
-		ObservationIDs: []domain.ID{observation.ID},
+		ObservationIDs:   []domain.ID{observation.ID},
 		GenericTaskClass: domain.GenericTaskDebugging, Category: "RECOVERY_FRICTION",
 		ExpectedBehavior: "recover automatically", ObservedBehavior: observed,
 		StateTransitions: []string{"EXECUTING", "FAILED", "ELIGIBLE", "EXECUTING"},
-		Metrics: NormalizedMetrics{}, RuntimeVersion: "runtime-v1", ExecutorKind: "codex",
+		Metrics:          NormalizedMetrics{}, RuntimeVersion: "runtime-v1", ExecutorKind: "codex",
 		ExecutorVersion: "executor-v1", Enforcement: domain.EnforcementEnforced,
 	})
 	if err != nil {
@@ -201,23 +201,30 @@ func candidateObservationID(t *testing.T, feedback *Feedback, candidateID domain
 	return id
 }
 
-
 func TestSanitizerNeverExportsUntrustedFreeTextWithoutAbstraction(t *testing.T) {
-	feedback,candidate:=sanitizerCandidate(t,"AcmeBank Phoenix migration failed in SofiaFlux/summa42")
-	if _,err:=feedback.store.DB().ExecContext(context.Background(),
+	feedback, candidate := sanitizerCandidate(t, "AcmeBank Phoenix migration failed in SofiaFlux/summa42")
+	if _, err := feedback.store.DB().ExecContext(context.Background(),
 		"UPDATE feedback_candidates SET expected_behavior = ?, recovery_result = ? WHERE candidate_id = ?",
-		"customer AcmeBank should recover","Phoenix project manual recovery",candidate.ID,
-	);err!=nil{t.Fatal(err)}
-	sanitizer,err:=NewDeterministicSanitizer(feedback.store,feedback.clock,feedback,DeterministicSanitizerConfig{
-		Version:"test-v1",AllowExecutorMetadata:true,
+		"customer AcmeBank should recover", "Phoenix project manual recovery", candidate.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	sanitizer, err := NewDeterministicSanitizer(feedback.store, feedback.clock, feedback, DeterministicSanitizerConfig{
+		Version: "test-v1", AllowExecutorMetadata: true,
 	})
-	if err!=nil{t.Fatal(err)}
-	artifact,result,err:=sanitizer.Sanitize(context.Background(),candidate.ID)
-	if err!=nil{t.Fatal(err)}
-	if result.Outcome!=domain.SanitizationPass{t.Fatalf("outcome=%s",result.Outcome)}
-	for _,forbidden:=range []string{"AcmeBank","Phoenix","SofiaFlux","summa42","expected_behavior","observed_behavior","recovery_result","correlation_key"}{
-		if strings.Contains(artifact.ContentJSON,forbidden){
-			t.Fatalf("structured export leaked %q: %s",forbidden,artifact.ContentJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, result, err := sanitizer.Sanitize(context.Background(), candidate.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != domain.SanitizationPass {
+		t.Fatalf("outcome=%s", result.Outcome)
+	}
+	for _, forbidden := range []string{"AcmeBank", "Phoenix", "SofiaFlux", "summa42", "expected_behavior", "observed_behavior", "recovery_result", "correlation_key"} {
+		if strings.Contains(artifact.ContentJSON, forbidden) {
+			t.Fatalf("structured export leaked %q: %s", forbidden, artifact.ContentJSON)
 		}
 	}
 }
