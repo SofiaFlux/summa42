@@ -334,7 +334,7 @@ func nullableID(id domain.ID) any {
 }
 
 func formatTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	return domain.FormatTime(value)
 }
 
 func (s *Observer) configured() error {

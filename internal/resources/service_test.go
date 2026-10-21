@@ -18,7 +18,7 @@ func newLedger(t *testing.T, hardLimit int64) (*Service, context.Context, domain
 	envelopeID := domain.NewID("envelope")
 	if _, err := store.DB().ExecContext(ctx,
 		`INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at) VALUES (?, ?, ?)`,
-		envelopeID, hardLimit, clk.Now().UTC().Format(time.RFC3339Nano),
+		envelopeID, hardLimit, domain.FormatTime(clk.Now()),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestAvailableSubtractsSettledHeldAndUnresolvedSeparately(t *testing.T) {
 	}
 }
 
-func TestReleaseFreesHeldOrReconciledUnresolvedExposure(t *testing.T) {
+func TestReleaseRejectsUnresolved(t *testing.T) {
 	svc, ctx, envelopeID := newLedger(t, 100)
 	held, err := svc.Reserve(ctx, envelopeID, 20, hardCapped())
 	if err != nil {
@@ -130,15 +130,42 @@ func TestReleaseFreesHeldOrReconciledUnresolvedExposure(t *testing.T) {
 	if err := svc.Release(ctx, held.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Release(ctx, unresolved.ID); err != nil {
-		t.Fatal(err)
+	if err := svc.Release(ctx, unresolved.ID); err == nil {
+		t.Fatal("release of an UNRESOLVED reservation must be rejected")
 	}
 	available, err := svc.Available(ctx, envelopeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if available != 100 {
-		t.Fatalf("available = %d, want 100", available)
+	if available != 70 { // unresolved exposure still consumes 30
+		t.Fatalf("available = %d, want 70", available)
+	}
+}
+
+func TestSettleFlagsOverSettlement(t *testing.T) {
+	svc, ctx, envelopeID := newLedger(t, 100)
+	over, err := svc.Reserve(ctx, envelopeID, 20, Enforceability{CostControl: CostEstimatedOnly, Source: "estimate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	within, err := svc.Reserve(ctx, envelopeID, 20, Enforceability{CostControl: CostEstimatedOnly, Source: "estimate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Settle(ctx, over.ID, 25); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Settle(ctx, within.ID, 20); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[domain.ID]int{over.ID: 1, within.ID: 0} {
+		var got int
+		if err := svc.store.DB().QueryRowContext(ctx, `SELECT over_settled FROM resource_reservations WHERE reservation_id = ?`, id).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("over_settled(%s) = %d, want %d", id, got, want)
+		}
 	}
 }
 

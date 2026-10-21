@@ -590,7 +590,7 @@ func nullableInt(v *int64) any {
 	}
 	return *v
 }
-func formatTime(v time.Time) string { return v.UTC().Format(time.RFC3339Nano) }
+func formatTime(v time.Time) string { return domain.FormatTime(v) }
 
 func (s *Service) configured() error {
 	if s == nil || s.store == nil || s.store.DB() == nil || s.clock == nil || s.approvals == nil || s.audit == nil || s.ownerID == "" {

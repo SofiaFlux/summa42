@@ -448,4 +448,4 @@ func boolInt(value bool) int {
 	return 0
 }
 
-func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+func formatTime(value time.Time) string { return domain.FormatTime(value) }

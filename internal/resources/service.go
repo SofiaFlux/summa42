@@ -91,7 +91,7 @@ func (s *Service) SettleInTx(ctx context.Context, tx *sql.Tx, reservationID doma
 		return errors.New("reservation id and non-negative actual amount are required")
 	}
 	now := s.clock.Now().UTC()
-	stateValue, settledAmount, err := loadReservationState(ctx, tx, reservationID)
+	stateValue, settledAmount, reservedAmount, err := loadReservationState(ctx, tx, reservationID)
 	if err != nil {
 		return err
 	}
@@ -103,8 +103,8 @@ func (s *Service) SettleInTx(ctx context.Context, tx *sql.Tx, reservationID doma
 		return errors.New("reservation already settled with a different actual amount")
 	case domain.ReservationHeld, domain.ReservationUnresolved:
 		_, err := tx.ExecContext(ctx,
-			`UPDATE resource_reservations SET state = ?, settled_amount = ?, updated_at = ? WHERE reservation_id = ?`,
-			domain.ReservationSettled, actualAmount, formatTime(now), reservationID,
+			`UPDATE resource_reservations SET state = ?, settled_amount = ?, over_settled = ?, updated_at = ? WHERE reservation_id = ?`,
+			domain.ReservationSettled, actualAmount, boolInt(actualAmount > reservedAmount), formatTime(now), reservationID,
 		)
 		return err
 	default:
@@ -123,7 +123,7 @@ func (s *Service) MarkUnresolvedInTx(ctx context.Context, tx *sql.Tx, reservatio
 		return errors.New("reservation id is required")
 	}
 	now := s.clock.Now().UTC()
-	stateValue, _, err := loadReservationState(ctx, tx, reservationID)
+	stateValue, _, _, err := loadReservationState(ctx, tx, reservationID)
 	if err != nil {
 		return err
 	}
@@ -152,14 +152,14 @@ func (s *Service) ReleaseInTx(ctx context.Context, tx *sql.Tx, reservationID dom
 		return errors.New("reservation id is required")
 	}
 	now := s.clock.Now().UTC()
-	stateValue, _, err := loadReservationState(ctx, tx, reservationID)
+	stateValue, _, _, err := loadReservationState(ctx, tx, reservationID)
 	if err != nil {
 		return err
 	}
 	switch stateValue {
 	case domain.ReservationReleased:
 		return nil
-	case domain.ReservationHeld, domain.ReservationUnresolved:
+	case domain.ReservationHeld:
 		_, err := tx.ExecContext(ctx,
 			`UPDATE resource_reservations SET state = ?, updated_at = ? WHERE reservation_id = ?`,
 			domain.ReservationReleased, formatTime(now), reservationID,
@@ -205,18 +205,19 @@ func availableIn(ctx context.Context, q queryRower, envelopeID domain.ID) (int64
 	return hardLimit - settled - held - unresolved, nil
 }
 
-func loadReservationState(ctx context.Context, tx *sql.Tx, reservationID domain.ID) (domain.ReservationState, sql.NullInt64, error) {
+func loadReservationState(ctx context.Context, tx *sql.Tx, reservationID domain.ID) (domain.ReservationState, sql.NullInt64, int64, error) {
 	var stateValue domain.ReservationState
 	var settled sql.NullInt64
+	var reserved int64
 	if err := tx.QueryRowContext(ctx,
-		`SELECT state, settled_amount FROM resource_reservations WHERE reservation_id = ?`, reservationID,
-	).Scan(&stateValue, &settled); err != nil {
+		`SELECT state, settled_amount, reserved_amount FROM resource_reservations WHERE reservation_id = ?`, reservationID,
+	).Scan(&stateValue, &settled, &reserved); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return "", sql.NullInt64{}, fmt.Errorf("reservation %q not found", reservationID)
+			return "", sql.NullInt64{}, 0, fmt.Errorf("reservation %q not found", reservationID)
 		}
-		return "", sql.NullInt64{}, err
+		return "", sql.NullInt64{}, 0, err
 	}
-	return stateValue, settled, nil
+	return stateValue, settled, reserved, nil
 }
 
 func validateReservationRequest(envelopeID domain.ID, amount int64, e Enforceability) error {
@@ -260,9 +261,7 @@ func boolInt(value bool) int {
 	return 0
 }
 
-func formatTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
-}
+func formatTime(value time.Time) string { return domain.FormatTime(value) }
 
 func (s *Service) configured() error {
 	if s == nil || s.store == nil || s.clock == nil {

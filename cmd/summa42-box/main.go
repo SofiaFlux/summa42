@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,6 +23,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/adoeffects"
 	"github.com/SofiaFlux/summa42/internal/adomcp"
 	"github.com/SofiaFlux/summa42/internal/adoreview"
+	"github.com/SofiaFlux/summa42/internal/bootstrap"
 	"github.com/SofiaFlux/summa42/internal/capabilities"
 	"github.com/SofiaFlux/summa42/internal/control"
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -405,11 +409,23 @@ func loadStartupMaterial(ctx context.Context, cfg localconfig.Config) (startupMa
 		module           []byte
 		policyHash       string
 		capabilitiesHash string
+		policySigner     sql.NullString
+		policySignature  []byte
 	)
 	if err := store.DB().QueryRowContext(ctx,
-		"SELECT policy_set_id, module_name, module, policy_hash, capabilities_hash FROM policy_sets WHERE active = 1",
-	).Scan(&policySetID, &moduleName, &module, &policyHash, &capabilitiesHash); err != nil {
+		"SELECT policy_set_id, module_name, module, policy_hash, capabilities_hash, signer_principal_id, signature FROM policy_sets WHERE active = 1",
+	).Scan(&policySetID, &moduleName, &module, &policyHash, &capabilitiesHash, &policySigner, &policySignature); err != nil {
 		return startupMaterial{}, fmt.Errorf("load active policy set: %w", err)
+	}
+	if err := verifyConstitutionSignature(ctx, store.DB()); err != nil {
+		return startupMaterial{}, err
+	}
+	// Bootstrap-created sets are unsigned (v1, and v2 at init); only a set
+	// activated by `summa42 policy upgrade` carries an Owner signature.
+	if len(policySignature) > 0 {
+		if err := verifyPolicySetSignature(ctx, store.DB(), cfg.OwnerPrincipalID, policySigner.String, policySignature, policySetID, policyHash, capabilitiesHash); err != nil {
+			return startupMaterial{}, err
+		}
 	}
 	if policySetID != cfg.ActivePolicySetID {
 		return startupMaterial{}, fmt.Errorf("active policy set %s does not match config %s", policySetID, cfg.ActivePolicySetID)
@@ -442,6 +458,53 @@ func loadStartupMaterial(ctx context.Context, cfg localconfig.Config) (startupMa
 		policyEngine:   engine,
 		ownerPublicKey: append(ed25519.PublicKey(nil), publicKey...),
 	}, nil
+}
+
+// verifyConstitutionSignature checks that the active constitution's bytes hash
+// to its recorded content hash and carry a valid signature by the Constitutional
+// Root principal recorded in collective_metadata.
+func verifyConstitutionSignature(ctx context.Context, db *sql.DB) error {
+	var (
+		content, signature, rootKey []byte
+		contentHash                 string
+		signerID, rootID            domain.ID
+	)
+	if err := db.QueryRowContext(ctx, `
+		SELECT c.content, c.content_hash, c.signature, c.signer_principal_id, m.constitutional_root_principal_id, p.public_key
+		FROM constitutions c
+		JOIN collective_metadata m ON m.active_constitution_version = c.version
+		JOIN principals p ON p.principal_id = m.constitutional_root_principal_id
+		WHERE c.active = 1`,
+	).Scan(&content, &contentHash, &signature, &signerID, &rootID, &rootKey); err != nil {
+		return fmt.Errorf("load active constitution: %w", err)
+	}
+	digest := sha256.Sum256(content)
+	if hex.EncodeToString(digest[:]) != contentHash {
+		return errors.New("active constitution content does not match its recorded hash")
+	}
+	if signerID != rootID || len(rootKey) != ed25519.PublicKeySize || !ed25519.Verify(ed25519.PublicKey(rootKey), digest[:], signature) {
+		return errors.New("active constitution signature is not a valid Constitutional Root signature")
+	}
+	return nil
+}
+
+// verifyPolicySetSignature checks an Owner-signed policy set against the
+// Collective Owner's public key.
+func verifyPolicySetSignature(ctx context.Context, db *sql.DB, ownerID domain.ID, signerID string, signature []byte, policySetID domain.ID, policyHash, capabilitiesHash string) error {
+	if domain.ID(signerID) != ownerID {
+		return fmt.Errorf("active policy set %s is signed by %q, not the Collective Owner", policySetID, signerID)
+	}
+	var ownerKey []byte
+	if err := db.QueryRowContext(ctx,
+		"SELECT public_key FROM principals WHERE principal_id = ? AND principal_kind = 'OWNER'", ownerID,
+	).Scan(&ownerKey); err != nil {
+		return fmt.Errorf("load Owner public key for policy set signature: %w", err)
+	}
+	digest := bootstrap.PolicySetSigningDigest(policy.Profile{PolicySetID: policySetID, PolicyHash: policyHash, CapabilitiesHash: capabilitiesHash})
+	if len(ownerKey) != ed25519.PublicKeySize || !ed25519.Verify(ed25519.PublicKey(ownerKey), digest, signature) {
+		return fmt.Errorf("active policy set %s signature is invalid", policySetID)
+	}
+	return nil
 }
 
 // subcommands maps each run-* name (and its run-repo-* alias) to its command.

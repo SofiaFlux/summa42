@@ -37,11 +37,11 @@ func initializedCollective(t *testing.T) localconfig.Config {
 	}
 	defer store.DB().Close()
 
-	owner, err := identity.NewLocalEd25519(filepath.Join(root, "keys", "owner.key"), "owner")
+	owner, err := identity.CreateLocalEd25519(filepath.Join(root, "keys", "owner.key"), "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cube, err := identity.NewLocalEd25519(filepath.Join(root, "keys", "cube.key"), "cube")
+	cube, err := identity.CreateLocalEd25519(filepath.Join(root, "keys", "cube.key"), "cube")
 	if err != nil {
 		t.Fatal(err)
 	}

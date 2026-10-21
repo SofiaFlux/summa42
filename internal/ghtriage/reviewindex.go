@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -60,7 +59,7 @@ func (r *reviewIndex) LinkReview(ctx context.Context, decisionID domain.ID, revi
 	if r == nil || r.store == nil {
 		return false, errors.New("review index is not configured")
 	}
-	now := r.clock.Now().UTC().Format(time.RFC3339Nano)
+	now := domain.FormatTime(r.clock.Now())
 	result, err := r.store.DB().ExecContext(ctx,
 		`INSERT INTO github_issue_triage_reviews
 		 (decision_evidence_id, reviewer_version, state_fingerprint, verdict_evidence_id, created_at)

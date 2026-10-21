@@ -228,7 +228,7 @@ func TestMissionCreationRequiresOwnerSignatureBoundToStatement(t *testing.T) {
 
 func TestClientCreatesMissionThroughSignedControlFlow(t *testing.T) {
 	server, _, _, _, _, _, _ := newTestServer(t)
-	signer, err := identity.NewLocalEd25519(filepath.Join(t.TempDir(), "owner.key"), "owner")
+	signer, err := identity.CreateLocalEd25519(filepath.Join(t.TempDir(), "owner.key"), "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestSignedMissionBecomesValidDurableTaskPurpose(t *testing.T) {
 	defer store.DB().Close()
 	service := purpose.New(store, clock.System{})
 	server, _, _, _, _, _, _ := newTestServer(t)
-	signer, err := identity.NewLocalEd25519(filepath.Join(t.TempDir(), "owner.key"), "owner")
+	signer, err := identity.CreateLocalEd25519(filepath.Join(t.TempDir(), "owner.key"), "owner")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +600,7 @@ func TestApprovalDTOIncludesCanonicalIntent(t *testing.T) {
 
 func TestClientApproveRefusesChallengeWithDifferentDigest(t *testing.T) {
 	server, _, _, approvals, _, _, _ := newTestServer(t)
-	signer, err := identity.NewLocalEd25519(filepath.Join(t.TempDir(), "owner.key"), "owner")
+	signer, err := identity.CreateLocalEd25519(filepath.Join(t.TempDir(), "owner.key"), "owner")
 	if err != nil {
 		t.Fatal(err)
 	}

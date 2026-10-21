@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/identity"
@@ -42,7 +41,7 @@ func (s *Service) UpgradePolicy(ctx context.Context, owner identity.Signer) (dom
 	if err != nil {
 		return "", fmt.Errorf("sign policy set: %w", err)
 	}
-	now := s.clock.Now().UTC().Format(time.RFC3339Nano)
+	now := domain.FormatTime(s.clock.Now())
 	err = s.store.WithTx(ctx, func(tx *sql.Tx) error {
 		var ownerID domain.ID
 		var publicKey []byte

@@ -69,6 +69,12 @@ func (s *Service) Next(ctx context.Context, capacity CapacitySnapshot) (*TaskCan
 		if !task.EarliestStart.IsZero() && task.EarliestStart.After(now) {
 			continue
 		}
+		if !task.Deadline.IsZero() && now.After(task.Deadline) {
+			if _, err := s.execution.ExpireEligibleTask(ctx, task.ID); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err := s.purpose.ValidatePurpose(ctx, task.Purpose); err != nil {
 			if errors.Is(err, domain.ErrInvalidPurpose) {
 				continue

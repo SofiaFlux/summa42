@@ -1066,7 +1066,7 @@ func boolInt(value bool) int {
 	return 0
 }
 
-func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+func formatTime(value time.Time) string { return domain.FormatTime(value) }
 
 func (s *Service) configured() error {
 	if s == nil || s.store == nil || s.clock == nil || s.execution == nil || s.policy == nil || s.resources == nil || s.approvals == nil || s.collectiveID == "" {

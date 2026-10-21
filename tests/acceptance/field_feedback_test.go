@@ -124,7 +124,7 @@ func newFeedbackAcceptanceFixture(t *testing.T, mode localconfig.FeedbackMode, l
 	ctx := context.Background()
 	root := t.TempDir()
 	clk := testutil.NewClock(time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC))
-	owner, err := identity.NewLocalEd25519(filepath.Join(root, "owner.key"), "owner")
+	owner, err := identity.CreateLocalEd25519(filepath.Join(root, "owner.key"), "owner")
 	if err != nil {
 		t.Fatal(err)
 	}

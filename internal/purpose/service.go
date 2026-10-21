@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -31,7 +30,7 @@ func (s *Service) CreateMission(ctx context.Context, statement string) (domain.I
 		return "", fmt.Errorf("%w: Mission statement is required", domain.ErrInvalidPurpose)
 	}
 	id := domain.NewID("mission")
-	now := s.clock.Now().UTC().Format(time.RFC3339Nano)
+	now := domain.FormatTime(s.clock.Now())
 	if _, err := s.store.DB().ExecContext(ctx,
 		`INSERT INTO missions(mission_id, statement, active, created_at) VALUES (?, ?, 1, ?)`,
 		id, statement, now,
@@ -63,7 +62,7 @@ func (s *Service) DeactivateMission(ctx context.Context, missionID domain.ID) er
 	if missionID == "" {
 		return fmt.Errorf("%w: Mission id is required", domain.ErrInvalidPurpose)
 	}
-	now := s.clock.Now().UTC().Format(time.RFC3339Nano)
+	now := domain.FormatTime(s.clock.Now())
 	result, err := s.store.DB().ExecContext(ctx,
 		`UPDATE missions SET active = 0, deactivated_at = ? WHERE mission_id = ? AND active = 1`,
 		now, missionID,
@@ -90,7 +89,7 @@ func (s *Service) CreateGoal(ctx context.Context, purpose domain.PurposeRef, sta
 		return "", fmt.Errorf("%w: Goal statement is required", domain.ErrInvalidPurpose)
 	}
 	id := domain.NewID("goal")
-	now := s.clock.Now().UTC().Format(time.RFC3339Nano)
+	now := domain.FormatTime(s.clock.Now())
 	err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
 		if err := validatePurpose(ctx, tx, purpose); err != nil {
 			return err
@@ -117,7 +116,7 @@ func (s *Service) CreateObligation(ctx context.Context, source, statement string
 		return "", fmt.Errorf("%w: Obligation source and statement are required", domain.ErrInvalidPurpose)
 	}
 	id := domain.NewID("obligation")
-	now := s.clock.Now().UTC().Format(time.RFC3339Nano)
+	now := domain.FormatTime(s.clock.Now())
 	if _, err := s.store.DB().ExecContext(ctx,
 		`INSERT INTO obligations(obligation_id, source, statement, active, created_at) VALUES (?, ?, ?, 1, ?)`,
 		id, source, statement, now,

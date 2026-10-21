@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -89,7 +88,7 @@ func (s *Service) Init(ctx context.Context, request InitRequest) (InitResult, er
 		ConstitutionHash:              hex.EncodeToString(digest[:]),
 		PolicySetID:                   policyProfile.PolicySetID,
 	}
-	now := s.clock.Now().UTC().Format(time.RFC3339Nano)
+	now := domain.FormatTime(s.clock.Now())
 
 	err = s.store.WithTx(ctx, func(tx *sql.Tx) error {
 		var existing int

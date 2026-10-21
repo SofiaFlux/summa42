@@ -171,7 +171,7 @@ func TestRootWiresControlCommandsAndStableJSONOutput(t *testing.T) {
 func TestMissionCreateUsesOwnerKeyAndReturnsID(t *testing.T) {
 	api := &fakeControlAPI{}
 	keyPath := filepath.Join(t.TempDir(), "owner.pem")
-	if _, err := identity.NewLocalEd25519(keyPath, "owner"); err != nil {
+	if _, err := identity.CreateLocalEd25519(keyPath, "owner"); err != nil {
 		t.Fatal(err)
 	}
 	output := executeCommand(t, newRootCommandWithClient(api), "--json", "mission", "create", "Maintain this repository safely", "--owner-key", keyPath)
@@ -203,7 +203,7 @@ func TestTaskCreateAndApproveCallControlAPI(t *testing.T) {
 	}
 
 	keyPath := filepath.Join(t.TempDir(), "owner.pem")
-	if _, err := identity.NewLocalEd25519(keyPath, "owner"); err != nil {
+	if _, err := identity.CreateLocalEd25519(keyPath, "owner"); err != nil {
 		t.Fatal(err)
 	}
 	stdinIsTTY = func() bool { return false }
@@ -255,7 +255,7 @@ func findCommand(t *testing.T, root *cobra.Command, path ...string) *cobra.Comma
 func approveWith(t *testing.T, api *fakeControlAPI, tty bool, stdin string, args ...string) (string, error) {
 	t.Helper()
 	keyPath := filepath.Join(t.TempDir(), "owner.pem")
-	if _, err := identity.NewLocalEd25519(keyPath, "owner"); err != nil {
+	if _, err := identity.CreateLocalEd25519(keyPath, "owner"); err != nil {
 		t.Fatal(err)
 	}
 	prev := stdinIsTTY

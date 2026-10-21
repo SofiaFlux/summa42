@@ -11,6 +11,9 @@ import (
 	"github.com/Microsoft/go-winio"
 )
 
+// ownerOnlySDDL grants full access to the object owner only (protected DACL).
+const ownerOnlySDDL = "D:P(A;;GA;;;OW)"
+
 func DefaultEndpoint() string {
 	return `\\.\pipe\summa42-control`
 }
@@ -19,7 +22,7 @@ func ListenLocal(pipePath string) (net.Listener, error) {
 	if pipePath == "" {
 		pipePath = DefaultEndpoint()
 	}
-	return winio.ListenPipe(pipePath, nil)
+	return winio.ListenPipe(pipePath, &winio.PipeConfig{SecurityDescriptor: ownerOnlySDDL})
 }
 
 func localHTTPClient(pipePath string) *http.Client {

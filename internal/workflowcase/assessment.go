@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/workflow"
@@ -113,7 +112,7 @@ func (s *Service) Assess(ctx context.Context, request AssessmentRequest) (Assess
 		if err != nil {
 			return err
 		}
-		now := s.clock.Now().UTC().Format(time.RFC3339Nano)
+		now := domain.FormatTime(s.clock.Now())
 		_, err = tx.ExecContext(ctx, `UPDATE workflow_cases SET state=?, current_work_id=?, next_work_json=?, completed_steps=?, remaining_budget=?, progress_signature=?, updated_at=? WHERE case_id=?`,
 			current.State, current.CurrentWorkID, workJSON, current.CompletedSteps, current.RemainingBudget, current.ProgressSignature, now, current.ID)
 		if err != nil {

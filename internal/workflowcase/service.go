@@ -541,7 +541,7 @@ func (s *Service) prepareObservation(observation Observation) (preparedObservati
 	prepared.requestJSON = string(requestJSON)
 	prepared.grantJSON = string(grantJSON)
 	prepared.workJSON = string(workJSON)
-	prepared.now = s.clock.Now().UTC().Format(time.RFC3339Nano)
+	prepared.now = domain.FormatTime(s.clock.Now())
 	return prepared, nil
 }
 
@@ -694,5 +694,5 @@ func scanVerification(row rowScanner) (VerificationRecord, error) {
 }
 
 func formatWorkflowTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	return domain.FormatTime(value)
 }

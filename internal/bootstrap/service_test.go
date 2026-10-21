@@ -109,7 +109,7 @@ func TestInitRefusesToReplaceExistingOwnerOrConstitution(t *testing.T) {
 
 func mustSigner(t *testing.T, path, prefix string) identity.Signer {
 	t.Helper()
-	signer, err := identity.NewLocalEd25519(path, prefix)
+	signer, err := identity.CreateLocalEd25519(path, prefix)
 	if err != nil {
 		t.Fatal(err)
 	}

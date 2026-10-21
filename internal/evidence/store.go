@@ -66,7 +66,31 @@ func New(store *state.Store, root string, clk clock.Clock) (*Store, error) {
 	if err := os.MkdirAll(filepath.Join(abs, "tmp"), 0o700); err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(filepath.Join(abs, "blobs", "quarantine"), 0o700); err != nil {
+		return nil, err
+	}
+	sweepStaleTmp(filepath.Join(abs, "tmp"))
 	return &Store{state: store, root: abs, clock: clk}, nil
+}
+
+// staleTmpAge keeps the sweep away from staging files of a concurrent Put in
+// another process sharing the root.
+const staleTmpAge = time.Hour
+
+// sweepStaleTmp removes staging files left behind by a crashed Put. Best effort.
+func sweepStaleTmp(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "evidence-") {
+			continue
+		}
+		if info, err := e.Info(); err == nil && time.Since(info.ModTime()) > staleTmpAge {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 func (s *Store) Put(ctx context.Context, r io.Reader, metadata Metadata) (EvidenceObject, error) {
@@ -131,7 +155,7 @@ func (s *Store) Put(ctx context.Context, r io.Reader, metadata Metadata) (Eviden
 		Kind: metadata.Kind, SizeBytes: size, CreatedAt: now,
 	}
 	if err := s.state.WithTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO evidence_objects(evidence_id, content_hash, media_type, kind, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?)`, object.ID, object.ContentHash, object.MediaType, object.Kind, object.SizeBytes, now.Format(time.RFC3339Nano)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO evidence_objects(evidence_id, content_hash, media_type, kind, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?)`, object.ID, object.ContentHash, object.MediaType, object.Kind, object.SizeBytes, domain.FormatTime(now)); err != nil {
 			return err
 		}
 		if metadata.Subject != "" {
@@ -345,21 +369,27 @@ func (s *Store) Get(ctx context.Context, id domain.ID) (EvidenceObject, []byte, 
 		}
 		return EvidenceObject{}, nil, fmt.Errorf("read evidence blob: %w", err)
 	}
-	if err := verifyHash(path, object.ContentHash); err != nil {
-		return EvidenceObject{}, nil, fmt.Errorf("verify evidence blob: %w", err)
+	if int64(len(data)) != object.SizeBytes {
+		return EvidenceObject{}, nil, fmt.Errorf("%w: evidence %q blob is %d bytes, recorded size_bytes %d", ErrEvidenceCorrupt, id, len(data), object.SizeBytes)
+	}
+	sum := sha256.Sum256(data)
+	if got := hex.EncodeToString(sum[:]); got != object.ContentHash {
+		return EvidenceObject{}, nil, fmt.Errorf("%w: evidence blob hash mismatch: got %s want %s", ErrEvidenceCorrupt, got, object.ContentHash)
 	}
 	return object, data, nil
 }
 
 func persistBlob(tempPath, blobPath, expectedHash string, expectedSize int64) error {
 	if info, err := os.Stat(blobPath); err == nil {
-		if info.Size() != expectedSize {
-			return fmt.Errorf("existing evidence blob size mismatch for %s", expectedHash)
+		if info.Size() == expectedSize && verifyHash(blobPath, expectedHash) == nil {
+			return os.Remove(tempPath)
 		}
-		if err := verifyHash(blobPath, expectedHash); err != nil {
-			return err
+		// Corrupt existing blob: quarantine it so the verified staged copy replaces it.
+		quarantine := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(blobPath))), "quarantine",
+			fmt.Sprintf("%s.%d", expectedHash, time.Now().UnixNano()))
+		if err := os.Rename(blobPath, quarantine); err != nil {
+			return fmt.Errorf("quarantine corrupt evidence blob %s: %w", expectedHash, err)
 		}
-		return os.Remove(tempPath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

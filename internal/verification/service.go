@@ -18,6 +18,14 @@ import (
 	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 )
 
+var (
+	// ErrUnsettledOperations refuses completion while the attempt still has
+	// DISPATCHED or OUTCOME_UNKNOWN external operations.
+	ErrUnsettledOperations = errors.New("attempt has DISPATCHED or OUTCOME_UNKNOWN operations")
+	// ErrVerifierIsExecutor refuses acceptance by the identity that executed the attempt.
+	ErrVerifierIsExecutor = errors.New("verifier must differ from the attempt's executor")
+)
+
 type CompletionManifest struct {
 	EvidenceIDs []domain.ID
 }
@@ -93,6 +101,16 @@ func (s *Service) CompleteAttemptWithGuard(ctx context.Context, attemptID domain
 		}
 		if err := requireEvidence(ctx, tx, evidenceIDs); err != nil {
 			return err
+		}
+		var unsettled int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM external_operations WHERE attempt_id = ? AND state IN (?, ?)`,
+			attemptID, domain.OperationDispatched, domain.OperationOutcomeUnknown,
+		).Scan(&unsettled); err != nil {
+			return err
+		}
+		if unsettled != 0 {
+			return fmt.Errorf("%w (%d)", ErrUnsettledOperations, unsettled)
 		}
 		record.TaskID = guarded.TaskID
 		if _, err := tx.ExecContext(ctx,
@@ -204,6 +222,13 @@ func (s *Service) AcceptTaskWithGuard(ctx context.Context, taskID domain.ID, req
 				return errors.New("durable completion record is required before acceptance")
 			}
 			return err
+		}
+		var executorKind string
+		if err := tx.QueryRowContext(ctx, `SELECT executor_kind FROM attempts WHERE attempt_id = ?`, record.AttemptID).Scan(&executorKind); err != nil {
+			return err
+		}
+		if strings.EqualFold(strings.TrimSpace(executorKind), strings.TrimSpace(string(request.VerifierID))) {
+			return fmt.Errorf("%w: %q", ErrVerifierIsExecutor, executorKind)
 		}
 		if err := requireEvidence(ctx, tx, evidenceIDs); err != nil {
 			return err
@@ -352,7 +377,7 @@ func appendExecutionEvent(ctx context.Context, tx *sql.Tx, taskID, attemptID dom
 }
 
 func formatTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	return domain.FormatTime(value)
 }
 
 func (s *Service) configured() error {

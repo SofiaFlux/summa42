@@ -217,7 +217,7 @@ func TestListAssessmentsRoundTripsStoredJSON(t *testing.T) {
 		t.Fatalf("records = %+v, want one", records)
 	}
 	record := records[0]
-	if record.ID != storedID || record.WorkID != string(initial.CurrentWorkID) || record.RequestJSON != storedRequest || record.ResultJSON != storedResult || record.CreatedAt.UTC().Format(time.RFC3339Nano) != storedCreated {
+	if record.ID != storedID || record.WorkID != string(initial.CurrentWorkID) || record.RequestJSON != storedRequest || record.ResultJSON != storedResult || domain.FormatTime(record.CreatedAt) != storedCreated {
 		t.Fatalf("record = %+v, want stored %s %s %s %s", record, storedID, storedRequest, storedResult, storedCreated)
 	}
 	var decodedRequest AssessmentRequest

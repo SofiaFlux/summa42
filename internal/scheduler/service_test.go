@@ -170,3 +170,50 @@ func TestSchedulerSkipsTasksOfInactiveMission(t *testing.T) {
 		t.Fatalf("task state %s, want it left ELIGIBLE", state)
 	}
 }
+
+func TestSchedulerExpiresPastDeadline(t *testing.T) {
+	ctx := context.Background()
+	store := testutil.OpenStore(t)
+	clk := testutil.NewClock(time.Date(2026, 9, 16, 8, 0, 0, 0, time.UTC))
+	purposes := purpose.New(store, clk)
+	execSvc := execution.New(store, clk, purposes)
+	svc := scheduler.New(store, clk, purposes, execSvc, resources.New(store, clk), time.Minute)
+
+	envelope := domain.NewID("envelope")
+	if _, err := store.DB().ExecContext(ctx,
+		`INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at) VALUES (?, 100, ?)`,
+		envelope, domain.FormatTime(clk.Now()),
+	); err != nil {
+		t.Fatal(err)
+	}
+	task, err := execSvc.CreateTask(ctx, execution.TaskRequest{
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeOwnerDirective, ID: "owner-expiring"},
+		AcceptanceCriteria:   []string{"done"},
+		RequiredCapabilities: []string{"shell"},
+		RequiredEnforcement:  domain.EnforcementEnforced,
+		AuthorityCeiling:     []string{"shell"},
+		ResourceEnvelopeID:   envelope,
+		Deadline:             clk.Now().Add(10 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capacity := scheduler.CapacitySnapshot{Capabilities: map[string]scheduler.CapabilityCapacity{
+		"shell": {Accessible: true, Enforcement: domain.EnforcementEnforced},
+	}}
+	if candidate, err := svc.Next(ctx, capacity); err != nil || candidate == nil || candidate.Task.ID != task.ID {
+		t.Fatalf("before the deadline: candidate=%v err=%v, want the task", candidate, err)
+	}
+
+	clk.Advance(11 * time.Minute)
+	if candidate, err := svc.Next(ctx, capacity); err != nil || candidate != nil {
+		t.Fatalf("past the deadline: candidate=%v err=%v, want none", candidate, err)
+	}
+	var got domain.TaskState
+	if err := store.DB().QueryRowContext(ctx, `SELECT state FROM tasks WHERE task_id = ?`, task.ID).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != domain.TaskExpired {
+		t.Fatalf("task state = %q, want EXPIRED", got)
+	}
+}

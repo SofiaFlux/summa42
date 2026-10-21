@@ -213,7 +213,7 @@ func cleanIDs(ids []domain.ID) []domain.ID {
 }
 
 func formatTime(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
+	return domain.FormatTime(t)
 }
 
 func (s *Service) configured() error {

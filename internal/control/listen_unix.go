@@ -14,16 +14,22 @@ import (
 	"time"
 )
 
+// DefaultEndpoint returns the per-user control socket path, or "" when the
+// user config directory is unknown. There is deliberately no /tmp fallback: a
+// world-writable directory lets another user squat the endpoint.
 func DefaultEndpoint() string {
 	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
 		return filepath.Join(dir, "summa42", "control.sock")
 	}
-	return filepath.Join(os.TempDir(), "summa42-control.sock")
+	return ""
 }
 
 func ListenLocal(socketPath string) (net.Listener, error) {
 	if socketPath == "" {
 		socketPath = DefaultEndpoint()
+	}
+	if socketPath == "" {
+		return nil, errors.New("control endpoint unavailable: user config directory is unknown and no socket path was given")
 	}
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
 		return nil, err

@@ -466,7 +466,7 @@ func (k Kind) valid() bool {
 }
 
 func formatTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	return domain.FormatTime(value)
 }
 
 func (s *Service) configured() error {

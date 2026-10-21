@@ -61,11 +61,11 @@ func initCollective(command *cobra.Command, home string) error {
 	}
 	defer store.DB().Close()
 
-	owner, err := identity.NewLocalEd25519(filepath.Join(keysDir, "owner.key"), "owner")
+	owner, err := identity.CreateLocalEd25519(filepath.Join(keysDir, "owner.key"), "owner")
 	if err != nil {
 		return err
 	}
-	cube, err := identity.NewLocalEd25519(filepath.Join(keysDir, "cube.key"), "cube")
+	cube, err := identity.CreateLocalEd25519(filepath.Join(keysDir, "cube.key"), "cube")
 	if err != nil {
 		return err
 	}

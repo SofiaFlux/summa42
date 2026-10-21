@@ -393,6 +393,30 @@ func (s *Service) FailAttempt(ctx context.Context, attemptID domain.ID, class do
 	})
 }
 
+// ExpireEligibleTask moves an ELIGIBLE task to EXPIRED. It reports false when
+// the task is no longer ELIGIBLE (another worker leased or changed it first).
+func (s *Service) ExpireEligibleTask(ctx context.Context, taskID domain.ID) (bool, error) {
+	if err := s.configured(); err != nil {
+		return false, err
+	}
+	now := s.clock.Now().UTC()
+	changed := false
+	err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx,
+			`UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ? AND state = ?`,
+			domain.TaskExpired, formatTime(now), taskID, domain.TaskEligible)
+		if err != nil {
+			return err
+		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			return err
+		}
+		changed = true
+		return appendEvent(ctx, tx, taskID, "", "TASK_EXPIRED", now)
+	})
+	return changed, err
+}
+
 // ChallengeTaskIfInStates challenges a task only when it is currently in one of
 // the supplied states. The caller must re-read the task when changed is false,
 // because the state may have moved since it was read. An accepted task can
@@ -911,7 +935,7 @@ func nullableTime(value time.Time) any {
 }
 
 func formatTime(value time.Time) string {
-	return value.UTC().Format(time.RFC3339Nano)
+	return domain.FormatTime(value)
 }
 
 func (s *Service) configured() error {

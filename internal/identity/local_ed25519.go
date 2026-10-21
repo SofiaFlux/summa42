@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -22,28 +23,43 @@ type LocalEd25519 struct {
 	publicKey   ed25519.PublicKey
 }
 
+// NewLocalEd25519 loads an existing key. It never creates one: a missing key
+// file is an error, so a mistyped path or a lost key cannot silently become a
+// new identity. Bootstrap creates keys with CreateLocalEd25519.
 func NewLocalEd25519(path, principalPrefix string) (*LocalEd25519, error) {
 	prefix := strings.TrimSpace(principalPrefix)
 	if prefix == "" {
 		return nil, errors.New("principal prefix must not be empty")
 	}
-
 	privateKey, err := loadLocalEd25519(path)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
+		return nil, err
+	}
+	return newLocalSigner(prefix, privateKey)
+}
+
+// CreateLocalEd25519 is the bootstrap path (`summa42 init`): it generates the
+// key file when it is missing and otherwise loads the existing one, so a
+// re-run after a partial init keeps the same identity.
+func CreateLocalEd25519(path, principalPrefix string) (*LocalEd25519, error) {
+	prefix := strings.TrimSpace(principalPrefix)
+	if prefix == "" {
+		return nil, errors.New("principal prefix must not be empty")
+	}
+	privateKey, err := loadLocalEd25519(path)
+	if errors.Is(err, os.ErrNotExist) {
 		privateKey, err = createLocalEd25519(path)
-		if err != nil {
-			if errors.Is(err, os.ErrExist) {
-				privateKey, err = loadLocalEd25519(path)
-			}
-			if err != nil {
-				return nil, err
-			}
+		if errors.Is(err, os.ErrExist) {
+			privateKey, err = loadLocalEd25519(path)
 		}
 	}
+	if err != nil {
+		return nil, err
+	}
+	return newLocalSigner(prefix, privateKey)
+}
 
+func newLocalSigner(prefix string, privateKey ed25519.PrivateKey) (*LocalEd25519, error) {
 	publicKey, ok := privateKey.Public().(ed25519.PublicKey)
 	if !ok {
 		return nil, errors.New("stored key is not Ed25519")
@@ -58,9 +74,10 @@ func NewLocalEd25519(path, principalPrefix string) (*LocalEd25519, error) {
 }
 
 // NewConstitutionalRootForCeremony is intentionally explicit: normal Box startup
-// must not load constitutional root material.
+// must not load constitutional root material. It creates the key, so it is for
+// the init ceremony only.
 func NewConstitutionalRootForCeremony(path string) (*LocalEd25519, error) {
-	return NewLocalEd25519(path, "root")
+	return CreateLocalEd25519(path, "root")
 }
 
 func (s *LocalEd25519) PrincipalID() domain.ID {
@@ -85,6 +102,14 @@ func principalID(prefix string, publicKey ed25519.PublicKey) domain.ID {
 }
 
 func loadLocalEd25519(path string) (ed25519.PrivateKey, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	// POSIX mode bits carry no meaning on Windows; ACLs guard the file there.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		return nil, fmt.Errorf("key file %s has mode %o, want 600", path, info.Mode().Perm())
+	}
 	encoded, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
