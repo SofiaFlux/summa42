@@ -117,7 +117,7 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 			{"recover", time.Minute, recoverExpiredLeases, nil},
 			{"triage-driver", 5 * time.Minute, runGHTriageDriver, missionArgs},
 			{"worker", pipelineWorkerLease - time.Minute, runWorker, slices.Concat(
-				[]string{"--once", "--workspace-root=" + root, "--lease-duration=" + pipelineWorkerLease.String()}, produce)},
+				[]string{"--once", "--workspace-root=" + root, "--lease-duration=" + pipelineWorkerLease.String(), "--credential-file=" + credential}, produce)},
 			{"triage-review", 15 * time.Minute, runGHTriageReview, slices.Concat(missionArgs, review)},
 			{"plan", 15 * time.Minute, runGHPlan, slices.Concat(missionArgs, grounding.argv(), produce)},
 			{"plan-review", 15 * time.Minute, runGHPlanReview, slices.Concat(missionArgs, review)},

@@ -2,11 +2,13 @@ package main
 
 import (
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/executors"
 	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
+	"github.com/SofiaFlux/summa42/internal/localconfig"
 	summa42runtime "github.com/SofiaFlux/summa42/internal/runtime"
 )
 
@@ -121,5 +123,34 @@ func TestGHIntakeCredentialFilePreferredOverEnv(t *testing.T) {
 	t.Setenv("SUMMA42_GITHUB_TOKEN_FILE", "/env")
 	if got := ghIntakeClientConfig("o/r", "", "/flag").TokenFile; got != "/flag" {
 		t.Fatalf("token file = %q, want /flag", got)
+	}
+}
+
+func TestFeedbackBotLoginWarningAndEnvDeprecation(t *testing.T) {
+	var buf strings.Builder
+	oldW, oldOnce := diagWriter, &feedbackWarnOnce
+	diagWriter = &buf
+	feedbackWarnOnce = sync.Once{}
+	deprecationNotices.Delete("SUMMA42_GITHUB_TOKEN_FILE")
+	defer func() { diagWriter = oldW; _ = oldOnce }()
+	t.Setenv("SUMMA42_FEEDBACK_GITHUB_BOT_LOGIN", "")
+	t.Setenv("SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE", "/tok")
+	cfg := localconfig.Config{FieldFeedback: localconfig.FieldFeedbackConfig{
+		Enabled: true, Mode: localconfig.FeedbackModeAutoIfAllowed, Provider: "github", Destination: "owner/repo",
+	}}
+	for i := 0; i < 2; i++ {
+		if _, err := buildFeedbackSink(cfg, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := strings.Count(buf.String(), "SUMMA42_FEEDBACK_GITHUB_BOT_LOGIN is not set"); n != 1 {
+		t.Fatalf("bot-login warning logged %d times, want 1: %q", n, buf.String())
+	}
+	t.Setenv("SUMMA42_GITHUB_TOKEN_FILE", "/env")
+	for i := 0; i < 2; i++ {
+		ghIntakeClientConfig("o/r", "", "")
+	}
+	if n := strings.Count(buf.String(), "SUMMA42_GITHUB_TOKEN_FILE is deprecated"); n != 1 {
+		t.Fatalf("intake env deprecation logged %d times, want 1", n)
 	}
 }

@@ -229,9 +229,9 @@ func TestPipelineStageArgvParsesWithEachStageParser(t *testing.T) {
 		},
 		"triage-driver": func(args []string) error { _, err := parseGHTriageDriverFlags(args); return err },
 		"worker": func(args []string) error {
-			once, root, _, _, lease, model, err := parseWorkerArgs(args)
-			if err == nil && (!once || root != "/work" || lease != pipelineWorkerLease) {
-				err = fmt.Errorf("worker once=%v root=%q lease=%v", once, root, lease)
+			once, root, cred, _, lease, model, err := parseWorkerArgs(args)
+			if err == nil && (!once || root != "/work" || lease != pipelineWorkerLease || cred != "/secret/token") {
+				err = fmt.Errorf("worker once=%v root=%q lease=%v credential=%q", once, root, lease, cred)
 			}
 			modelIs("worker", "/bin/producer", model.Binary)
 			return err

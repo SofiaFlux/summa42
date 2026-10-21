@@ -371,21 +371,29 @@ func assessConfiguredProviders(ctx context.Context, assessor capabilityAssessor,
 	return err
 }
 
-var feedbackEnvDeprecation sync.Once
+var (
+	deprecationNotices sync.Map // env var name -> logged
+	feedbackWarnOnce   sync.Once
+	diagWriter         io.Writer = os.Stderr
+)
 
-// feedbackTokenFile prefers --credential-file; SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE
-// is a deprecated alias that logs once.
-func feedbackTokenFile(credentialFile string) string {
+// tokenFileFromFlagOrEnv prefers --credential-file; envName is a deprecated
+// alias that logs once.
+func tokenFileFromFlagOrEnv(credentialFile, envName string) string {
 	if file := strings.TrimSpace(credentialFile); file != "" {
 		return file
 	}
-	file := strings.TrimSpace(os.Getenv("SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE"))
+	file := strings.TrimSpace(os.Getenv(envName))
 	if file != "" {
-		feedbackEnvDeprecation.Do(func() {
-			fmt.Fprintln(os.Stderr, "SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE is deprecated: use --credential-file")
-		})
+		if _, logged := deprecationNotices.LoadOrStore(envName, true); !logged {
+			fmt.Fprintf(diagWriter, "%s is deprecated: use --credential-file\n", envName)
+		}
 	}
 	return file
+}
+
+func feedbackTokenFile(credentialFile string) string {
+	return tokenFileFromFlagOrEnv(credentialFile, "SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE")
 }
 
 func buildFeedbackSink(cfg localconfig.Config, credentialFile string) (fieldfeedback.Sink, error) {
@@ -398,11 +406,17 @@ func buildFeedbackSink(cfg localconfig.Config, credentialFile string) (fieldfeed
 		if tokenFile == "" {
 			return nil, errors.New("GitHub feedback export requires --credential-file (or the deprecated SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE)")
 		}
+		botLogin := strings.TrimSpace(os.Getenv("SUMMA42_FEEDBACK_GITHUB_BOT_LOGIN"))
+		if botLogin == "" {
+			feedbackWarnOnce.Do(func() {
+				fmt.Fprintln(diagWriter, "SUMMA42_FEEDBACK_GITHUB_BOT_LOGIN is not set: feedback marker reconciliation accepts issues from any author")
+			})
+		}
 		apiBaseURL := strings.TrimSpace(os.Getenv("SUMMA42_FEEDBACK_GITHUB_API_BASE_URL"))
 		sink, err := feedbackgithub.NewSink(feedbackgithub.Config{
 			APIBaseURL:       apiBaseURL,
 			Repository:       cfg.FieldFeedback.Destination,
-			BotLogin:         strings.TrimSpace(os.Getenv("SUMMA42_FEEDBACK_GITHUB_BOT_LOGIN")),
+			BotLogin:         botLogin,
 			CredentialSource: feedbackgithub.FileCredentialSource{Path: tokenFile},
 		})
 		if err != nil {
@@ -1195,10 +1209,7 @@ func openGHIntakeBox(ctx context.Context, cfg summa42runtime.Config) (*summa42ru
 // applies its api.github.com default: the loopback override is a test seam the
 // CLI cannot reach.
 func ghIntakeClientConfig(repository, botLogin, credentialFile string) ghissue.Config {
-	tokenFile := strings.TrimSpace(credentialFile)
-	if tokenFile == "" {
-		tokenFile = strings.TrimSpace(os.Getenv("SUMMA42_GITHUB_TOKEN_FILE"))
-	}
+	tokenFile := tokenFileFromFlagOrEnv(credentialFile, "SUMMA42_GITHUB_TOKEN_FILE")
 	return ghissue.Config{
 		Repository: repository,
 		BotLogin:   botLogin,
