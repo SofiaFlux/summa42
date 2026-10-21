@@ -367,7 +367,7 @@ func (s *Service) ObserveVerifiedOutcome(ctx context.Context, input VerifiedOutc
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	metrics, err := s.deriveOutcomeMetrics(ctx, input.TaskID, input.Accepted)
+	metrics, err := s.deriveOutcomeMetrics(ctx, input.TaskID, currentAttempt, input.Accepted)
 	if err != nil {
 		return err
 	}
@@ -398,7 +398,7 @@ type outcomeMetrics struct {
 
 // deriveOutcomeMetrics reads cost, latency, retries and human intervention from canonical
 // records so callers cannot influence the numbers that drive promotion and rollback.
-func (s *Service) deriveOutcomeMetrics(ctx context.Context, taskID domain.ID, accepted bool) (outcomeMetrics, error) {
+func (s *Service) deriveOutcomeMetrics(ctx context.Context, taskID, attemptID domain.ID, accepted bool) (outcomeMetrics, error) {
 	var m outcomeMetrics
 	db := s.store.DB()
 	var attempts int64
@@ -411,14 +411,19 @@ func (s *Service) deriveOutcomeMetrics(ctx context.Context, taskID domain.ID, ac
 	if attempts > 1 {
 		m.retries = attempts - 1
 	}
+	// Cost is NULL (unknown) while any reservation of the task is still in flight; a partial sum would understate it.
 	var settled sql.NullInt64
+	var open int
 	if err := db.QueryRowContext(ctx,
-		"SELECT SUM(r.settled_amount) FROM external_operations o JOIN resource_reservations r ON r.reservation_id = o.reservation_id WHERE o.task_id = ? AND r.state = 'SETTLED'",
+		`SELECT SUM(CASE WHEN state = 'SETTLED' THEN settled_amount END),
+		        COALESCE(SUM(state NOT IN ('SETTLED', 'RELEASED')), 0)
+		 FROM resource_reservations
+		 WHERE reservation_id IN (SELECT reservation_id FROM external_operations WHERE task_id = ?)`,
 		taskID,
-	).Scan(&settled); err != nil {
+	).Scan(&settled, &open); err != nil {
 		return m, fmt.Errorf("derive ledger cost: %w", err)
 	}
-	if settled.Valid {
+	if settled.Valid && open == 0 {
 		m.cost = &settled.Int64
 	}
 	var human int
@@ -433,7 +438,7 @@ func (s *Service) deriveOutcomeMetrics(ctx context.Context, taskID domain.ID, ac
 	// negative outcomes and unparseable legacy timestamps stay NULL rather than guessed.
 	if accepted {
 		var acceptedAt string
-		if err := db.QueryRowContext(ctx, "SELECT created_at FROM acceptance_records WHERE task_id = ?", taskID).Scan(&acceptedAt); err != nil {
+		if err := db.QueryRowContext(ctx, "SELECT created_at FROM acceptance_records WHERE task_id = ? AND attempt_id = ?", taskID, attemptID).Scan(&acceptedAt); err != nil {
 			return m, fmt.Errorf("derive latency: %w", err)
 		}
 		start, err1 := time.Parse(time.RFC3339Nano, firstStarted)
