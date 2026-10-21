@@ -45,6 +45,10 @@ func ParsePlanReviewOutput(raw []byte) (PlanReviewOutput, error) {
 	return out, out.Validate()
 }
 
+type supersededError struct{ revision string }
+
+func (e *supersededError) Error() string { return "newer issue revision exists" }
+
 type PlanReviewModel interface {
 	ReviewPlan(context.Context, PlanReviewInput) (PlanReviewOutput, error)
 }
@@ -130,7 +134,7 @@ func (r *PlanReviewer) loadPlan(ctx context.Context, c workflowcase.Case) (Plan,
 	}
 	for _, other := range revisions {
 		if parseRevision(other.RevisionID).After(parseRevision(c.RevisionID)) {
-			return fail(errors.New("newer issue revision exists"))
+			return fail(&supersededError{revision: other.RevisionID})
 		}
 	}
 	records, err := r.cases.ListAssessments(ctx, c.ID)
@@ -237,6 +241,15 @@ func (r *PlanReviewer) loadPlan(ctx context.Context, c workflowcase.Case) (Plan,
 
 func (r *PlanReviewer) reviewCase(ctx context.Context, c workflowcase.Case) (bool, error) {
 	plan, planID, snap, source, err := r.loadPlan(ctx, c)
+	var superseded *supersededError
+	if errors.As(err, &superseded) {
+		// Hold the case instead of failing the same way every tick.
+		result, err := r.cases.Assess(ctx, workflowcase.AssessmentRequest{CaseID: c.ID, WorkID: c.CurrentWorkID, Assessment: workflow.Assessment{Verdict: workflow.Unknown, Reason: supersededReasonHead + superseded.revision, EvidenceIDs: []string{c.ObservationEvidenceID}}, RemainingBudget: c.RemainingBudget, ProgressSignature: c.ProgressSignature})
+		if err != nil {
+			return false, err
+		}
+		return result.Decision.Outcome == workflow.OutcomeBlocked, nil
+	}
 	if err != nil {
 		return false, err
 	}

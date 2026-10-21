@@ -3,6 +3,7 @@ package ghtriage
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,9 +28,12 @@ func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, pl
 	fail := func(err error) (PlanReviewRecord, evidence.EvidenceObject, error) {
 		return PlanReviewRecord{}, evidence.EvidenceObject{}, err
 	}
-	indexRaw, _, err := findAcceptedIndex(ctx, r.evidence, c)
+	indexRaw, indexFound, err := findAcceptedIndex(ctx, r.evidence, c)
 	if err != nil {
 		return fail(err)
+	}
+	if !indexFound {
+		return fail(errors.New("accepted triage citation missing"))
 	}
 	var accepted acceptedIndex
 	if err := json.Unmarshal(indexRaw, &accepted); err != nil {
@@ -55,6 +59,25 @@ func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, pl
 		return fail(err)
 	}
 	expected.TaskID = task.ID
+	guard := r.guard(c)
+	if task.State == domain.TaskExecuting && task.CurrentAttemptID != "" {
+		// A verdict staged by an earlier run completes without paying for the model again.
+		staged, stagedRaw, stagedFound, err := r.evidence.FindBySubject(ctx, KindPlanReview, string(task.CurrentAttemptID))
+		if err != nil {
+			return fail(err)
+		}
+		if stagedFound {
+			if _, err := validateReviewRecord(staged, stagedRaw, expected, task); err != nil {
+				return fail(err)
+			}
+			if _, err := r.verify.CompleteAttemptWithGuard(ctx, task.CurrentAttemptID, verification.CompletionManifest{EvidenceIDs: []domain.ID{staged.ID}}, guard); err != nil {
+				return fail(err)
+			}
+			if task, err = r.exec.Task(ctx, task.ID); err != nil {
+				return fail(err)
+			}
+		}
+	}
 	switch task.State {
 	case domain.TaskExecuting:
 		return fail(errPlanReviewBusy)
@@ -84,15 +107,16 @@ func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, pl
 			return fail(errors.Join(fmt.Errorf("plan review model: %w", modelErr), failureErr))
 		}
 		expected.PlanReviewOutput = output
+		expected.AttemptID = attempt.ID
 		raw, err := json.Marshal(expected)
 		if err != nil {
 			return fail(err)
 		}
-		object, err := r.evidence.Put(ctx, bytes.NewReader(raw), evidence.Metadata{Kind: KindPlanReview, MediaType: "application/json"})
+		object, err := r.evidence.Put(ctx, bytes.NewReader(raw), evidence.Metadata{Kind: KindPlanReview, Subject: string(attempt.ID), MediaType: "application/json"})
 		if err != nil {
 			return fail(err)
 		}
-		if _, err := r.verify.CompleteAttempt(ctx, attempt.ID, verification.CompletionManifest{EvidenceIDs: []domain.ID{object.ID}}); err != nil {
+		if _, err := r.verify.CompleteAttemptWithGuard(ctx, attempt.ID, verification.CompletionManifest{EvidenceIDs: []domain.ID{object.ID}}, guard); err != nil {
 			return fail(err)
 		}
 		task, err = r.exec.Task(ctx, task.ID)
@@ -115,18 +139,12 @@ func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, pl
 	if err != nil {
 		return fail(err)
 	}
-	var record PlanReviewRecord
-	if err := decodeExactlyOne(raw, &record); err != nil {
-		return fail(err)
-	}
-	if object.Kind != KindPlanReview || record.Schema != expected.Schema || record.CaseID != expected.CaseID || record.WorkID != expected.WorkID || record.PlanEvidenceID != expected.PlanEvidenceID || record.ContextEvidenceID != expected.ContextEvidenceID || record.BaseSHA != expected.BaseSHA || record.TaskID != task.ID || record.AttemptID != task.CurrentAttemptID {
-		return fail(errors.New("review verdict is not bound to this work and attempt"))
-	}
-	if err := record.PlanReviewOutput.Validate(); err != nil {
+	record, err := validateReviewRecord(object, raw, expected, task)
+	if err != nil {
 		return fail(err)
 	}
 	if task.State == domain.TaskAwaitingVerification {
-		if _, err := r.verify.AcceptTask(ctx, task.ID, verification.AcceptanceRequest{VerifierID: planReviewVerifierID, VerifierType: planReviewVerifierType, CriteriaMet: true, EvidenceIDs: ids}); err != nil {
+		if _, err := r.verify.AcceptTaskWithGuard(ctx, task.ID, verification.AcceptanceRequest{VerifierID: planReviewVerifierID, VerifierType: planReviewVerifierType, CriteriaMet: true, EvidenceIDs: ids}, guard); err != nil {
 			accepted, found, lookupErr := r.verify.FindAcceptance(ctx, task.ID)
 			if lookupErr != nil || !found || accepted.AttemptID != task.CurrentAttemptID {
 				return fail(err)
@@ -141,4 +159,29 @@ func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, pl
 		return fail(errors.New("review lacks exact binding acceptance"))
 	}
 	return record, object, nil
+}
+
+func validateReviewRecord(object evidence.EvidenceObject, raw []byte, expected PlanReviewRecord, task domain.Task) (PlanReviewRecord, error) {
+	var record PlanReviewRecord
+	if err := decodeExactlyOne(raw, &record); err != nil {
+		return record, err
+	}
+	if object.Kind != KindPlanReview || record.Schema != expected.Schema || record.CaseID != expected.CaseID || record.WorkID != expected.WorkID || record.PlanEvidenceID != expected.PlanEvidenceID || record.ContextEvidenceID != expected.ContextEvidenceID || record.BaseSHA != expected.BaseSHA || record.TaskID != task.ID || record.AttemptID != task.CurrentAttemptID {
+		return record, errors.New("review verdict is not bound to this work and attempt")
+	}
+	return record, record.PlanReviewOutput.Validate()
+}
+
+// guard re-checks, inside the completion transaction, that the case still owns this plan review.
+func (r *PlanReviewer) guard(c workflowcase.Case) func(context.Context, *sql.Tx) error {
+	return func(ctx context.Context, tx *sql.Tx) error {
+		current, err := r.cases.GuardCurrentWork(ctx, tx, c.ID, c.CurrentWorkID)
+		if err != nil {
+			return err
+		}
+		if current.RevisionID != c.RevisionID || current.NextWork.Kind != PlanReviewWorkKind {
+			return errors.New("plan review authority or revision changed")
+		}
+		return nil
+	}
 }

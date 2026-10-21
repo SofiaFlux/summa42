@@ -221,3 +221,65 @@ func TestPlanReviewRejectsContextHashDriftBeforeModel(t *testing.T) {
 		t.Fatalf("hash drift reviewed %+v calls=%d %v", out, model.calls, err)
 	}
 }
+
+func TestPlanReviewCompletionFailureResumesWithoutSecondModelCall(t *testing.T) {
+	f, model := readyPlanReview(t, true)
+	if _, err := f.store.DB().ExecContext(f.ctx, `CREATE TRIGGER interrupt_review_completion BEFORE INSERT ON attempt_completion_records BEGIN SELECT RAISE(ABORT,'injected completion interruption'); END`); err != nil {
+		t.Fatal(err)
+	}
+	reviewer := ghtriage.NewPlanReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model)
+	out, err := reviewer.Tick(f.ctx, f.missionID)
+	if err != nil || len(out.Failures) != 1 || model.calls != 1 {
+		t.Fatalf("interruption %+v calls=%d %v", out, model.calls, err)
+	}
+	if _, err := f.store.DB().ExecContext(f.ctx, `DROP TRIGGER interrupt_review_completion`); err != nil {
+		t.Fatal(err)
+	}
+	out, err = reviewer.Tick(f.ctx, f.missionID)
+	if err != nil || out.Reviewed != 1 || len(out.Failures) != 0 || model.calls != 1 {
+		t.Fatalf("resume %+v calls=%d %v", out, model.calls, err)
+	}
+}
+
+func TestPlanReviewSupersededDuringCallIsNotAccepted(t *testing.T) {
+	f, model := readyPlanReview(t, true)
+	model.onCall = func() { f.registerRevision(t, "2026-09-28T10:00:01Z") }
+	count := func() (n int) {
+		if err := f.store.DB().QueryRowContext(f.ctx, `SELECT COUNT(*) FROM attempt_completion_records`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	before := count()
+	out, err := ghtriage.NewPlanReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model).Tick(f.ctx, f.missionID)
+	if err != nil || out.Reviewed != 0 || len(out.Failures) != 1 {
+		t.Fatalf("%+v %v", out, err)
+	}
+	if after := count(); after != before {
+		t.Fatalf("completion recorded for superseded review: %d -> %d", before, after)
+	}
+}
+
+func TestPlanReviewNewerRevisionHoldsCase(t *testing.T) {
+	f, model := readyPlanReview(t, true)
+	f.registerRevision(t, "2026-09-28T10:00:01Z")
+	out, err := ghtriage.NewPlanReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model).Tick(f.ctx, f.missionID)
+	if err != nil || out.Held != 1 || len(out.Failures) != 0 || model.calls != 0 {
+		t.Fatalf("%+v calls=%d %v", out, model.calls, err)
+	}
+	c, _ := f.cases.Get(f.ctx, f.casesByRev[fixtureRevision].ID)
+	if c.State != workflowcase.Blocked {
+		t.Fatalf("state %s", c.State)
+	}
+	records, err := f.cases.ListAssessments(f.ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := false
+	for _, r := range records {
+		held = held || strings.Contains(r.ResultJSON, "superseded-by:2026-09-28T10:00:01Z")
+	}
+	if !held {
+		t.Fatal("no superseded-by assessment recorded")
+	}
+}
