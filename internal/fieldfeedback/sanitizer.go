@@ -44,6 +44,7 @@ var safeExportCategories = map[string]struct{}{
 	"EXECUTOR_SELECTION_FRICTION":             {},
 	"HUMAN_INTERVENTION":                      {},
 	"INDEPENDENT_PROBLEM":                     {},
+	"MALFORMED_CANONICAL_ROW":                 {},
 	"POLICY_AUTHORITY_FRICTION":               {},
 	"RECOVERY_FRICTION":                       {},
 	"REPEATED_ATTEMPT_FAILURE":                {},

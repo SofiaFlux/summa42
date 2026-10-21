@@ -352,6 +352,8 @@ func (s *Observer) detectCostLatencyOutliers(ctx context.Context, taskFilter dom
 	defer rows.Close()
 	history := map[string][]outcomeSample{}
 	var out []detectorCandidate
+	var malformed []string
+	var malformedTask domain.ID
 	for rows.Next() {
 		var sample outcomeSample
 		var recorded string
@@ -361,7 +363,12 @@ func (s *Observer) detectCostLatencyOutliers(ctx context.Context, taskFilter dom
 		}
 		sample.recordedAt, err = time.Parse(time.RFC3339Nano, recorded)
 		if err != nil {
-			return nil, err
+			// One legacy row must not abort the whole pass; skip it and report once below.
+			malformed = append(malformed, string(sample.id))
+			if malformedTask == "" {
+				malformedTask = sample.taskID
+			}
+			continue
 		}
 		groupKey := sample.scopeKey + "\x00" + sample.taskClass + "\x00" + sample.executor
 		previous := history[groupKey]
@@ -389,7 +396,26 @@ func (s *Observer) detectCostLatencyOutliers(ctx context.Context, taskFilter dom
 		}
 		history[groupKey] = append(previous, sample)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(malformed) > 0 {
+		sum := sha256.Sum256([]byte(strings.Join(malformed, "\x00")))
+		enforcement, err := s.taskEnforcement(ctx, malformedTask)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, detectorCandidate{
+			key: "malformed-canonical-row|experience_outcomes|" + hex.EncodeToString(sum[:8]),
+			input: ObservationInput{
+				TaskID: malformedTask, Category: "MALFORMED_CANONICAL_ROW",
+				BasisClass: "DETERMINISTIC_CANONICAL_ROW", SourceKind: "EXPERIENCE_OUTCOMES",
+				SummaryLocal: "Experience outcome rows with unparseable recorded_at were skipped",
+				Metrics:      map[string]any{"malformed_rows": len(malformed)}, Enforcement: enforcement,
+			},
+		})
+	}
+	return out, nil
 }
 
 func isHighSignalOutlier(sample outcomeSample, previous []outcomeSample) bool {

@@ -124,18 +124,13 @@ func newExperienceProposeCommand(api control.API,jsonOutput *bool)*cobra.Command
 }
 
 func newExperienceObserveOutcomeCommand(api control.API,jsonOutput *bool)*cobra.Command{
-	var accepted,human bool
-	var retries int64
-	var cost,latency int64
-	var costSet,latencySet bool
+	var accepted bool
 	command:=&cobra.Command{
 		Use:"observe-outcome <task-id>",Short:"Record a canonical verified Task outcome for local learning",Args:cobra.ExactArgs(1),
 		RunE:func(cmd *cobra.Command,args []string)error{
 			request:=control.ExperienceOutcomeCreateRequest{
-				TaskID:domain.ID(strings.TrimSpace(args[0])),Accepted:accepted,HumanIntervention:human,RetryCount:retries,
+				TaskID:domain.ID(strings.TrimSpace(args[0])),Accepted:accepted,
 			}
-			if costSet{v:=cost;request.CostUnits=&v}
-			if latencySet{v:=latency;request.LatencyMs=&v}
 			result,err:=api.ExperienceOutcomeCreate(cmd.Context(),request);if err!=nil{return err}
 			if *jsonOutput{return json.NewEncoder(cmd.OutOrStdout()).Encode(result)}
 			_,err=fmt.Fprintf(cmd.OutOrStdout(),"Verified outcome recorded for Task %s. Scope, class, and executor were derived from canonical state.\n",result.TaskID)
@@ -143,17 +138,6 @@ func newExperienceObserveOutcomeCommand(api control.API,jsonOutput *bool)*cobra.
 		},
 	}
 	command.Flags().BoolVar(&accepted,"accepted",false,"record canonical accepted success; omit for challenged negative outcome")
-	command.Flags().BoolVar(&human,"human-intervention",false,"human intervention was required")
-	command.Flags().Int64Var(&retries,"retry-count",0,"retry count")
-	command.Flags().Int64Var(&cost,"cost-units",0,"measured cost units")
-	command.Flags().Int64Var(&latency,"latency-ms",0,"measured latency in milliseconds")
-	command.Flags().Lookup("cost-units").NoOptDefVal = "0"
-	command.Flags().Lookup("latency-ms").NoOptDefVal = "0"
-	command.PreRunE=func(cmd *cobra.Command,args []string)error{
-		costSet=cmd.Flags().Changed("cost-units")
-		latencySet=cmd.Flags().Changed("latency-ms")
-		return nil
-	}
 	return command
 }
 

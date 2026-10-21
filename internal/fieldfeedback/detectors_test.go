@@ -75,3 +75,34 @@ func TestCanonicalEventDetectorsAndCostOutlier(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectSkipsMalformedRecordedAt(t *testing.T) {
+	observer, taskID, _, _, _ := newObserverHarness(t)
+	ctx := context.Background()
+	for i, recorded := range []string{"2026-10-19 14:41:15"} {
+		if _, err := observer.store.DB().ExecContext(ctx, `
+			INSERT INTO experience_outcomes(
+				outcome_id, task_id, generic_task_class, scope_key, executor_kind,
+				accepted, human_intervention, retry_count, cost_units, latency_ms, recorded_at
+			) VALUES (?, ?, 'DEBUGGING', 'repo', 'test-executor', 1, 0, 0, 1, 1, ?)`,
+			domain.NewID("outcome"), taskID, recorded); err != nil {
+			t.Fatalf("row %d: %v", i, err)
+		}
+	}
+	observations, err := observer.Detect(ctx, DetectorInput{})
+	if err != nil {
+		t.Fatalf("Detect aborted on malformed row: %v", err)
+	}
+	count := 0
+	for _, o := range observations {
+		if o.Category == "MALFORMED_CANONICAL_ROW" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("MALFORMED_CANONICAL_ROW observations = %d, want 1", count)
+	}
+	if _, ok := safeExportCategories["MALFORMED_CANONICAL_ROW"]; !ok {
+		t.Fatal("category missing from export allowlist")
+	}
+}

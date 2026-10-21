@@ -31,12 +31,8 @@ type ExperienceProposalCreateRequest struct {
 }
 
 type ExperienceOutcomeCreateRequest struct {
-	TaskID            domain.ID `json:"task_id"`
-	Accepted          bool      `json:"accepted"`
-	HumanIntervention bool      `json:"human_intervention,omitempty"`
-	RetryCount        int64     `json:"retry_count,omitempty"`
-	CostUnits         *int64    `json:"cost_units,omitempty"`
-	LatencyMs         *int64    `json:"latency_ms,omitempty"`
+	TaskID   domain.ID `json:"task_id"`
+	Accepted bool      `json:"accepted"`
 }
 
 type ExperienceOutcomeDTO struct {
@@ -123,8 +119,7 @@ func (s *Server) handleExperienceOutcomeCreate(w http.ResponseWriter,r *http.Req
 	var request ExperienceOutcomeCreateRequest
 	if err:=decodeBody(r,&request);err!=nil{writeError(w,http.StatusBadRequest,err.Error());return}
 	if err:=s.deps.Experience.ObserveVerifiedOutcome(r.Context(),experience.VerifiedOutcome{
-		TaskID:request.TaskID,Accepted:request.Accepted,HumanIntervention:request.HumanIntervention,
-		RetryCount:request.RetryCount,CostUnits:request.CostUnits,LatencyMs:request.LatencyMs,
+		TaskID:request.TaskID,Accepted:request.Accepted,
 	});err!=nil{writeError(w,http.StatusConflict,err.Error());return}
 	writeJSON(w,http.StatusAccepted,ExperienceOutcomeDTO{TaskID:request.TaskID,Status:"VERIFIED_OUTCOME_RECORDED"})
 }

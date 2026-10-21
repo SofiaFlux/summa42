@@ -29,7 +29,7 @@ func TestVerifiedOutcomesPromoteThenRollbackWithoutInventingMissingCost(t *testi
 		taskID:=insertVerifiedTask(t,svc,fmt.Sprintf("accepted-%d",i),"codex",true)
 		if err:=svc.ObserveVerifiedOutcome(ctx,VerifiedOutcome{
 			TaskID:taskID,GenericTaskClass:domain.GenericTaskReview,ScopeKey:"repo.review",ExecutorKind:"codex",
-			Accepted:true,RetryCount:0,CostUnits:nil,LatencyMs:nil,
+			Accepted:true,
 		});err!=nil{t.Fatal(err)}
 	}
 	rule,err:=svc.Evaluate(ctx,proposal.ID);if err!=nil{t.Fatal(err)}

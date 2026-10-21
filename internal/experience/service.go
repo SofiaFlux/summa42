@@ -53,10 +53,6 @@ type VerifiedOutcome struct {
 	ScopeKey          string
 	ExecutorKind      string
 	Accepted          bool
-	HumanIntervention bool
-	RetryCount        int64
-	CostUnits         *int64
-	LatencyMs         *int64
 }
 
 type PreferenceQuery struct {
@@ -310,15 +306,6 @@ func (s *Service) ObserveVerifiedOutcome(ctx context.Context, input VerifiedOutc
 	if input.GenericTaskClass != "" && !input.GenericTaskClass.Valid() {
 		return errors.New("verified outcome generic task class is invalid")
 	}
-	if input.RetryCount < 0 {
-		return errors.New("retry count cannot be negative")
-	}
-	if input.CostUnits != nil && *input.CostUnits < 0 {
-		return errors.New("cost cannot be negative")
-	}
-	if input.LatencyMs != nil && *input.LatencyMs < 0 {
-		return errors.New("latency cannot be negative")
-	}
 
 	var taskClass string
 	var currentAttempt domain.ID
@@ -363,7 +350,7 @@ func (s *Service) ObserveVerifiedOutcome(ctx context.Context, input VerifiedOutc
 		}
 		var one int
 		if err := s.store.DB().QueryRowContext(ctx,
-			"SELECT 1 FROM execution_events WHERE task_id = ? AND attempt_id = ? AND event_type = 'TASK_CHALLENGED' ORDER BY created_at DESC LIMIT 1",
+			"SELECT 1 FROM execution_events WHERE task_id = ? AND attempt_id = ? AND event_type = 'TASK_CHALLENGED' LIMIT 1",
 			input.TaskID, currentAttempt,
 		).Scan(&one); err != nil {
 			return errors.New("negative outcome lacks canonical challenge for current Attempt")
@@ -380,11 +367,15 @@ func (s *Service) ObserveVerifiedOutcome(ctx context.Context, input VerifiedOutc
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
+	metrics, err := s.deriveOutcomeMetrics(ctx, input.TaskID, input.Accepted)
+	if err != nil {
+		return err
+	}
 	_, err = s.store.DB().ExecContext(ctx,
 		"INSERT INTO experience_outcomes(outcome_id, task_id, generic_task_class, scope_key, executor_kind, accepted, human_intervention, retry_count, cost_units, latency_ms, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		domain.NewID("experience-outcome"), input.TaskID, input.GenericTaskClass, input.ScopeKey, input.ExecutorKind,
-		boolToInt(input.Accepted), boolToInt(input.HumanIntervention), input.RetryCount,
-		nullableInt(input.CostUnits), nullableInt(input.LatencyMs), formatTime(s.clock.Now().UTC()),
+		boolToInt(input.Accepted), boolToInt(metrics.humanIntervention), metrics.retries,
+		nullableInt(metrics.cost), nullableInt(metrics.latencyMs), formatTime(s.clock.Now().UTC()),
 	)
 	if err == nil {
 		return nil
@@ -396,6 +387,63 @@ func (s *Service) ObserveVerifiedOutcome(ctx context.Context, input VerifiedOutc
 		return nil
 	}
 	return err
+}
+
+type outcomeMetrics struct {
+	humanIntervention bool
+	retries           int64
+	cost              *int64
+	latencyMs         *int64
+}
+
+// deriveOutcomeMetrics reads cost, latency, retries and human intervention from canonical
+// records so callers cannot influence the numbers that drive promotion and rollback.
+func (s *Service) deriveOutcomeMetrics(ctx context.Context, taskID domain.ID, accepted bool) (outcomeMetrics, error) {
+	var m outcomeMetrics
+	db := s.store.DB()
+	var attempts int64
+	var firstStarted string
+	if err := db.QueryRowContext(ctx,
+		"SELECT count(*), COALESCE(MIN(started_at), '') FROM attempts WHERE task_id = ?", taskID,
+	).Scan(&attempts, &firstStarted); err != nil {
+		return m, fmt.Errorf("derive attempt metrics: %w", err)
+	}
+	if attempts > 1 {
+		m.retries = attempts - 1
+	}
+	var settled sql.NullInt64
+	if err := db.QueryRowContext(ctx,
+		"SELECT SUM(r.settled_amount) FROM external_operations o JOIN resource_reservations r ON r.reservation_id = o.reservation_id WHERE o.task_id = ? AND r.state = 'SETTLED'",
+		taskID,
+	).Scan(&settled); err != nil {
+		return m, fmt.Errorf("derive ledger cost: %w", err)
+	}
+	if settled.Valid {
+		m.cost = &settled.Int64
+	}
+	var human int
+	if err := db.QueryRowContext(ctx,
+		"SELECT EXISTS(SELECT 1 FROM external_operations o JOIN approval_decisions d ON d.approval_id = o.approval_id WHERE o.task_id = ? AND d.approver_id = ?)",
+		taskID, s.ownerID,
+	).Scan(&human); err != nil {
+		return m, fmt.Errorf("derive human intervention: %w", err)
+	}
+	m.humanIntervention = human == 1
+	// ponytail: latency is only defined for accepted outcomes (first attempt start to acceptance);
+	// negative outcomes and unparseable legacy timestamps stay NULL rather than guessed.
+	if accepted {
+		var acceptedAt string
+		if err := db.QueryRowContext(ctx, "SELECT created_at FROM acceptance_records WHERE task_id = ?", taskID).Scan(&acceptedAt); err != nil {
+			return m, fmt.Errorf("derive latency: %w", err)
+		}
+		start, err1 := time.Parse(time.RFC3339Nano, firstStarted)
+		end, err2 := time.Parse(time.RFC3339Nano, acceptedAt)
+		if err1 == nil && err2 == nil && !end.Before(start) {
+			ms := end.Sub(start).Milliseconds()
+			m.latencyMs = &ms
+		}
+	}
+	return m, nil
 }
 
 func (s *Service) Grant(ctx context.Context, id domain.ID) (domain.AdaptationGrant, error) {

@@ -135,7 +135,7 @@ func (f *experienceAcceptanceFixture) verifiedSuccess(t *testing.T, name, execut
 		t.Fatal(err)
 	}
 	if _,err:=f.client.ExperienceOutcomeCreate(f.ctx,control.ExperienceOutcomeCreateRequest{
-		TaskID:task.ID,Accepted:true,RetryCount:0,
+		TaskID:task.ID,Accepted:true,
 	});err!=nil{t.Fatal(err)}
 	return task
 }

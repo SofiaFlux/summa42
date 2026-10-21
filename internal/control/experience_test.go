@@ -69,7 +69,7 @@ func TestExperienceControlExposesGovernedLifecycleWithoutCallerScopeAuthority(t 
 	}
 
 	response=doRequest(t,http.MethodPost,httpServer.URL+"/experience/outcomes","control-secret",
-		bytes.NewBufferString(`{"task_id":"task-1","accepted":true,"human_intervention":false,"retry_count":0}`))
+		bytes.NewBufferString(`{"task_id":"task-1","accepted":true}`))
 	if response.StatusCode!=http.StatusAccepted{t.Fatalf("outcome status=%d",response.StatusCode)}
 	if fake.outcomeInput.TaskID!="task-1"||fake.outcomeInput.ScopeKey!=""||fake.outcomeInput.ExecutorKind!=""||fake.outcomeInput.GenericTaskClass!=""{
 		t.Fatalf("outcome service input=%+v",fake.outcomeInput)
@@ -83,4 +83,21 @@ func TestExperienceControlExposesGovernedLifecycleWithoutCallerScopeAuthority(t 
 		t.Fatalf("evaluated=%s rule=%+v",fake.evaluatedID,rule)
 	}
 
+}
+
+func TestControlRejectsCallerSuppliedMetrics(t *testing.T) {
+	server,_,_,_,_,_,_:=newTestServer(t)
+	fake:=&fakeExperienceLifecycle{}
+	server.deps.Experience=fake
+	httpServer:=httptest.NewServer(server.Handler());defer httpServer.Close()
+	for _,body:=range []string{
+		`{"task_id":"task-1","accepted":true,"cost_units":0}`,
+		`{"task_id":"task-1","accepted":true,"latency_ms":1}`,
+		`{"task_id":"task-1","accepted":true,"retry_count":0}`,
+		`{"task_id":"task-1","accepted":true,"human_intervention":false}`,
+	}{
+		response:=doRequest(t,http.MethodPost,httpServer.URL+"/experience/outcomes","control-secret",bytes.NewBufferString(body))
+		if response.StatusCode!=http.StatusBadRequest{t.Fatalf("body %s status=%d",body,response.StatusCode)}
+		if fake.outcomeInput.TaskID!=""{t.Fatalf("service called for %s",body)}
+	}
 }
