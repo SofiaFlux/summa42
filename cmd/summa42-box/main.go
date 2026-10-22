@@ -635,14 +635,17 @@ func registerTriageModelFlags(flags *flag.FlagSet, binaryUse string) {
 // types, defaults and credential checks.
 func registerModelFlags(flags *flag.FlagSet, prefix, binaryUse string) {
 	flags.String(prefix+"-binary", "codex", binaryUse+", which must read the prompt on stdin (defaults are codex-shaped: codex + exec)")
-	flags.String(prefix+"-timeout", "60s", "per-invocation model timeout")
+	flags.String(prefix+"-timeout", "30m", "per-invocation model timeout (model answers can take minutes; leases are derived from it)")
+	flags.String(prefix+"-user", os.Getenv("SUMMA42_MODEL_USER"),
+		"dedicated OS user model processes run as via sudo -n -u (required; env SUMMA42_MODEL_USER; "+
+			"must not be root or the Box user; see scripts/setup-model-user.sh)")
 	flags.Var(&modelArgs{}, prefix+"-arg",
 		"argument passed to the model binary before the prompt, repeatable and in order "+
 			"(the prompt is on stdin; when unset and the binary is codex this defaults to \"exec\"; "+
 			"a binary that is not codex takes no default arguments, so set this flag explicitly)")
 	flags.Var(&modelEnv{}, prefix+"-env",
 		"name of a Box environment variable forwarded to the model process, repeatable "+
-			"(the model otherwise gets only PATH, HOME, TMPDIR and LANG; GitHub and Box credentials are rejected)")
+			"(the model otherwise gets only PATH, LANG and its own HOME and TMPDIR; GitHub and Box credentials are rejected)")
 }
 
 // modelEnv collects the repeatable --model-env names and rejects credentials
@@ -745,11 +748,19 @@ func prefixedModelConfig(flags *flag.FlagSet, prefix string) (climodel.Config, e
 	if !explicit && filepath.Base(binary) == "codex" {
 		args = []string{"exec"}
 	}
+	userFlag := flags.Lookup(prefix + "-user")
+	if userFlag == nil {
+		return climodel.Config{}, errors.New("model flags are not registered: --" + prefix + "-user is missing from the flag set")
+	}
+	runAs := strings.TrimSpace(userFlag.Value.String())
+	if _, err := climodel.ResolveRunAsUser(runAs); err != nil {
+		return climodel.Config{}, fmt.Errorf("--%s-user: %w", prefix, err)
+	}
 	var envNames []string
 	if envFlag := flags.Lookup(prefix + "-env"); envFlag != nil {
 		envNames, _ = envFlag.Value.(flag.Getter).Get().([]string)
 	}
-	return climodel.Config{Binary: binary, Args: args, Timeout: duration, EnvAllowlist: envNames}, nil
+	return climodel.Config{RunAsUser: runAs, Binary: binary, Args: args, Timeout: duration, EnvAllowlist: envNames}, nil
 }
 
 // triageModelAdapter builds the classifier the triage executor needs and reports

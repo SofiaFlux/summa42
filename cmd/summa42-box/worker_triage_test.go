@@ -459,3 +459,27 @@ func TestTriageModelConfigReportsAFlagSetThatNeverRegisteredTheModelFlags(t *tes
 		})
 	}
 }
+
+// An unset --model-user is a startup error naming the flag and the env var:
+// there is no same-user fallback.
+func TestModelConfigRequiresADedicatedModelUser(t *testing.T) {
+	t.Setenv("SUMMA42_MODEL_USER", "")
+	flags := flag.NewFlagSet("t", flag.ContinueOnError)
+	registerTriageModelFlags(flags, "b")
+	if err := flags.Parse([]string{"--model-binary=" + usableModelBinary(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := triageModelConfig(flags); err == nil || !strings.Contains(err.Error(), "SUMMA42_MODEL_USER") {
+		t.Fatalf("unset user error = %v", err)
+	}
+	for _, bad := range []string{"root", "no-such-user-xyz"} {
+		flags = flag.NewFlagSet("t", flag.ContinueOnError)
+		registerTriageModelFlags(flags, "b")
+		if err := flags.Parse([]string{"--model-user=" + bad}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := triageModelConfig(flags); err == nil {
+			t.Fatalf("--model-user=%s accepted", bad)
+		}
+	}
+}

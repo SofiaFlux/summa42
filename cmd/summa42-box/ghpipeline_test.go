@@ -79,6 +79,9 @@ func TestPipelineStageErrorDoesNotSkipLaterStages(t *testing.T) {
 	if !slices.Contains(reviews[0], "--model-binary=/bin/reviewer") || slices.Contains(reviews[0], "--model-binary=/bin/producer") {
 		t.Fatalf("plan review argv %v does not use the review model", reviews[0])
 	}
+	if !slices.Contains(reviews[0], "--model-user=nobody") {
+		t.Fatalf("plan review argv %v does not forward the model user", reviews[0])
+	}
 	want := []string{"recover", "triage-driver", "worker", "triage-review", "plan", "plan-review"}
 	if !slices.Equal(f.calls, want) {
 		t.Fatalf("stages = %v, want %v", f.calls, want)

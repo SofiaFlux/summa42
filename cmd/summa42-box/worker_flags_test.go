@@ -20,8 +20,8 @@ func TestParseWorkerFlagsDefaults(t *testing.T) {
 	if poll != 30*time.Second || lease != 0 {
 		t.Fatalf("flags = %v %v, want 30s 0", poll, lease)
 	}
-	if model.Binary != "codex" || model.Timeout != 60*time.Second {
-		t.Fatalf("model = %+v, want codex 60s", model)
+	if model.Binary != "codex" || model.Timeout != 30*time.Minute {
+		t.Fatalf("model = %+v, want codex 30m", model)
 	}
 }
 

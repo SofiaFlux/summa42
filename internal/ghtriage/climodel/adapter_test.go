@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,42 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 )
+
+const testUser = "summa42-model-test"
+
+var testHome, fakeSudoLog string
+
+// TestMain swaps the real sudo for a script that drops its "-n -u user --"
+// prefix and runs the rest directly, and the user database for one fake model
+// user, so the whole argv contract is exercised without privileges.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "climodel-test")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(dir)
+	testHome = filepath.Join(dir, "home")
+	if err := os.MkdirAll(filepath.Join(testHome, "tmp"), 0o755); err != nil {
+		panic(err)
+	}
+	fakeSudoLog = filepath.Join(dir, "sudo.log")
+	fake := filepath.Join(dir, "fakesudo")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + fakeSudoLog + "\nshift 4\nexec \"$@\"\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		panic(err)
+	}
+	launchPrefix = func(runAs string) []string { return []string{fake, "-n", "-u", runAs, "--"} }
+	lookupUser = func(name string) (*user.User, error) {
+		switch name {
+		case testUser:
+			return &user.User{Uid: "4242", Username: name, HomeDir: testHome}, nil
+		case "root":
+			return &user.User{Uid: "0", Username: name, HomeDir: "/root"}, nil
+		}
+		return user.Lookup(name)
+	}
+	os.Exit(m.Run())
+}
 
 // writeScript creates an executable that consumes the prompt on stdin and
 // prints body on stdout, so the adapter can be driven without a real model.
@@ -28,19 +65,19 @@ func TestNewRejectsAnUnusableConfiguration(t *testing.T) {
 	// A positive timeout is set on every empty-binary case: Config{} also has a
 	// zero timeout, so leaving it out would let this pass on the timeout guard
 	// with the missing-binary check deleted.
-	if _, err := New(Config{Binary: "", Timeout: time.Second}); err == nil {
+	if _, err := New(Config{RunAsUser: testUser, Binary: "", Timeout: time.Second}); err == nil {
 		t.Fatal("an empty binary was accepted")
 	}
-	if _, err := New(Config{Binary: filepath.Join(t.TempDir(), "absent"), Timeout: time.Second}); err == nil {
+	if _, err := New(Config{RunAsUser: testUser, Binary: filepath.Join(t.TempDir(), "absent"), Timeout: time.Second}); err == nil {
 		t.Fatal("a missing binary was accepted")
 	}
-	if _, err := New(Config{Binary: writeScript(t, "{}")}); err == nil {
+	if _, err := New(Config{RunAsUser: testUser, Binary: writeScript(t, "{}")}); err == nil {
 		t.Fatal("a zero timeout was accepted")
 	}
 }
 
 func TestReviewPlanUsesSeparateStrictInvocation(t *testing.T) {
-	adapter, err := New(Config{Binary: writeScript(t, `{"verdict":"ACCEPT","reason":"scope fits"}`), Timeout: time.Second})
+	adapter, err := New(Config{RunAsUser: testUser, Binary: writeScript(t, `{"verdict":"ACCEPT","reason":"scope fits"}`), Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +85,7 @@ func TestReviewPlanUsesSeparateStrictInvocation(t *testing.T) {
 	if err != nil || out.Verdict != "ACCEPT" {
 		t.Fatalf("%+v %v", out, err)
 	}
-	adapter, err = New(Config{Binary: writeScript(t, `{"verdict":"ACCEPT","reason":"ok","grant":"write"}`), Timeout: time.Second})
+	adapter, err = New(Config{RunAsUser: testUser, Binary: writeScript(t, `{"verdict":"ACCEPT","reason":"ok","grant":"write"}`), Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +129,7 @@ func TestClassifyRequiresExactlyOneJSONObject(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			adapter, err := New(Config{Binary: writeScript(t, tc.stdout), Timeout: 10 * time.Second})
+			adapter, err := New(Config{RunAsUser: testUser, Binary: writeScript(t, tc.stdout), Timeout: 10 * time.Second})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -108,7 +145,7 @@ func TestClassifyRequiresExactlyOneJSONObject(t *testing.T) {
 }
 
 func TestReviewReturnsOnlyABoolean(t *testing.T) {
-	adapter, err := New(Config{Binary: writeScript(t, `{"plausible":true}`), Timeout: 10 * time.Second})
+	adapter, err := New(Config{RunAsUser: testUser, Binary: writeScript(t, `{"plausible":true}`), Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,14 +156,14 @@ func TestReviewReturnsOnlyABoolean(t *testing.T) {
 	if !plausible {
 		t.Fatal("plausible = false, want true")
 	}
-	verbose, err := New(Config{Binary: writeScript(t, `{"plausible":true,"severity":"high"}`), Timeout: 10 * time.Second})
+	verbose, err := New(Config{RunAsUser: testUser, Binary: writeScript(t, `{"plausible":true,"severity":"high"}`), Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := verbose.Review(context.Background(), ghtriage.ReviewInput{Schema: ghtriage.ReviewSchema}); err == nil {
 		t.Fatal("a verdict carrying a severity was accepted")
 	}
-	missing, err := New(Config{Binary: writeScript(t, `{}`), Timeout: 10 * time.Second})
+	missing, err := New(Config{RunAsUser: testUser, Binary: writeScript(t, `{}`), Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +173,7 @@ func TestReviewReturnsOnlyABoolean(t *testing.T) {
 }
 
 func TestPlanUsesStrictPlanOutput(t *testing.T) {
-	adapter, err := New(Config{Binary: writeScript(t, `{"summary":"Fix the crash","steps":[{"objective":"Add a regression test","done_when":"It fails before the fix"}]}`), Timeout: 10 * time.Second})
+	adapter, err := New(Config{RunAsUser: testUser, Binary: writeScript(t, `{"summary":"Fix the crash","steps":[{"objective":"Add a regression test","done_when":"It fails before the fix"}]}`), Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +181,7 @@ func TestPlanUsesStrictPlanOutput(t *testing.T) {
 	if err != nil || len(plan.Steps) != 1 {
 		t.Fatalf("plan = %+v, %v", plan, err)
 	}
-	bad, err := New(Config{Binary: writeScript(t, `{"summary":"Fix the crash","steps":[],"extra":true}`), Timeout: 10 * time.Second})
+	bad, err := New(Config{RunAsUser: testUser, Binary: writeScript(t, `{"summary":"Fix the crash","steps":[],"extra":true}`), Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +215,7 @@ func TestClassifyPassesTheConfiguredArgumentsToTheBinary(t *testing.T) {
 	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := New(Config{Binary: binary, Args: []string{"exec", "--model", "gpt-5"}, Timeout: 10 * time.Second})
+	adapter, err := New(Config{RunAsUser: testUser, Binary: binary, Args: []string{"exec", "--model", "gpt-5"}, Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +227,7 @@ func TestClassifyPassesTheConfiguredArgumentsToTheBinary(t *testing.T) {
 	// arguments a binary was called with are visible on the failing path, which
 	// is the one an operator reads anyway.
 	failing := failingScript(t, marker)
-	adapter, err = New(Config{Binary: failing, Args: []string{"exec", "--model", "gpt-5"}, Timeout: 10 * time.Second})
+	adapter, err = New(Config{RunAsUser: testUser, Binary: failing, Args: []string{"exec", "--model", "gpt-5"}, Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +270,7 @@ func TestClassifyFailsWhenTheProcessFails(t *testing.T) {
 	if err := os.WriteFile(failing, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := New(Config{Binary: failing, Timeout: 10 * time.Second})
+	adapter, err := New(Config{RunAsUser: testUser, Binary: failing, Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +308,7 @@ func TestTimeoutBoundsTheWholeSubtree(t *testing.T) {
 	if err := os.WriteFile(slow, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := New(Config{Binary: slow, Timeout: timeout})
+	adapter, err := New(Config{RunAsUser: testUser, Binary: slow, Timeout: timeout})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +331,7 @@ func TestTimeoutBoundsTheWholeSubtree(t *testing.T) {
 }
 
 func TestImplementationUsesStrictStructuredEdits(t *testing.T) {
-	adapter, err := New(Config{Binary: writeScript(t, `{"summary":"change","edits":[{"path":"code.go","content":"package test\n","delete":false}]}`), Timeout: time.Second})
+	adapter, err := New(Config{RunAsUser: testUser, Binary: writeScript(t, `{"summary":"change","edits":[{"path":"code.go","content":"package test\n","delete":false}]}`), Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +339,7 @@ func TestImplementationUsesStrictStructuredEdits(t *testing.T) {
 	if err != nil || len(out.Edits) != 1 || out.Edits[0].Path != "code.go" {
 		t.Fatalf("%+v %v", out, err)
 	}
-	adapter, err = New(Config{Binary: writeScript(t, `{"summary":"change","edits":[{"path":"code.go","content":"x","delete":false}],"run":"model-shell"}`), Timeout: time.Second})
+	adapter, err = New(Config{RunAsUser: testUser, Binary: writeScript(t, `{"summary":"change","edits":[{"path":"code.go","content":"x","delete":false}],"run":"model-shell"}`), Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +350,7 @@ func TestImplementationUsesStrictStructuredEdits(t *testing.T) {
 
 func TestCodeReviewUsesStrictVerdict(t *testing.T) {
 	for _, raw := range []string{`{"verdict":"ACCEPT","reason":"fits"}`, `{"verdict":"ACCEPT","reason":"fits","publish":true}`, `{"verdict":"YES","reason":"fits"}`} {
-		a, err := New(Config{Binary: writeScript(t, raw), Timeout: time.Second})
+		a, err := New(Config{RunAsUser: testUser, Binary: writeScript(t, raw), Timeout: time.Second})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -340,7 +377,7 @@ func envScript(t *testing.T) string {
 
 func childEnvNames(t *testing.T, config Config) string {
 	t.Helper()
-	config.Binary, config.Timeout = envScript(t), 5*time.Second
+	config.RunAsUser, config.Binary, config.Timeout = testUser, envScript(t), 5*time.Second
 	adapter, err := New(config)
 	if err != nil {
 		t.Fatal(err)
@@ -373,5 +410,55 @@ func TestAdapterChildEnvHonoursAllowlist(t *testing.T) {
 	names := childEnvNames(t, Config{EnvAllowlist: []string{"FOO"}})
 	if !strings.Contains(names, " FOO ") || strings.Contains(names, " BAR ") {
 		t.Fatalf("child env = %s, want FOO and not BAR", names)
+	}
+}
+
+func TestNewFailsClosedWithoutADedicatedUser(t *testing.T) {
+	self, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := writeScript(t, "{}")
+	for name, runAs := range map[string]string{"unset": "", "blank": "  ", "root": "root", "self": self.Username, "unknown": "no-such-user-xyz"} {
+		if _, err := New(Config{RunAsUser: runAs, Binary: bin, Timeout: time.Second}); err == nil {
+			t.Fatalf("%s: New accepted run-as user %q", name, runAs)
+		}
+	}
+	_, err = New(Config{Binary: bin, Timeout: time.Second})
+	if err == nil || !strings.Contains(err.Error(), "SUMMA42_MODEL_USER") {
+		t.Fatalf("unset user error = %v, want it to name SUMMA42_MODEL_USER", err)
+	}
+}
+
+// The model is launched through sudo with env -i: its HOME is the model user's
+// home, never the Box's, and no Box variable outside the allowlist reaches it.
+func TestRunLaunchesAsTheModelUserWithACleanEnvironment(t *testing.T) {
+	t.Setenv("HOME", "/home/box-owner")
+	t.Setenv("GITHUB_TOKEN", "secret")
+	t.Setenv("ALLOWED", "yes")
+	script := filepath.Join(t.TempDir(), "probe.sh")
+	body := "#!/bin/sh\ncat > /dev/null\nprintf '{\"verdict\":\"ACCEPT\",\"reason\":\"home=%s tmp=%s pwd=%s tok=%s allowed=%s\"}' \"$HOME\" \"$TMPDIR\" \"$(pwd)\" \"$GITHUB_TOKEN\" \"$ALLOWED\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := New(Config{RunAsUser: testUser, Binary: script, Timeout: 5 * time.Second, EnvAllowlist: []string{"ALLOWED", "HOME"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(fakeSudoLog)
+	out, err := adapter.ReviewPlan(t.Context(), ghtriage.PlanReviewInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "home=" + testHome + " tmp=" + testHome + "/tmp pwd=" + testHome + " tok= allowed=yes"
+	if out.Reason != want {
+		t.Fatalf("model saw %q, want %q", out.Reason, want)
+	}
+	logged, err := os.ReadFile(fakeSudoLog)
+	if err != nil || !strings.HasPrefix(string(logged), "-n -u "+testUser+" -- /usr/bin/env -i") {
+		t.Fatalf("launcher saw %q (%v), want sudo -n -u %s -- /usr/bin/env -i ...", logged, err, testUser)
+	}
+	if strings.Contains(string(logged), "/home/box-owner") || strings.Contains(string(logged), "secret") {
+		t.Fatalf("Box state leaked into the launch command: %q", logged)
 	}
 }

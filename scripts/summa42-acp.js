@@ -16,6 +16,7 @@ const { Readable, Writable } = require('stream');
 const path = require('path');
 const fs = require('fs');
 const { spawnSync } = require('child_process');
+const os = require('os');
 
 // Load ACP SDK from global npm module acp-discord
 const ACP_SDK_PATH = path.join(
@@ -265,10 +266,41 @@ function getTicketsDeterministic() {
   }
 }
 
+// Model CLIs must never run as the Box owner: a prompt-injected agent could read
+// the Box's keys, tokens and state DB. They run as the dedicated model user
+// (scripts/setup-model-user.sh) through sudo -n -u with an env -i environment.
+function modelUserOrError() {
+  const name = (process.env.SUMMA42_MODEL_USER || '').trim();
+  if (!name) {
+    return { error: '⛔ **Chat is disabled:** `SUMMA42_MODEL_USER` is not set. Model CLIs must run as a dedicated OS user that cannot read the Box secrets. Run `scripts/setup-model-user.sh` once with sudo, then set `SUMMA42_MODEL_USER=summa42-model`.' };
+  }
+  if (name === 'root' || name === os.userInfo().username) {
+    return { error: `⛔ **Chat is disabled:** SUMMA42_MODEL_USER=${name} is root or the Box's own user; use a dedicated model user.` };
+  }
+  const pw = spawnSync('getent', ['passwd', name], { encoding: 'utf-8' });
+  const fields = pw.status === 0 ? pw.stdout.trim().split(':') : [];
+  const home = fields[5];
+  if (fields[2] === '0' || !home || !home.startsWith('/')) {
+    return { error: `⛔ **Chat is disabled:** SUMMA42_MODEL_USER=${name} does not exist, is root, or has no home directory.` };
+  }
+  return { name, home };
+}
+
+function spawnAsModelUser(model, bin, args, timeout) {
+  const basePath = process.env.PATH || '/usr/local/bin:/usr/bin:/bin';
+  return spawnSync('sudo', ['-n', '-u', model.name, '--', '/usr/bin/env', '-i', '-C', model.home,
+    `HOME=${model.home}`, `PATH=${basePath}`, `LANG=${process.env.LANG || 'C.UTF-8'}`, `TMPDIR=${model.home}/tmp`,
+    bin, ...args], { encoding: 'utf-8', timeout, cwd: '/', env: { PATH: basePath } });
+}
+
 function chatWithCollective(userText, requestorId) {
   const auth = verifyOwnerAuthorization(requestorId);
   if (!auth.authorized) {
     return `⛔ **Access Denied:** chat is owner-only.\n> *Reason:* ${auth.reason}`;
+  }
+  const modelUser = modelUserOrError();
+  if (modelUser.error) {
+    return modelUser.error;
   }
   try {
     const ctxData = runQuery('status');
@@ -290,11 +322,7 @@ function chatWithCollective(userText, requestorId) {
 
     // 0. Antigravity CLI (agy) - authenticated, zero permission skipping
     try {
-      const res = spawnSync('agy', ['-p', prompt, '--disable-slash-commands'], {
-        encoding: 'utf-8',
-        timeout: 45000,
-        env: process.env
-      });
+      const res = spawnAsModelUser(modelUser, 'agy', ['-p', prompt, '--disable-slash-commands'], 45000);
       if (!res.error && res.status === 0 && res.stdout && res.stdout.trim()) {
         rawReply = res.stdout.trim();
       }
@@ -310,11 +338,7 @@ function chatWithCollective(userText, requestorId) {
     // 2. Local GPU acceleration via Ollama
     if (!rawReply) {
       try {
-        const res = spawnSync('ollama', ['run', 'qwen-gpu', prompt], {
-          encoding: 'utf-8',
-          timeout: 20000,
-          env: process.env
-        });
+        const res = spawnAsModelUser(modelUser, 'ollama', ['run', 'qwen-gpu', prompt], 20000);
         if (!res.error && res.status === 0 && res.stdout && res.stdout.trim()) {
           rawReply = res.stdout.trim();
         }

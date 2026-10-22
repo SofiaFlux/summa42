@@ -144,7 +144,7 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 
 // modelFlagArgv renders cfg as the --model-* flags every run-gh-* stage takes.
 func modelFlagArgv(cfg climodel.Config) []string {
-	out := []string{"--model-binary=" + cfg.Binary, "--model-timeout=" + cfg.Timeout.String()}
+	out := []string{"--model-binary=" + cfg.Binary, "--model-timeout=" + cfg.Timeout.String(), "--model-user=" + cfg.RunAsUser}
 	for _, arg := range cfg.Args {
 		out = append(out, "--model-arg="+arg)
 	}

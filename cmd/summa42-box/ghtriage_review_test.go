@@ -66,7 +66,7 @@ func TestParseGHTriageReviewFlagsTakesAMissionAndTheModelFlags(t *testing.T) {
 	// what refuses a bad one.
 	if _, config, err := parseGHTriageReviewFlags([]string{"--mission", "mission-1"}); err != nil {
 		t.Fatalf("defaulted model flags: %v", err)
-	} else if config.Binary != "codex" || config.Timeout != 60*time.Second {
+	} else if config.Binary != "codex" || config.Timeout != 30*time.Minute {
 		t.Fatalf("defaulted model config = %+v, want the worker's defaults", config)
 	}
 }
