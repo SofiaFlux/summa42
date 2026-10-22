@@ -49,12 +49,17 @@ Do not commit `SUMMA42_HOME`, keys, bearer tokens, SQLite databases, raw evidenc
 Run these checks from the repository root:
 
 ```bash
+test -z "$(gofmt -l .)"
+python3 -m unittest discover -s scripts -p 'test_*.py'
+python3 scripts/verify_docs.py README.md CONTRIBUTING.md
 go test ./... -count=1
-go test -race ./... -count=1
+go test -race ./... -count=1 -timeout 45m
 go vet ./...
 go build ./cmd/summa42 ./cmd/summa42-box
 python3 docs/superpowers/research/spikes/2026-09-14-sqlite-persistence-spike.py
 ```
+
+CI enforces the formatting check (`gofmt -l`), the Python tests, the race run with a 45-minute timeout, vet and the build.
 
 On Linux with Docker available, also run the OCI bypass/capability acceptance profile. That gate must not be replaced with a unit-test-only approximation.
 
