@@ -78,6 +78,14 @@ These are supervised one-shot commands using the existing CLI model protocol. Th
 
 `internal/repoworkspace.Checkout` is the pinned, detached source-preparation primitive for supervised local implementation; the current general worker still creates an empty attempt workspace. Selected context files must be regular tracked UTF-8 files; symlinks, submodules, path traversal and context exceeding 32 files or 256 KiB are rejected. Allowed paths are exact file names, including explicitly permitted new files.
 
+### Command Code backend
+
+Command Code (`cmd`, plan Go: CLI only, no API) works as a model binary: `--model-binary=cmd` with `--model-arg=-p --model-arg=-m --model-arg=<model id> --model-arg=--output-format --model-arg=json --model-arg=--permission-mode --model-arg=plan` (the prompt goes on stdin; `plan` mode because Summa expects the answer back, not file edits). The adapter reads the last NDJSON `result` line; an error result, a missing or empty answer, a rate limit or a non-zero exit fails the stage closed. Token usage is logged. The login is `~/.commandcode/auth.json`, the only Command Code file `scripts/setup-model-user.sh` offers to copy.
+
+Free models only by default: `poolside/laguna-s-2.1-free`, `reflection/beam:free`, `stealth/glyph-cluster:free` (100 requests a day) and `minimax/minimax-m3.1-flash:free`. Any other id spends the plan's monthly pool and needs `--model-allow-paid` / `--review-model-allow-paid` (env `SUMMA42_ALLOW_PAID_MODELS=1`). `--model-zdr` (env `SUMMA42_MODEL_ZDR=1`) sets `CMD_ZDR=1`; the free models have no zero data retention, so it is refused with them. Use a paid ZDR model for private sources such as ADO. `scripts/call-worker.py --backend commandcode --model <id>` applies the same rules with `--allow-paid-models` and `--zdr`.
+
+Suggested mapping: intake and triage `minimax/minimax-m3.1-flash:free`; plan `reflection/beam:free`; plan review and code review `stealth/glyph-cluster:free`; implementation `poolside/laguna-s-2.1-free`. The reviewer must be a different model from the producer. The free deals last "while capacity lasts" and rate-limit long agentic runs, so keep a fallback.
+
 Source preparation sets `GIT_NO_LAZY_FETCH=1`, so missing partial-clone objects fail offline instead of being fetched; a recent Git (2.45 or newer) is not required. Checkout copies and dissociates object storage; it does not borrow writable objects from the source. These Git controls prepare data and do not provide an execution sandbox for future tests or implementation tools.
 
 ### Supervised local implementation

@@ -161,7 +161,7 @@ run_as_validate() { run_as "$VALIDATE_USER" "$VALIDATE_HOME" "$@"; }
 # not scanned (they hold compiled output, not logins).
 validate_home_clean() {
   local rel cli found="" hits
-  for cli in claude codex gemini copilot; do
+  for cli in claude codex commandcode gemini copilot; do
     for rel in $(group_files "$cli") .claude.json .config/gh/hosts.yml .netrc .git-credentials .ssh; do
       if run_as_validate test -e "$VALIDATE_HOME/$rel"; then found+="$VALIDATE_HOME/$rel"$'\n'; fi
     done
@@ -220,6 +220,7 @@ group_files() {
   case "$1" in
     claude)  echo ".claude/.credentials.json" ;;
     codex)   echo ".codex/auth.json" ;;
+    commandcode) echo ".commandcode/auth.json" ;;
     gemini)  echo ".gemini/oauth_creds.json .gemini/google_accounts.json .gemini/installation_id .gemini/settings.json" ;;
     copilot) echo ".copilot/config.json .copilot/mcp-config.json .config/github-copilot/apps.json .config/github-copilot/hosts.json" ;;
   esac
@@ -465,7 +466,7 @@ main() {
   copied=(); skipped=()
   say "CLI auth import (asks per CLI; --yes approves all except Copilot; nothing is copied without a TTY or --yes)"
   local cli rc
-  for cli in claude codex gemini copilot; do
+  for cli in claude codex commandcode gemini copilot; do
     rc=0; import_cli "$cli" || rc=$?
     case "$rc" in
       0) ;;
@@ -517,7 +518,7 @@ main() {
   say "verifying $VALIDATE_USER cannot read the model home $MODEL_HOME"
   require_unreadable "$MODEL_HOME" required validate
   local cli rel
-  for cli in claude codex gemini copilot; do
+  for cli in claude codex commandcode gemini copilot; do
     for rel in $(group_files "$cli") .claude.json; do
       require_unreadable "$MODEL_HOME/$rel" optional validate
     done

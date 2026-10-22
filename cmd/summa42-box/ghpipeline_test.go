@@ -12,6 +12,7 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 	"github.com/SofiaFlux/summa42/internal/workflow"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
@@ -340,5 +341,16 @@ func TestPipelineForwardsTheValidationSettingsToTheImplementStage(t *testing.T) 
 	_, _, _, _, validation, err := parseGHImplementFlags(slices.Concat([]string{"--case", "c1"}, implement))
 	if err != nil || validation.User != "summa42-validate" || validation.Timeout != 20*time.Minute {
 		t.Fatalf("%+v %v", validation, err)
+	}
+}
+
+func TestStagesReceiveTheCommandCodeOptIns(t *testing.T) {
+	got := modelFlagArgv(climodel.Config{Binary: "cmd", RunAsUser: "m", Timeout: time.Minute, AllowPaid: true, ZDR: true})
+	if !slices.Contains(got, "--model-allow-paid") || !slices.Contains(got, "--model-zdr") {
+		t.Fatalf("opt-ins not forwarded to stages: %v", got)
+	}
+	plain := modelFlagArgv(climodel.Config{Binary: "cmd", RunAsUser: "m", Timeout: time.Minute})
+	if slices.Contains(plain, "--model-allow-paid") || slices.Contains(plain, "--model-zdr") {
+		t.Fatalf("opt-ins forwarded without being set: %v", plain)
 	}
 }

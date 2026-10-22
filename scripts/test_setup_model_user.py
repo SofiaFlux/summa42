@@ -125,11 +125,12 @@ class Pure(unittest.TestCase):
             self.assertNotIn("projects", out)
 
     def test_group_files_are_auth_only(self):
-        listing = bash('for g in claude codex gemini copilot; do group_files $g; done').stdout
+        listing = bash('for g in claude codex commandcode gemini copilot; do group_files $g; done').stdout
         for forbidden in ("projects", "history", "sessions", "session-state", "plugins"):
             self.assertNotIn(forbidden, listing)
         self.assertIn(".claude/.credentials.json", listing)
         self.assertIn(".codex/auth.json", listing)
+        self.assertIn(".commandcode/auth.json", listing)
 
     def test_chmod_owner_dir_does_not_follow_symlinks(self):
         with tempfile.TemporaryDirectory() as d:
@@ -283,6 +284,17 @@ class Copy(unittest.TestCase):
             {extra}
             import_cli {cli}
         """)
+
+    def test_commandcode_copies_only_auth_json(self):
+        cc = self.owner + "/.commandcode"
+        os.makedirs(cc + "/projects")
+        Path(cc + "/auth.json").write_text('{"apiKey":"user_x"}')
+        Path(cc + "/history.jsonl").write_text("history")
+        Path(cc + "/mcp.json").write_text("{}")
+        r = self.run_import("commandcode")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(sorted(os.listdir(self.model + "/.commandcode")), ["auth.json"])
+        self.assertEqual(stat.S_IMODE(os.stat(self.model + "/.commandcode/auth.json").st_mode), 0o600)
 
     def test_claude_copies_only_credentials_and_filtered_json(self):
         r = self.run_import("claude")

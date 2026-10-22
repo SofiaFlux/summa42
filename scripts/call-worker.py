@@ -101,7 +101,49 @@ HARNESS_TYPES = {
 
 # Backends that receive the prompt on stdin (not in argv).
 # opencode run documents only a positional message, so it stays on argv.
-STDIN_BACKENDS = {"claude", "codex"}
+STDIN_BACKENDS = {"claude", "codex", "commandcode"}
+
+# Command Code model ids billed at $0; mirror of climodel.commandCodeFree.
+COMMANDCODE_FREE_MODELS = {
+    "poolside/laguna-s-2.1-free",
+    "reflection/beam:free",
+    "stealth/glyph-cluster:free",
+    "minimax/minimax-m3.1-flash:free",
+}
+COMMANDCODE_MAX_TURNS = 30
+
+
+def commandcode_check(model):
+    """Free models only unless --allow-paid-models; ZDR only on a model that has it."""
+    if not model:
+        raise ValueError("commandcode backend needs --model")
+    free = model in COMMANDCODE_FREE_MODELS
+    if not free and os.environ.get("SUMMA42_ALLOW_PAID_MODELS") != "1":
+        raise ValueError(f"Command Code model {model!r} is not free; pass --allow-paid-models")
+    if free and os.environ.get("SUMMA42_MODEL_ZDR") == "1":
+        raise ValueError(f"free Command Code model {model!r} has no zero data retention")
+
+
+def commandcode_answer(stdout):
+    """finalText of the last NDJSON result line; anything else fails closed."""
+    last = None
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result":
+            last = obj
+    if last is None:
+        raise RuntimeError("command code: no result line")
+    if last.get("subtype") != "success":
+        raise RuntimeError(f"command code: {last.get('subtype')}: {last.get('error', '')}")
+    text = last.get("finalText") or ""
+    if not text.strip():
+        raise RuntimeError("command code: empty answer")
+    usage = last.get("usage") or {}
+    sys.stderr.write(f"call-worker: command code usage {json.dumps(usage, sort_keys=True)}\n")
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +376,8 @@ def check_harness_auth(harness, wrapper=None, force=False):
     base = harness
     if harness.startswith("codemie-"):
         base = harness[len("codemie-"):]
+    if base == "commandcode":
+        base = "cmd"  # the Command Code CLI binary
 
     cache = load_capability_cache()
     cached = cache.get(harness)
@@ -731,7 +775,14 @@ def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=N
         if backend.startswith("codemie-"):
             wrapper = "codemie-"
         tool_binary = (f"{wrapper}{base}" if wrapper else base)
-        if base == "claude":
+        if base == "commandcode":
+            commandcode_check(model)
+            tool_binary = "cmd"
+            cmd = [tool_binary, "-p", "-m", model, "--output-format", "json",
+                   "--permission-mode", "plan", "--max-turns", str(COMMANDCODE_MAX_TURNS)]
+            if os.environ.get("SUMMA42_MODEL_ZDR") == "1":
+                env["CMD_ZDR"] = "1"
+        elif base == "claude":
             cmd = [tool_binary, "-p"]  # no positional: reads piped stdin
             if model:
                 cmd.extend(["--model", model])
@@ -749,6 +800,8 @@ def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=N
         )
         if proc.returncode != 0:
             raise RuntimeError(f"{cmd[0]} exited with code {proc.returncode}: {proc.stderr}")
+        if base == "commandcode":
+            return commandcode_answer(proc.stdout)
         return proc.stdout
 
     # Argv-only backends: enforce 100 KiB cap.
@@ -841,12 +894,20 @@ def main():
     parser.add_argument("--rules-file", default=None, help="Path to file containing review rules")
     parser.add_argument("--allow-remote", action="store_true",
                         help="Opt-in to OpenRouter/remote models (S-I5)")
+    parser.add_argument("--allow-paid-models", action="store_true",
+                        help="Allow Command Code models that are not free")
+    parser.add_argument("--zdr", action="store_true",
+                        help="Command Code zero data retention (CMD_ZDR=1); free models do not offer it")
 
     args, unknown = parser.parse_known_args()
 
     # Allow --allow-remote to set the env var for downstream helpers.
     if args.allow_remote:
         os.environ["SUMMA42_ALLOW_REMOTE_MODELS"] = "1"
+    if args.allow_paid_models:
+        os.environ["SUMMA42_ALLOW_PAID_MODELS"] = "1"
+    if args.zdr:
+        os.environ["SUMMA42_MODEL_ZDR"] = "1"
 
     # Default backend selection (no openrouter unless remote allowed).
     if args.backend is None:

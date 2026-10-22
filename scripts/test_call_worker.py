@@ -446,3 +446,57 @@ class TestRulesBlockScope(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCommandCodeBackend(unittest.TestCase):
+    ACCEPT = '{\\"verdict\\":\\"ACCEPT\\",\\"reason\\":\\"ok\\"}'
+
+    def _cmd(self, d, result_line):
+        """Fake `cmd` that records argv and CMD_ZDR, then prints NDJSON."""
+        log = os.path.join(d, "argv")
+        _make_backend(d, "cmd",
+                      'echo "$@" > %s\necho "zdr=$CMD_ZDR" >> %s\ncat >/dev/null\n'
+                      "echo '{\"type\":\"event\"}'\necho '%s'\n" % (log, log, result_line))
+        return log
+
+    def _review(self, d, *extra):
+        return _run({"schema": "github.issue.plan.review.v1"},
+                    env={"PATH": _path_with(d), "XDG_CACHE_HOME": d},
+                    extra_args=["--backend", "commandcode", "--fallback", "commandcode", *extra])
+
+    def ok_line(self):
+        return '{"type":"result","subtype":"success","finalText":"%s","usage":{"inputTokens":1}}' % self.ACCEPT
+
+    def test_free_model_answer_is_the_result_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = self._cmd(d, self.ok_line())
+            r = self._review(d, "--model", "reflection/beam:free")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('"ACCEPT"', r.stdout)
+            argv = open(log).read()
+            self.assertIn("-p -m reflection/beam:free --output-format json --permission-mode plan", argv)
+            self.assertIn("zdr=\n", argv)
+
+    def test_error_result_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._cmd(d, '{"type":"result","subtype":"error","finalText":"","error":"Rate limit exceeded"}')
+            r = self._review(d, "--model", "reflection/beam:free")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertNotIn("ACCEPT", r.stdout)
+
+    def test_paid_model_needs_opt_in(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = self._cmd(d, self.ok_line())
+            r = self._review(d, "--model", "zai-org/glm-5.3")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertFalse(os.path.exists(log), "paid model was called without opt-in")
+            r = self._review(d, "--model", "zai-org/glm-5.3", "--allow-paid-models", "--zdr")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("zdr=1", open(log).read())
+
+    def test_zdr_on_free_model_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = self._cmd(d, self.ok_line())
+            r = self._review(d, "--model", "poolside/laguna-s-2.1-free", "--zdr")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertFalse(os.path.exists(log))

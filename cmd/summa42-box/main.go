@@ -690,6 +690,10 @@ func registerModelFlags(flags *flag.FlagSet, prefix, binaryUse string) {
 	flags.Var(&modelEnv{}, prefix+"-env",
 		"name of a Box environment variable forwarded to the model process, repeatable "+
 			"(the model otherwise gets only PATH, LANG and its own HOME and TMPDIR; GitHub and Box credentials are rejected)")
+	flags.Bool(prefix+"-allow-paid", os.Getenv("SUMMA42_ALLOW_PAID_MODELS") == "1",
+		"allow a Command Code model that is not free (env SUMMA42_ALLOW_PAID_MODELS=1; free models only by default)")
+	flags.Bool(prefix+"-zdr", os.Getenv("SUMMA42_MODEL_ZDR") == "1",
+		"Command Code zero data retention, CMD_ZDR=1 (env SUMMA42_MODEL_ZDR=1; free models do not offer it)")
 }
 
 // modelEnv collects the repeatable --model-env names and rejects credentials
@@ -804,7 +808,9 @@ func prefixedModelConfig(flags *flag.FlagSet, prefix string) (climodel.Config, e
 	if envFlag := flags.Lookup(prefix + "-env"); envFlag != nil {
 		envNames, _ = envFlag.Value.(flag.Getter).Get().([]string)
 	}
-	return climodel.Config{RunAsUser: runAs, Binary: binary, Args: args, Timeout: duration, EnvAllowlist: envNames}, nil
+	allowPaid, _ := flags.Lookup(prefix + "-allow-paid").Value.(flag.Getter).Get().(bool)
+	zdr, _ := flags.Lookup(prefix + "-zdr").Value.(flag.Getter).Get().(bool)
+	return climodel.Config{RunAsUser: runAs, Binary: binary, Args: args, Timeout: duration, EnvAllowlist: envNames, AllowPaid: allowPaid, ZDR: zdr}, nil
 }
 
 // triageModelAdapter builds the classifier the triage executor needs and reports
