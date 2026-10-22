@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -62,6 +63,7 @@ type Validator struct {
 	toolchain []string
 	timeout   time.Duration
 	logf      func(format string, args ...any)
+	lockPath  string
 	// One validation at a time: the sweep after a run kills every process of
 	// the validation user and removes its scratch directories.
 	mu sync.Mutex
@@ -75,7 +77,7 @@ type Validator struct {
 // toolchain is found there; they must be readable and executable by the
 // validation user. The Box's own PATH is never forwarded. commandTimeout is
 // the per-command limit; zero means DefaultCommandTimeout.
-func NewValidator(validationUser, modelUser string, toolchainDirs []string, commandTimeout time.Duration) (*Validator, error) {
+func NewValidator(validationUser, modelUser string, toolchainDirs []string, commandTimeout time.Duration, lockPath string) (*Validator, error) {
 	model, err := modelrun.ResolveRunAsUser(modelUser)
 	if err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
@@ -97,14 +99,22 @@ func NewValidator(validationUser, modelUser string, toolchainDirs []string, comm
 	if commandTimeout < time.Second || commandTimeout > maxCommandTimeout {
 		return nil, fmt.Errorf("validation command timeout %s must be between 1s and %s", commandTimeout, maxCommandTimeout)
 	}
-	return &Validator{runAs: runAs, modelHome: model.HomeDir, toolchain: dirs, timeout: commandTimeout, logf: log.Printf}, nil
+	lockPath = strings.TrimSpace(lockPath)
+	if !filepath.IsAbs(lockPath) {
+		return nil, errors.New("validation lock path must be absolute: the lock serializes validation across Box processes")
+	}
+	return &Validator{runAs: runAs, modelHome: model.HomeDir, toolchain: dirs, timeout: commandTimeout, logf: log.Printf, lockPath: lockPath}, nil
+}
+
+// Timeout returns the per-command validation timeout.
+func (v *Validator) Timeout() time.Duration {
+	return v.timeout
 }
 
 // ValidateCandidate streams the candidate commit (git archive) to the
 // validation user, runs each command in a private scratch copy under that
-// user's ~/tmp with a private GOMODCACHE and the user's persistent GOCACHE
-// (shared with nobody else, so caching is safe), and returns the recorded
-// results. The Box keeps the evidence; it only sees bounded output, exit codes
+// user's ~/tmp with a private GOMODCACHE and a per-run GOCACHE, and returns
+// the recorded results. The Box keeps the evidence; it only sees bounded output, exit codes
 // and timings, as JSON from the script. Whatever the outcome or cancel, every
 // process of the validation user is killed and its scratch removed afterwards.
 func (v *Validator) ValidateCandidate(ctx context.Context, dir string, c Candidate, commands [][]string) ([]CommandResult, error) {
@@ -126,6 +136,41 @@ func (v *Validator) ValidateCandidate(ctx context.Context, dir string, c Candida
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
+
+	// Cross-process serialization: an exclusive OS file lock around the whole
+	// validation (including the sweep), so two Box processes validating at
+	// once cannot kill each other's commands via the validation user sweep.
+	releaseLock := func() {}
+	{
+		if err := os.MkdirAll(filepath.Dir(v.lockPath), 0o700); err != nil {
+			return nil, fmt.Errorf("validation lock dir: %w", err)
+		}
+		lf, err := os.OpenFile(v.lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("validation lock file: %w", err)
+		}
+		acquired := false
+		for !acquired {
+			if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+				acquired = true
+				continue
+			} else if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+				lf.Close()
+				return nil, fmt.Errorf("validation lock: %w", err)
+			}
+			select {
+			case <-ctx.Done():
+				lf.Close()
+				return nil, ctx.Err()
+			case <-time.After(25 * time.Millisecond):
+			}
+		}
+		releaseLock = func() {
+			_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+			lf.Close()
+		}
+	}
+	defer releaseLock()
 	defer v.sweep(ctx)
 	if err := sameCandidate(ctx, dir, c); err != nil {
 		return nil, err
@@ -189,9 +234,8 @@ const (
 func validationScript(commands [][]string, limit time.Duration) string {
 	var b strings.Builder
 	seconds := int64((limit + time.Second - 1) / time.Second)
-	b.WriteString(`w=$PWD; src=$w/src; gc=$HOME/go-cache
-mkdir -p -m 0700 "$gc" || exit 125
-mkdir "$src" "$w/home" || exit 125
+	b.WriteString(`w=$PWD; src=$w/src; gc=$w/go-cache
+mkdir "$src" "$w/home" "$gc" || exit 125
 tar -xf - -C "$src" || exit 125
 j=; p=
 # The command runs in its own process group (coreutils timeout makes one), so a

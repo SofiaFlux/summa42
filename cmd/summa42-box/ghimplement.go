@@ -73,6 +73,9 @@ func runGHImplement(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(validation.LockPath) == "" {
+		validation.LockPath = filepath.Join(filepath.Dir(cfg.DatabasePath), "validation.lock")
+	}
 	material, err := loadStartupMaterial(ctx, cfg)
 	if err != nil {
 		return err
@@ -106,8 +109,9 @@ const validationToolchainEnv = "SUMMA42_VALIDATION_TOOLCHAIN_DIRS"
 
 // validationConfig is the validation user and the per-command time limit.
 type validationConfig struct {
-	User    string
-	Timeout time.Duration
+	User     string
+	Timeout  time.Duration
+	LockPath string
 }
 
 // registerValidationFlags puts the validation flags on a flag set. The user
@@ -123,6 +127,9 @@ func registerValidationFlags(flags *flag.FlagSet) {
 	}
 	flags.String("validation-timeout", timeout,
 		"per-command validation time limit (env SUMMA42_VALIDATION_TIMEOUT; generous by default)")
+	lock := os.Getenv("SUMMA42_VALIDATION_LOCK")
+	flags.String("validation-lock", lock,
+		"OS file lock serializing validation across Box processes (default: <state-dir>/validation.lock)")
 }
 
 func validationConfigFrom(flags *flag.FlagSet) (validationConfig, error) {
@@ -135,13 +142,14 @@ func validationConfigFrom(flags *flag.FlagSet) (validationConfig, error) {
 		return cfg, errors.New("--validation-timeout must be positive")
 	}
 	cfg.Timeout = timeout
+	cfg.LockPath = strings.TrimSpace(flags.Lookup("validation-lock").Value.String())
 	return cfg, nil
 }
 
 // validatorFor builds the validator that runs the validation commands as the
 // validation user. It fails closed when no validation user is configured.
 func validatorFor(cfg validationConfig, modelUser string) (*repoworkspace.Validator, error) {
-	return repoworkspace.NewValidator(cfg.User, modelUser, splitPathList(os.Getenv(validationToolchainEnv)), cfg.Timeout)
+	return repoworkspace.NewValidator(cfg.User, modelUser, splitPathList(os.Getenv(validationToolchainEnv)), cfg.Timeout, cfg.LockPath)
 }
 
 func splitPathList(raw string) []string {

@@ -3,6 +3,7 @@ package repoworkspace
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/user"
@@ -38,7 +39,7 @@ func testValidator(t *testing.T, toolchain ...string) (v *Validator, home, sudoL
 	if err := modelruntest.LockModelHome(); err != nil {
 		t.Fatal(err)
 	}
-	v, err = NewValidator(modelruntest.ValidationUser, modelruntest.User, toolchain, 0)
+	v, err = NewValidator(modelruntest.ValidationUser, modelruntest.User, toolchain, 0, filepath.Join(t.TempDir(), "validation.lock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,23 +119,23 @@ func TestValidationFailsClosedWithoutADistinctValidationUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"", " ", "root", "no-such-user-xyz", self.Username, modelruntest.User} {
-		if _, err := NewValidator(name, modelruntest.User, nil, 0); err == nil {
+		if _, err := NewValidator(name, modelruntest.User, nil, 0, filepath.Join(t.TempDir(), "validation.lock")); err == nil {
 			t.Fatalf("validator built for validation user %q", name)
 		}
 	}
 	for _, model := range []string{"", "root", "no-such-user-xyz", self.Username} {
-		if _, err := NewValidator(modelruntest.ValidationUser, model, nil, 0); err == nil {
+		if _, err := NewValidator(modelruntest.ValidationUser, model, nil, 0, filepath.Join(t.TempDir(), "validation.lock")); err == nil {
 			t.Fatalf("validator built for model user %q", model)
 		}
 	}
-	if _, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, []string{"relative/bin"}, 0); err == nil {
+	if _, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, []string{"relative/bin"}, 0, filepath.Join(t.TempDir(), "validation.lock")); err == nil {
 		t.Fatal("relative toolchain dir accepted")
 	}
-	if _, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, []string{"/opt/a:/opt/b"}, 0); err == nil {
+	if _, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, []string{"/opt/a:/opt/b"}, 0, filepath.Join(t.TempDir(), "validation.lock")); err == nil {
 		t.Fatal("toolchain dir with a path separator accepted")
 	}
 	for _, d := range []time.Duration{-time.Second, time.Millisecond, 25 * time.Hour} {
-		if _, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, d); err == nil {
+		if _, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, d, filepath.Join(t.TempDir(), "validation.lock")); err == nil {
 			t.Fatalf("command timeout %s accepted", d)
 		}
 	}
@@ -145,7 +146,7 @@ func TestValidationTimeoutDefaultsToTenMinutesAndIsConfigurable(t *testing.T) {
 	if v.timeout != 10*time.Minute || DefaultCommandTimeout != 10*time.Minute {
 		t.Fatalf("default per-command timeout is %s", v.timeout)
 	}
-	custom, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, 25*time.Minute)
+	custom, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, 25*time.Minute, filepath.Join(t.TempDir(), "validation.lock"))
 	if err != nil || custom.timeout != 25*time.Minute {
 		t.Fatalf("%v %v", custom, err)
 	}
@@ -202,19 +203,15 @@ func TestValidationSweepsTheValidationUserAfterEveryRun(t *testing.T) {
 	}
 }
 
-func TestValidationKeepsAPersistentGoCacheInTheValidationHome(t *testing.T) {
+func TestValidationUsesPerRunGoCacheUnderScratchDir(t *testing.T) {
 	dir, c := validationFixture(t)
 	v, home, _ := testValidator(t)
-	got, err := v.ValidateCandidate(context.Background(), dir, c, [][]string{{"sh", "-c", "printf %s \"$GOCACHE\"; echo kept > \"$GOCACHE/marker\""}})
-	if err != nil || len(got) != 1 || got[0].Output != filepath.Join(home, "go-cache") {
+	got, err := v.ValidateCandidate(context.Background(), dir, c, [][]string{{"sh", "-c", "printf %s \"$GOCACHE\""}})
+	if err != nil || len(got) != 1 {
 		t.Fatalf("%+v %v", got, err)
 	}
-	got, err = v.ValidateCandidate(context.Background(), dir, c, [][]string{{"sh", "-c", "cat \"$GOCACHE/marker\""}})
-	if err != nil || got[0].Output != "kept\n" {
-		t.Fatalf("the Go cache does not survive between runs: %+v %v", got, err)
-	}
-	if info, err := os.Stat(filepath.Join(home, "go-cache")); err != nil || info.Mode().Perm() != 0o700 {
-		t.Fatalf("%v %v", info, err)
+	if !strings.HasPrefix(got[0].Output, filepath.Join(home, "tmp", "run.")) || !strings.HasSuffix(got[0].Output, filepath.Join("go-cache")) {
+		t.Fatalf("GOCACHE is not under the run's scratch dir: %q", got[0].Output)
 	}
 }
 
@@ -476,5 +473,44 @@ func TestValidationArchiveIgnoresInTreeGitAttributes(t *testing.T) {
 	// The identity of the candidate is untouched by the override.
 	if err := VerifyCandidate(context.Background(), dir, c); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidationLockSerializesValidatorsAcrossProcesses(t *testing.T) {
+	dir, c := validationFixture(t)
+	first, _, _ := testValidator(t)
+	lock := first.lockPath
+	second, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, 0, lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two Validators stand in for two Box processes: they share only the lock
+	// file. Overlapping runs would collide on the busy marker (or one run's
+	// sweep would kill the other's command).
+	busy := filepath.Join(t.TempDir(), "busy")
+	cmd := [][]string{{"sh", "-c", "mkdir " + busy + " || exit 9; sleep 1; rmdir " + busy}}
+	errs := make(chan error, 2)
+	for _, v := range []*Validator{first, second} {
+		go func(v *Validator) {
+			got, err := v.ValidateCandidate(context.Background(), dir, c, cmd)
+			if err == nil && (len(got) != 1 || got[0].ExitCode != 0) {
+				err = fmt.Errorf("overlapping validation: %+v", got)
+			}
+			errs <- err
+		}(v)
+	}
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestValidatorRequiresAnAbsoluteLockPath(t *testing.T) {
+	testValidator(t)
+	for _, lock := range []string{"", "relative/validation.lock"} {
+		if _, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, 0, lock); err == nil {
+			t.Fatalf("lock path %q accepted", lock)
+		}
 	}
 }

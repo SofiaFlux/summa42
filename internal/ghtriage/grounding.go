@@ -85,8 +85,12 @@ func validateContract(paths []string, commands [][]string) error {
 	}
 	return validateCommands(commands)
 }
+
+// MaxValidationCommands bounds the validation argv list of a plan.
+const MaxValidationCommands = 8
+
 func validateCommands(commands [][]string) error {
-	if len(commands) < 1 || len(commands) > 8 {
+	if len(commands) < 1 || len(commands) > MaxValidationCommands {
 		return errors.New("bounded allowed paths and validation commands required")
 	}
 	total := 0

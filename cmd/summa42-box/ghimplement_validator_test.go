@@ -10,7 +10,7 @@ import (
 )
 
 func fakeValidation(user string) validationConfig {
-	return validationConfig{User: user, Timeout: 10 * time.Minute}
+	return validationConfig{User: user, Timeout: 10 * time.Minute, LockPath: "/tmp/summa42-test-validation.lock"}
 }
 
 func TestValidatorFailsClosedWithoutADistinctValidationUser(t *testing.T) {

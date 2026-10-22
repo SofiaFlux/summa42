@@ -448,9 +448,9 @@ main() {
   say "ensuring $MODEL_HOME and $MODEL_HOME/tmp are private to $MODEL_USER (0700), as $MODEL_USER"
   run_as_model chmod 0700 "$MODEL_HOME"
   run_as_model mkdir -p -m 0700 "$MODEL_HOME/tmp"
-  say "ensuring $VALIDATE_HOME, $VALIDATE_HOME/tmp and the persistent Go cache are private to $VALIDATE_USER (0700), as $VALIDATE_USER"
+  say "ensuring $VALIDATE_HOME and $VALIDATE_HOME/tmp are private to $VALIDATE_USER (0700), as $VALIDATE_USER"
   run_as_validate chmod 0700 "$VALIDATE_HOME"
-  run_as_validate mkdir -p -m 0700 "$VALIDATE_HOME/tmp" "$VALIDATE_HOME/go-cache"
+  run_as_validate mkdir -p -m 0700 "$VALIDATE_HOME/tmp"
   validate_home_clean || die "refusing to continue; remove the credentials from $VALIDATE_HOME (nothing is ever copied there)"
 
   # 2. sudoers drop-ins, one per user.

@@ -138,7 +138,7 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 			{"plan-review", pipelineBatchTimeout(reviewer.Timeout), runGHPlanReview, slices.Concat(missionArgs, review)},
 		},
 		perCase: []pipelineStage{
-			{"implement", ghtriage.ImplementationLease(producer.Timeout) - time.Minute, runGHImplement, slices.Concat(
+			{"implement", ghtriage.ImplementationLease(producer.Timeout, ghtriage.MaxValidationCommands, validation.Timeout) - time.Minute, runGHImplement, slices.Concat(
 				[]string{"--source-repo=" + source, "--workspace-root=" + root, "--validation-user=" + validation.User, "--validation-timeout=" + validation.Timeout.String()}, produce)},
 			{"code-review", ghtriage.CodeReviewLease(reviewer.Timeout) - time.Minute, runGHCodeReview, slices.Concat(
 				[]string{"--source-repo=" + source}, review)},

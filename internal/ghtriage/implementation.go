@@ -191,7 +191,8 @@ func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 	}); err != nil {
 		return ImplementationResult{}, err
 	}
-	attempt, err := i.exec.StartAttempt(ctx, task.ID, "github-issue-structured-implementer", ImplementationLease(i.modelTimeout))
+	lease := ImplementationLease(i.modelTimeout, len(input.Plan.Source.ValidationCommands), i.validator.Timeout())
+	attempt, err := i.exec.StartAttempt(ctx, task.ID, "github-issue-structured-implementer", lease)
 	if err != nil {
 		current, getErr := i.exec.Task(ctx, task.ID)
 		if getErr == nil && current.State != domain.TaskEligible {
@@ -205,7 +206,7 @@ func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 		cleanupErr := failStage(cleanup, i.cases, i.exec, i.evidence, c, task.ID, attempt.ID, "implementation", err)
 		return ImplementationResult{}, errors.Join(err, cleanupErr)
 	}
-	runCtx, cancel := context.WithTimeout(ctx, ImplementationLease(i.modelTimeout)-time.Minute)
+	runCtx, cancel := context.WithTimeout(ctx, lease-time.Minute)
 	defer cancel()
 	destination := filepath.Join(root, string(attempt.ID))
 	if _, err := repoworkspace.Checkout(runCtx, cfg, destination); err != nil {

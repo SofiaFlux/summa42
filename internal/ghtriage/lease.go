@@ -28,8 +28,24 @@ func CodeReviewLease(modelTimeout time.Duration) time.Duration {
 	return leaseFor(modelTimeout, reviewLeaseMargin, CodeReviewLeaseDuration)
 }
 
+// validationKillGrace is the coreutils --kill-after grace on a validation command.
+const validationKillGrace = 5 * time.Second
+
+// archiveStreamingCap bounds streaming the candidate archive into the validation
+// user.
+const archiveStreamingCap = 5 * time.Minute
+
 // ImplementationLease is the implementation attempt lease for a model timeout
-// (0 = default). The margin covers checkout and the validation commands.
-func ImplementationLease(modelTimeout time.Duration) time.Duration {
-	return leaseFor(modelTimeout, implementationLeaseMargin, ImplementationLeaseDuration)
+// (0 = default). It must outlive the model call plus all of the validation
+// commands (each validation timeout plus its kill grace), the archive streaming
+// cap, and the stage margin.
+func ImplementationLease(modelTimeout time.Duration, validationCommands int, validationTimeout time.Duration) time.Duration {
+	if modelTimeout <= 0 && validationCommands <= 0 {
+		return ImplementationLeaseDuration
+	}
+	if validationTimeout <= 0 {
+		validationTimeout = 10 * time.Minute
+	}
+	lease := max(modelTimeout, 0) + time.Duration(max(validationCommands, 0))*(validationTimeout+validationKillGrace) + archiveStreamingCap + implementationLeaseMargin
+	return max(lease, ImplementationLeaseDuration)
 }

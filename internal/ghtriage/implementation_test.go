@@ -51,7 +51,7 @@ func newImplementer(t *testing.T, f *driverFixture, m ghtriage.ImplementationMod
 	if err := modelruntest.LockModelHome(); err != nil {
 		t.Fatal(err)
 	}
-	v, err := repoworkspace.NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, 0)
+	v, err := repoworkspace.NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, 0, filepath.Join(t.TempDir(), "validation.lock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestImplementationClaimsBeforeConcurrentPaidCall(t *testing.T) {
 func TestImplementationExpiredLeaseCannotComplete(t *testing.T) {
 	f, cfg, id := readyImplementation(t)
 	m := &implementationModel{onCall: func(ghtriage.ImplementationInput) {
-		f.clock.Advance(ghtriage.ImplementationLeaseDuration + time.Second)
+		f.clock.Advance(ghtriage.ImplementationLease(0, 1, 10*time.Minute) + time.Second)
 	}}
 	got, err := newImplementer(t, f, m).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	if err == nil || got.Record != nil {
@@ -236,7 +236,7 @@ func TestImplementationDoesNotRerunExpiredStagedWork(t *testing.T) {
 	impl := newImplementer(t, f, m)
 	_, _ = impl.Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	f.store.DB().ExecContext(f.ctx, `DROP TRIGGER interrupt_implementation_completion`)
-	f.clock.Advance(ghtriage.ImplementationLeaseDuration + time.Second)
+	f.clock.Advance(ghtriage.ImplementationLease(0, 1, 10*time.Minute) + time.Second)
 	_, err := impl.Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	if err == nil || m.calls.Load() != 1 {
 		t.Fatalf("expired staged run repeated: %v calls=%d", err, m.calls.Load())
@@ -324,7 +324,7 @@ func TestImplementationValidationGoesThroughTheValidationUserLauncher(t *testing
 	if err := modelruntest.LockModelHome(); err != nil {
 		t.Fatal(err)
 	}
-	v, err := repoworkspace.NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, 0)
+	v, err := repoworkspace.NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, 0, filepath.Join(t.TempDir(), "validation.lock"))
 	if err != nil {
 		t.Fatal(err)
 	}
