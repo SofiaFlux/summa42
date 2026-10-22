@@ -690,6 +690,8 @@ func registerModelFlags(flags *flag.FlagSet, prefix, binaryUse string) {
 	flags.Var(&modelEnv{}, prefix+"-env",
 		"name of a Box environment variable forwarded to the model process, repeatable "+
 			"(the model otherwise gets only PATH, LANG and its own HOME and TMPDIR; GitHub and Box credentials are rejected)")
+	flags.String(prefix+"-commandcode", "",
+		"Command Code model id: runs the cmd binary with arguments the Box builds (plan mode, no session; --"+prefix+"-arg is refused)")
 	flags.Bool(prefix+"-allow-paid", os.Getenv("SUMMA42_ALLOW_PAID_MODELS") == "1",
 		"allow a Command Code model that is not free (env SUMMA42_ALLOW_PAID_MODELS=1; free models only by default)")
 	flags.Bool(prefix+"-zdr", os.Getenv("SUMMA42_MODEL_ZDR") == "1",
@@ -793,7 +795,11 @@ func prefixedModelConfig(flags *flag.FlagSet, prefix string) (climodel.Config, e
 	if collected, ok := argsFlag.Value.(*modelArgs); ok {
 		explicit = collected.set
 	}
-	if !explicit && filepath.Base(binary) == "codex" {
+	commandCode := strings.TrimSpace(flags.Lookup(prefix + "-commandcode").Value.String())
+	if commandCode != "" && !explicitBinary(flags, prefix) {
+		binary = "cmd"
+	}
+	if !explicit && commandCode == "" && filepath.Base(binary) == "codex" {
 		args = []string{"exec"}
 	}
 	userFlag := flags.Lookup(prefix + "-user")
@@ -810,7 +816,7 @@ func prefixedModelConfig(flags *flag.FlagSet, prefix string) (climodel.Config, e
 	}
 	allowPaid, _ := flags.Lookup(prefix + "-allow-paid").Value.(flag.Getter).Get().(bool)
 	zdr, _ := flags.Lookup(prefix + "-zdr").Value.(flag.Getter).Get().(bool)
-	return climodel.Config{RunAsUser: runAs, Binary: binary, Args: args, Timeout: duration, EnvAllowlist: envNames, AllowPaid: allowPaid, ZDR: zdr}, nil
+	return climodel.Config{RunAsUser: runAs, Binary: binary, Args: args, Timeout: duration, EnvAllowlist: envNames, CommandCodeModel: commandCode, AllowPaid: allowPaid, ZDR: zdr}, nil
 }
 
 // triageModelAdapter builds the classifier the triage executor needs and reports
@@ -1877,4 +1883,11 @@ func runFinalVerifier(ctx context.Context, args []string) error {
 		return fmt.Errorf("construct ADO final verifier: %w", err)
 	}
 	return verifier.Run(ctx, pollInterval)
+}
+
+// explicitBinary reports whether --<prefix>-binary was passed.
+func explicitBinary(flags *flag.FlagSet, prefix string) bool {
+	set := false
+	flags.Visit(func(f *flag.Flag) { set = set || f.Name == prefix+"-binary" })
+	return set
 }

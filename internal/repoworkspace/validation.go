@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -140,35 +139,9 @@ func (v *Validator) ValidateCandidate(ctx context.Context, dir string, c Candida
 	// Cross-process serialization: an exclusive OS file lock around the whole
 	// validation (including the sweep), so two Box processes validating at
 	// once cannot kill each other's commands via the validation user sweep.
-	releaseLock := func() {}
-	{
-		if err := os.MkdirAll(filepath.Dir(v.lockPath), 0o700); err != nil {
-			return nil, fmt.Errorf("validation lock dir: %w", err)
-		}
-		lf, err := os.OpenFile(v.lockPath, os.O_CREATE|os.O_RDWR, 0o600)
-		if err != nil {
-			return nil, fmt.Errorf("validation lock file: %w", err)
-		}
-		acquired := false
-		for !acquired {
-			if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
-				acquired = true
-				continue
-			} else if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
-				lf.Close()
-				return nil, fmt.Errorf("validation lock: %w", err)
-			}
-			select {
-			case <-ctx.Done():
-				lf.Close()
-				return nil, ctx.Err()
-			case <-time.After(25 * time.Millisecond):
-			}
-		}
-		releaseLock = func() {
-			_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
-			lf.Close()
-		}
+	releaseLock, err := lockFile(ctx, v.lockPath)
+	if err != nil {
+		return nil, err
 	}
 	defer releaseLock()
 	defer v.sweep(ctx)

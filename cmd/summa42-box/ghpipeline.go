@@ -166,6 +166,9 @@ func modelFlagArgv(cfg climodel.Config) []string {
 	for _, name := range cfg.EnvAllowlist {
 		out = append(out, "--model-env="+name)
 	}
+	if cfg.CommandCodeModel != "" {
+		out = append(out, "--model-commandcode="+cfg.CommandCodeModel)
+	}
 	if cfg.AllowPaid {
 		out = append(out, "--model-allow-paid")
 	}

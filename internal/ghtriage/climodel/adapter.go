@@ -30,10 +30,12 @@ type Config struct {
 	// process (its own auth variables). Everything else is withheld, so an
 	// agentic model cannot reuse GitHub or Box credentials.
 	EnvAllowlist []string
-	// AllowPaid permits a Command Code model that is not free; ZDR sets
-	// CMD_ZDR=1 for it. Both apply only to the Command Code (cmd) backend.
-	AllowPaid bool
-	ZDR       bool
+	// CommandCodeModel selects the Command Code (cmd) backend with this model
+	// id; the adapter then builds the whole argv. AllowPaid permits a model
+	// that is not free; ZDR sets CMD_ZDR=1. All three are Command Code only.
+	CommandCodeModel string
+	AllowPaid        bool
+	ZDR              bool
 }
 
 type Adapter struct {
@@ -43,6 +45,9 @@ type Adapter struct {
 	timeout   time.Duration
 	allowlist []string
 	zdr       bool
+	// commandCode: parse cmd's NDJSON and give it a private scratch cwd, so
+	// one call cannot leave project config for the next (the reviewer's).
+	commandCode bool
 }
 
 // New validates the model configuration at construction, so an unusable
@@ -61,11 +66,14 @@ func New(config Config) (*Adapter, error) {
 	if err := checkCommandCode(config); err != nil {
 		return nil, err
 	}
+	if config.CommandCodeModel != "" {
+		config.Args = commandCodeArgs(config.CommandCodeModel)
+	}
 	resolved, err := exec.LookPath(config.Binary)
 	if err != nil {
 		return nil, fmt.Errorf("model binary %q is not usable: %w", config.Binary, err)
 	}
-	return &Adapter{runAs: target, binary: resolved, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist, zdr: config.ZDR}, nil
+	return &Adapter{runAs: target, binary: resolved, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist, zdr: config.ZDR, commandCode: config.CommandCodeModel != ""}, nil
 }
 
 // Timeout is the per-call model timeout.
@@ -162,9 +170,10 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 	runCtx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
 
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr cappedBuffer
 	cmd, err := modelrun.Command(runCtx, modelrun.Spec{
 		RunAs: a.runAs, Binary: a.binary, Args: a.args, Allowlist: a.allowlist, Timeout: a.timeout, Env: a.env(),
+		Scratch: a.commandCode,
 	})
 	if err != nil {
 		return nil, err
@@ -189,10 +198,24 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("model invocation failed: %w: %s", err, stderr.String())
 	}
-	if isCommandCode(a.binary) {
+	if a.commandCode {
 		return commandCodeAnswer(stdout.Bytes())
 	}
 	return stdout.Bytes(), nil
+}
+
+// maxModelOutput bounds what the Box buffers from a model process, so a model
+// cannot exhaust the Box's memory through stdout or stderr.
+const maxModelOutput = 64 << 20
+
+// cappedBuffer fails the write past maxModelOutput, which ends the model run.
+type cappedBuffer struct{ bytes.Buffer }
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if b.Len()+len(p) > maxModelOutput {
+		return 0, fmt.Errorf("model output exceeds %d bytes", maxModelOutput)
+	}
+	return b.Buffer.Write(p)
 }
 
 func (a *Adapter) env() map[string]string {

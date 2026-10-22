@@ -25,10 +25,6 @@ func fakeCommandCode(t *testing.T, stdout string) (binary, zdrFile string) {
 	return binary, zdrFile
 }
 
-func commandCodeArgs(model string) []string {
-	return []string{"-p", "-m", model, "--output-format", "json", "--permission-mode", "plan"}
-}
-
 const reviewAnswer = `{"verdict":"ACCEPT","reason":"scope fits"}`
 
 func resultLine(subtype, finalText, errText string) string {
@@ -42,7 +38,7 @@ func jsonString(s string) string {
 
 func TestCommandCodeAnswerIsTheSuccessfulResultText(t *testing.T) {
 	binary, _ := fakeCommandCode(t, resultLine("success", reviewAnswer, ""))
-	adapter, err := New(Config{RunAsUser: testUser, Binary: binary, Args: commandCodeArgs("reflection/beam:free"), Timeout: 10 * time.Second})
+	adapter, err := New(Config{RunAsUser: testUser, Binary: binary, CommandCodeModel: "reflection/beam:free", Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +57,7 @@ func TestCommandCodeFailuresFailClosed(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			binary, _ := fakeCommandCode(t, stdout)
-			adapter, err := New(Config{RunAsUser: testUser, Binary: binary, Args: commandCodeArgs("reflection/beam:free"), Timeout: 10 * time.Second})
+			adapter, err := New(Config{RunAsUser: testUser, Binary: binary, CommandCodeModel: "reflection/beam:free", Timeout: 10 * time.Second})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -79,11 +75,14 @@ func TestCommandCodeConfigurationRules(t *testing.T) {
 		config Config
 		want   string
 	}{
-		"paid without opt-in": {Config{Binary: binary, Args: commandCodeArgs("zai-org/glm-5.3")}, "not free"},
-		"zdr on a free model": {Config{Binary: binary, Args: commandCodeArgs("poolside/laguna-s-2.1-free"), ZDR: true}, "zero data retention"},
-		"zdr on another cli":  {Config{Binary: plain, ZDR: true}, "not cmd"},
-		"no model":            {Config{Binary: binary, Args: []string{"-p", "--output-format", "json"}}, "-m <model id>"},
-		"no json output":      {Config{Binary: binary, Args: []string{"-p", "-m", "reflection/beam:free"}}, "--output-format json"},
+		"paid without opt-in":  {Config{Binary: binary, CommandCodeModel: "zai-org/glm-5.3"}, "not free"},
+		"zdr on a free model":  {Config{Binary: binary, CommandCodeModel: "poolside/laguna-s-2.1-free", ZDR: true}, "zero data retention"},
+		"zdr on another cli":   {Config{Binary: plain, ZDR: true}, "--model-commandcode"},
+		"cmd without the flag": {Config{Binary: binary, Args: []string{"-p", "-m", "reflection/beam:free", "--output-format", "json"}}, "--model-commandcode"},
+		"operator args":        {Config{Binary: binary, CommandCodeModel: "reflection/beam:free", Args: []string{"--yolo"}}, "--model-arg is not accepted"},
+		"another binary":       {Config{Binary: plain, CommandCodeModel: "reflection/beam:free"}, "needs the Command Code binary"},
+		"option as model id":   {Config{Binary: binary, CommandCodeModel: "--yolo"}, "invalid Command Code model id"},
+		"installed as cmdc":    {Config{Binary: filepath.Join(filepath.Dir(binary), "cmdc")}, "--model-commandcode"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tc.config.RunAsUser, tc.config.Timeout = testUser, time.Second
@@ -92,14 +91,14 @@ func TestCommandCodeConfigurationRules(t *testing.T) {
 			}
 		})
 	}
-	if _, err := New(Config{RunAsUser: testUser, Binary: binary, Args: commandCodeArgs("zai-org/glm-5.3"), AllowPaid: true, ZDR: true, Timeout: time.Second}); err != nil {
+	if _, err := New(Config{RunAsUser: testUser, Binary: binary, CommandCodeModel: "zai-org/glm-5.3", AllowPaid: true, ZDR: true, Timeout: time.Second}); err != nil {
 		t.Fatalf("paid ZDR model with opt-in refused: %v", err)
 	}
 }
 
 func TestCommandCodeZDRReachesTheModelProcess(t *testing.T) {
 	binary, zdrFile := fakeCommandCode(t, resultLine("success", reviewAnswer, ""))
-	adapter, err := New(Config{RunAsUser: testUser, Binary: binary, Args: commandCodeArgs("zai-org/glm-5.3"), AllowPaid: true, ZDR: true, Timeout: 10 * time.Second})
+	adapter, err := New(Config{RunAsUser: testUser, Binary: binary, CommandCodeModel: "zai-org/glm-5.3", AllowPaid: true, ZDR: true, Timeout: 10 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,5 +107,45 @@ func TestCommandCodeZDRReachesTheModelProcess(t *testing.T) {
 	}
 	if got, err := os.ReadFile(zdrFile); err != nil || string(got) != "1" {
 		t.Fatalf("CMD_ZDR in the model process = %q, %v", got, err)
+	}
+}
+
+func TestCommandCodeArgvIsBuiltByTheAdapter(t *testing.T) {
+	dir := t.TempDir()
+	argvFile, cwdFile := filepath.Join(dir, "argv"), filepath.Join(dir, "cwd")
+	binary := filepath.Join(dir, "cmd")
+	script := "#!/bin/sh\ncat > /dev/null\nprintf '%s\\n' \"$@\" > " + argvFile + "\npwd > " + cwdFile + "\necho '" + strings.ReplaceAll(resultLine("success", reviewAnswer, ""), "\n", "'\necho '") + "'\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := New(Config{RunAsUser: testUser, Binary: binary, CommandCodeModel: "reflection/beam:free", Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ReviewPlan(context.Background(), ghtriage.PlanReviewInput{Schema: ghtriage.PlanReviewVersion}); err != nil {
+		t.Fatal(err)
+	}
+	argv, _ := os.ReadFile(argvFile)
+	want := strings.Join(commandCodeArgs("reflection/beam:free"), "\n") + "\n"
+	if string(argv) != want {
+		t.Fatalf("argv:\n%s\nwant:\n%s", argv, want)
+	}
+	for _, flag := range []string{"plan", "--no-session", "--safe-mode", "--no-skills"} {
+		if !strings.Contains(want, flag) {
+			t.Fatalf("argv lacks %s", flag)
+		}
+	}
+	if cwd, _ := os.ReadFile(cwdFile); !strings.Contains(string(cwd), "/tmp/run.") {
+		t.Fatalf("cmd did not run in a private scratch dir: %s", cwd)
+	}
+}
+
+func TestModelOutputIsCapped(t *testing.T) {
+	var b cappedBuffer
+	if _, err := b.Write(make([]byte, maxModelOutput)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Write([]byte("x")); err == nil {
+		t.Fatal("output past the cap was buffered")
 	}
 }

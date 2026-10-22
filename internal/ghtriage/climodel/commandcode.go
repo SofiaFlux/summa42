@@ -23,35 +23,50 @@ var commandCodeFree = []string{
 	"minimax/minimax-m3.1-flash:free",
 }
 
-func isCommandCode(binary string) bool {
+// commandCodeMaxTurns bounds one headless cmd run.
+const commandCodeMaxTurns = 30
+
+// looksLikeCommandCode catches the names the command-code package installs, so
+// a cmd launched without CommandCodeModel cannot skip the guards below.
+func looksLikeCommandCode(binary string) bool {
 	base := filepath.Base(binary)
-	return base == "cmd" || base == "commandcode"
+	return slices.Contains([]string{"cmd", "cmdc", "commandcode", "command-code"}, base) ||
+		strings.Contains(binary, "command-code")
+}
+
+// commandCodeArgs is the whole argv of a Command Code run. The adapter builds
+// it so nothing operator-supplied can drop plan mode, add --yolo or name a
+// second model: cmd resolves repeated options by last value and accepts
+// unknown ones, so filtering operator argv would leak.
+func commandCodeArgs(model string) []string {
+	return []string{"-p", "-m", model, "--output-format", "json",
+		"--permission-mode", "plan", "--max-turns", fmt.Sprint(commandCodeMaxTurns),
+		"--no-session", "--safe-mode", "--no-skills", "--no-auto-update"}
 }
 
 // checkCommandCode enforces the Command Code backend rules at construction:
-// headless JSON output (the result line is how a failure is told apart from
-// an answer), a named model, free models unless paid ones are allowed, and
-// zero data retention only on a model that offers it (free ones do not).
+// the model is named only through CommandCodeModel, free models unless paid
+// ones are allowed, and zero data retention only on a model that offers it
+// (free ones do not).
 func checkCommandCode(config Config) error {
-	if !isCommandCode(config.Binary) {
+	model := config.CommandCodeModel
+	if model == "" {
+		if looksLikeCommandCode(config.Binary) {
+			return errors.New("Command Code runs only through --model-commandcode=<model id>, which builds its arguments")
+		}
 		if config.ZDR {
-			return errors.New("zero data retention is a Command Code option; the model binary is not cmd")
+			return errors.New("zero data retention is a Command Code option; set --model-commandcode")
 		}
 		return nil
 	}
-	model := ""
-	for i, arg := range config.Args {
-		if (arg == "-m" || arg == "--model") && i+1 < len(config.Args) {
-			model = config.Args[i+1]
-		} else if v, ok := strings.CutPrefix(arg, "--model="); ok {
-			model = v
-		}
+	if !looksLikeCommandCode(config.Binary) {
+		return fmt.Errorf("--model-commandcode needs the Command Code binary (cmd), not %q", config.Binary)
 	}
-	if !slices.Contains(config.Args, "-p") || !slices.Contains(config.Args, "--output-format") || !slices.Contains(config.Args, "json") {
-		return errors.New("Command Code backend needs -p --output-format json in the model arguments")
+	if len(config.Args) > 0 {
+		return errors.New("--model-arg is not accepted with --model-commandcode: the adapter builds the Command Code arguments")
 	}
-	if model == "" {
-		return errors.New("Command Code backend needs -m <model id> in the model arguments")
+	if strings.HasPrefix(model, "-") || strings.ContainsAny(model, " \t\n") {
+		return fmt.Errorf("invalid Command Code model id %q", model)
 	}
 	free := slices.Contains(commandCodeFree, model)
 	if !free && !config.AllowPaid {
@@ -66,6 +81,7 @@ func checkCommandCode(config Config) error {
 // commandCodeAnswer extracts the answer from cmd's NDJSON output: the last
 // line of type "result". Anything but a successful, non-empty result fails
 // closed, so a rate limit or a backend error is never read as an answer.
+// Model text cannot forge a result line: cmd JSON-escapes it inside events.
 func commandCodeAnswer(out []byte) ([]byte, error) {
 	type result struct {
 		Type      string         `json:"type"`
@@ -76,7 +92,7 @@ func commandCodeAnswer(out []byte) ([]byte, error) {
 	}
 	var last *result
 	scanner := bufio.NewScanner(bytes.NewReader(out))
-	scanner.Buffer(make([]byte, 0, 64*1024), 64*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxModelOutput)
 	for scanner.Scan() {
 		var r result
 		if json.Unmarshal(scanner.Bytes(), &r) == nil && r.Type == "result" {

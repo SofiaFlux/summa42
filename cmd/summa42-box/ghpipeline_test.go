@@ -345,12 +345,12 @@ func TestPipelineForwardsTheValidationSettingsToTheImplementStage(t *testing.T) 
 }
 
 func TestStagesReceiveTheCommandCodeOptIns(t *testing.T) {
-	got := modelFlagArgv(climodel.Config{Binary: "cmd", RunAsUser: "m", Timeout: time.Minute, AllowPaid: true, ZDR: true})
-	if !slices.Contains(got, "--model-allow-paid") || !slices.Contains(got, "--model-zdr") {
+	got := modelFlagArgv(climodel.Config{Binary: "cmd", RunAsUser: "m", Timeout: time.Minute, CommandCodeModel: "zai-org/glm-5.3", AllowPaid: true, ZDR: true})
+	if !slices.Contains(got, "--model-commandcode=zai-org/glm-5.3") || !slices.Contains(got, "--model-allow-paid") || !slices.Contains(got, "--model-zdr") {
 		t.Fatalf("opt-ins not forwarded to stages: %v", got)
 	}
 	plain := modelFlagArgv(climodel.Config{Binary: "cmd", RunAsUser: "m", Timeout: time.Minute})
-	if slices.Contains(plain, "--model-allow-paid") || slices.Contains(plain, "--model-zdr") {
+	if slices.ContainsFunc(plain, func(a string) bool { return strings.HasPrefix(a, "--model-commandcode") }) || slices.Contains(plain, "--model-allow-paid") || slices.Contains(plain, "--model-zdr") {
 		t.Fatalf("opt-ins forwarded without being set: %v", plain)
 	}
 }

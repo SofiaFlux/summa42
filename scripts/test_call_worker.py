@@ -475,6 +475,7 @@ class TestCommandCodeBackend(unittest.TestCase):
             self.assertIn('"ACCEPT"', r.stdout)
             argv = open(log).read()
             self.assertIn("-p -m reflection/beam:free --output-format json --permission-mode plan", argv)
+            self.assertIn("--no-session --safe-mode --no-skills --no-auto-update", argv)
             self.assertIn("zdr=\n", argv)
 
     def test_error_result_fails_closed(self):

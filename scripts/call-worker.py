@@ -24,6 +24,7 @@ import subprocess
 import json
 import re
 import shutil
+import tempfile
 import argparse
 import time
 import urllib.request
@@ -779,7 +780,8 @@ def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=N
             commandcode_check(model)
             tool_binary = "cmd"
             cmd = [tool_binary, "-p", "-m", model, "--output-format", "json",
-                   "--permission-mode", "plan", "--max-turns", str(COMMANDCODE_MAX_TURNS)]
+                   "--permission-mode", "plan", "--max-turns", str(COMMANDCODE_MAX_TURNS),
+                   "--no-session", "--safe-mode", "--no-skills", "--no-auto-update"]
             if os.environ.get("SUMMA42_MODEL_ZDR") == "1":
                 env["CMD_ZDR"] = "1"
         elif base == "claude":
@@ -792,12 +794,16 @@ def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=N
                 cmd.extend(["-m", model])
         else:
             raise ValueError(f"no stdin form for backend {base}")
-        proc = subprocess.run(
-            cmd,
-            input=prompt,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=env, timeout=timeout,
-        )
+        # cmd treats its cwd as the project: give each run a fresh one, so a
+        # call cannot leave project config for the next.
+        with tempfile.TemporaryDirectory(prefix="call-worker-") as cwd:
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env, timeout=timeout,
+                cwd=cwd if base == "commandcode" else None,
+            )
         if proc.returncode != 0:
             raise RuntimeError(f"{cmd[0]} exited with code {proc.returncode}: {proc.stderr}")
         if base == "commandcode":
