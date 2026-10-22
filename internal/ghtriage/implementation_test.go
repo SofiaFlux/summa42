@@ -12,6 +12,7 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/modelrun/modelruntest"
 	"github.com/SofiaFlux/summa42/internal/repoworkspace"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
@@ -37,11 +38,28 @@ func (m *implementationModel) Implement(ctx context.Context, in ghtriage.Impleme
 	}
 	return ghtriage.ImplementationOutput{Summary: "Apply bounded change", Edits: []repoworkspace.Edit{{Path: "code.go", Content: "package test\n// implemented\n"}}}, nil
 }
+
+// newImplementer wires the validator the way production does: validation
+// commands run through the model launcher (a fake sudo here).
+func newImplementer(t *testing.T, f *driverFixture, m ghtriage.ImplementationModel) *ghtriage.Implementer {
+	t.Helper()
+	_, _, cleanup, err := modelruntest.Install()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	v, err := repoworkspace.NewValidator(modelruntest.User, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).WithValidator(v)
+}
+
 func readyImplementation(t *testing.T, commands ...[]string) (*driverFixture, ghtriage.GroundingConfig, domain.ID) {
 	t.Helper()
 	f, plannerModel := readyPlannerFixture(t)
 	cfg := groundingFixture(t)
-	cfg.ValidationCommands = [][]string{{"git", "diff", "--exit-code"}}
+	cfg.ValidationCommands = [][]string{{"test", "-f", "code.go"}}
 	if len(commands) > 0 {
 		cfg.ValidationCommands = commands
 	}
@@ -68,7 +86,7 @@ func readyImplementation(t *testing.T, commands ...[]string) (*driverFixture, gh
 func TestImplementationProducesBoundCandidateWithoutAcceptingTask(t *testing.T) {
 	f, cfg, id := readyImplementation(t)
 	m := &implementationModel{}
-	impl := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m)
+	impl := newImplementer(t, f, m)
 	got, err := impl.Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +125,7 @@ func TestImplementationChecksGrantAndSourceBeforeModel(t *testing.T) {
 			case "review-binding":
 				f.store.DB().ExecContext(f.ctx, `UPDATE acceptance_records SET verifier_type='wrong' WHERE verifier_type='github.issue.plan.review.binding.v1'`)
 			}
-			_, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).Prepare(f.ctx, id, source, t.TempDir())
+			_, err := newImplementer(t, f, m).Prepare(f.ctx, id, source, t.TempDir())
 			if err == nil || m.calls.Load() != 0 {
 				t.Fatalf("mode=%s err=%v calls=%d", mode, err, m.calls.Load())
 			}
@@ -120,15 +138,15 @@ func TestImplementationDoesNotLetModelMutateOwnerContract(t *testing.T) {
 		in.Plan.Source.AllowedPaths[0] = "escape"
 		in.Plan.Source.ValidationCommands[0][0] = "missing-model-command"
 	}}
-	got, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
-	if err != nil || !got.Record.AllPassed || got.Record.Commands[0].Argv[0] != "git" {
+	got, err := newImplementer(t, f, m).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	if err != nil || !got.Record.AllPassed || got.Record.Commands[0].Argv[0] != "test" {
 		t.Fatalf("%+v %v", got, err)
 	}
 }
 func TestImplementationClaimsBeforeConcurrentPaidCall(t *testing.T) {
 	f, cfg, id := readyImplementation(t)
 	m := &implementationModel{entered: make(chan struct{}), release: make(chan struct{})}
-	impl := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m)
+	impl := newImplementer(t, f, m)
 	ctx, cancel := context.WithTimeout(f.ctx, 5*time.Second)
 	defer cancel()
 	first := make(chan error, 1)
@@ -152,7 +170,7 @@ func TestImplementationExpiredLeaseCannotComplete(t *testing.T) {
 	m := &implementationModel{onCall: func(ghtriage.ImplementationInput) {
 		f.clock.Advance(ghtriage.ImplementationLeaseDuration + time.Second)
 	}}
-	got, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	got, err := newImplementer(t, f, m).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	if err == nil || got.Record != nil {
 		t.Fatalf("expired result %+v %v", got, err)
 	}
@@ -173,7 +191,7 @@ func TestImplementationOutputStrictAndBounded(t *testing.T) {
 func TestImplementationNewRevisionDuringModelCannotComplete(t *testing.T) {
 	f, cfg, id := readyImplementation(t)
 	m := &implementationModel{onCall: func(ghtriage.ImplementationInput) { f.registerRevision(t, "2026-09-28T10:00:01Z") }}
-	got, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	got, err := newImplementer(t, f, m).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	if err == nil || got.Record != nil {
 		t.Fatalf("stale result %+v %v", got, err)
 	}
@@ -191,7 +209,7 @@ func TestImplementationResumesStagedCompletionWithoutPaidReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	impl := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m)
+	impl := newImplementer(t, f, m)
 	if _, err := impl.Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir()); err == nil {
 		t.Fatal("interruption not observed")
 	}
@@ -212,7 +230,7 @@ func TestImplementationDoesNotRerunExpiredStagedWork(t *testing.T) {
 	f, cfg, id := readyImplementation(t)
 	m := &implementationModel{}
 	f.store.DB().ExecContext(f.ctx, `CREATE TRIGGER interrupt_implementation_completion BEFORE INSERT ON attempt_completion_records BEGIN SELECT RAISE(ABORT,'injected completion interruption'); END`)
-	impl := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m)
+	impl := newImplementer(t, f, m)
 	_, _ = impl.Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	f.store.DB().ExecContext(f.ctx, `DROP TRIGGER interrupt_implementation_completion`)
 	f.clock.Advance(ghtriage.ImplementationLeaseDuration + time.Second)
@@ -227,7 +245,7 @@ func TestImplementationValidationCannotModifySource(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf changed > '"+filepath.Join(cfg.Source.LocalPath, "code.go")+"'\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &implementationModel{}).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	got, err := newImplementer(t, f, &implementationModel{}).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	if err == nil || got.Record != nil {
 		t.Fatalf("source mutation certified: %+v %v", got, err)
 	}
@@ -235,7 +253,7 @@ func TestImplementationValidationCannotModifySource(t *testing.T) {
 
 func TestValidationFailureHoldsCase(t *testing.T) {
 	f, cfg, id := readyImplementation(t, []string{"git", "diff", "--invalid-flag"})
-	got, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &implementationModel{}).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	got, err := newImplementer(t, f, &implementationModel{}).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	if err != nil || got.Record == nil || got.Record.AllPassed {
 		t.Fatalf("%+v %v", got, err)
 	}
@@ -262,7 +280,7 @@ func TestImplementationInputUsesTypedVerdict(t *testing.T) {
 				t.Fatal(err)
 			}
 			m := &implementationModel{}
-			_, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+			_, err := newImplementer(t, f, m).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 			if mode == "typed-reject" && (err == nil || m.calls.Load() != 0) {
 				t.Fatalf("typed REJECT with ACCEPT reason prefix authorized implementation: err=%v calls=%d", err, m.calls.Load())
 			}
@@ -276,8 +294,41 @@ func TestImplementationInputUsesTypedVerdict(t *testing.T) {
 func TestImplementationLeaseCoversASlowModelCall(t *testing.T) {
 	f, cfg, id := readyImplementation(t)
 	m := &implementationModel{onCall: func(ghtriage.ImplementationInput) { f.clock.Advance(20 * time.Minute) }}
-	got, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).WithModelTimeout(30*time.Minute).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	got, err := newImplementer(t, f, m).WithModelTimeout(30*time.Minute).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	if err != nil || got.Record == nil {
 		t.Fatalf("slow but healthy implementation lost its attempt: %+v %v", got, err)
+	}
+}
+
+// Without a model-user validator the model's code must not run at all, and the
+// model is not even called.
+func TestImplementationRefusesToRunWithoutAModelUserValidator(t *testing.T) {
+	f, cfg, id := readyImplementation(t)
+	m := &implementationModel{}
+	_, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	if err == nil || m.calls.Load() != 0 {
+		t.Fatalf("err=%v modelCalls=%d", err, m.calls.Load())
+	}
+}
+
+func TestImplementationValidationGoesThroughTheModelLauncher(t *testing.T) {
+	f, cfg, id := readyImplementation(t)
+	_, sudoLog, cleanup, err := modelruntest.Install()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	v, err := repoworkspace.NewValidator(modelruntest.User, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &implementationModel{}).WithValidator(v).
+		Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	if err != nil || got.Record == nil || !got.Record.AllPassed {
+		t.Fatalf("%+v %v", got, err)
+	}
+	logged, _ := os.ReadFile(sudoLog)
+	if !strings.Contains(string(logged), "-u "+modelruntest.User+" -- /bin/sh -c") {
+		t.Fatalf("validation ran without the model launcher: %q", logged)
 	}
 }

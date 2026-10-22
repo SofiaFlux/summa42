@@ -14,6 +14,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
+	"github.com/SofiaFlux/summa42/internal/repoworkspace"
 	summa42runtime "github.com/SofiaFlux/summa42/internal/runtime"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
@@ -76,7 +77,12 @@ func runGHImplement(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
-	impl := ghtriage.NewImplementer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout())
+	validator, err := validatorFromEnv(modelConfig.RunAsUser)
+	if err != nil {
+		return err
+	}
+	impl := ghtriage.NewImplementer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).
+		WithModelTimeout(adapter.Timeout()).WithValidator(validator)
 	result, err := impl.Prepare(ctx, domain.ID(strings.TrimSpace(caseID)), source, root)
 	if err != nil {
 		return err
@@ -85,6 +91,27 @@ func runGHImplement(ctx context.Context, args []string) error {
 		return err
 	}
 	return implementOutcome(result)
+}
+
+// validationToolchainEnv names the colon-separated, absolute directories put in
+// front of the model user's fixed PATH when validation commands run (for
+// example the Go toolchain's bin directory). The Box's own PATH is never used.
+const validationToolchainEnv = "SUMMA42_VALIDATION_TOOLCHAIN_DIRS"
+
+// validatorFromEnv builds the validator that runs the validation commands as
+// the model user. It fails closed when no model user is configured.
+func validatorFromEnv(runAsUser string) (*repoworkspace.Validator, error) {
+	return repoworkspace.NewValidator(runAsUser, splitPathList(os.Getenv(validationToolchainEnv)))
+}
+
+func splitPathList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ":") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // implementOutcome is the command's error for a Prepare result: busy when

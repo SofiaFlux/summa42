@@ -88,6 +88,9 @@ type Implementer struct {
 	verify   *verification.Service
 	evidence *evidence.Store
 	model    ImplementationModel
+	// validator runs the validation commands as the model user; without it
+	// Prepare refuses to run (model-written code never runs as the Box user).
+	validator *repoworkspace.Validator
 	// modelTimeout sizes the attempt lease (zero keeps ImplementationLeaseDuration).
 	modelTimeout time.Duration
 }
@@ -95,6 +98,12 @@ type Implementer struct {
 // WithModelTimeout derives the attempt lease from the model call timeout.
 func (i *Implementer) WithModelTimeout(d time.Duration) *Implementer {
 	i.modelTimeout = d
+	return i
+}
+
+// WithValidator sets the model-user validator; it is required for Prepare.
+func (i *Implementer) WithValidator(v *repoworkspace.Validator) *Implementer {
+	i.validator = v
 	return i
 }
 
@@ -116,8 +125,8 @@ func (i *Implementer) Prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 }
 
 func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, root string) (ImplementationResult, error) {
-	if ctx == nil || i == nil || i.cases == nil || i.exec == nil || i.verify == nil || i.evidence == nil || i.model == nil {
-		return ImplementationResult{}, errors.New("implementation services and context required")
+	if ctx == nil || i == nil || i.cases == nil || i.exec == nil || i.verify == nil || i.evidence == nil || i.model == nil || i.validator == nil {
+		return ImplementationResult{}, errors.New("implementation services, a model-user validator and context required")
 	}
 	if id == "" || !filepath.IsAbs(sourceRepo) || !filepath.IsAbs(root) {
 		return ImplementationResult{}, errors.New("case and absolute source/workspace root required")
@@ -230,7 +239,7 @@ func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 	if err != nil {
 		return fail(err)
 	}
-	commands, err := repoworkspace.ValidateCandidate(runCtx, destination, candidate, input.Plan.Source.ValidationCommands)
+	commands, err := i.validator.ValidateCandidate(runCtx, destination, candidate, input.Plan.Source.ValidationCommands)
 	if err != nil {
 		return fail(err)
 	}

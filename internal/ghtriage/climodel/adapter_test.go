@@ -438,7 +438,7 @@ func TestRunLaunchesAsTheModelUserWithACleanEnvironment(t *testing.T) {
 		t.Fatalf("model saw %q, want %q", out.Reason, want)
 	}
 	logged, err := os.ReadFile(fakeSudoLog)
-	if err != nil || !strings.HasPrefix(string(logged), "-n --preserve-env=ALLOWED -u "+testUser+" -- /usr/bin/timeout --kill-after=15s 5s /bin/sh -c") {
+	if err != nil || !strings.HasPrefix(string(logged), "-n --preserve-env=ALLOWED -u "+testUser+" -- /bin/sh -c") {
 		t.Fatalf("launcher saw %q (%v), want sudo -n --preserve-env=ALLOWED -u %s -- timeout ...", logged, err, testUser)
 	}
 	if strings.Contains(string(logged), "/home/box-owner") || strings.Contains(string(logged), "secret") || strings.Contains(string(logged), "ALLOWED=yes") {

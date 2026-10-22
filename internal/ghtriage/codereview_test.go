@@ -79,7 +79,7 @@ func (m *codeReviewModel) ReviewCode(ctx context.Context, in ghtriage.CodeReview
 func implementedFixture(t *testing.T, commands ...[]string) (*driverFixture, ghtriage.GroundingConfig, domain.ID, ghtriage.ImplementationResult) {
 	t.Helper()
 	f, cfg, id := readyImplementation(t, commands...)
-	got, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &implementationModel{}).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	got, err := newImplementer(t, f, &implementationModel{}).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestCodeReviewAcceptsOnlyPassingReviewedImplementation(t *testing.T) {
 func TestCodeReviewFailedTestsCannotBeAccepted(t *testing.T) {
 	f, cfg, id := readyImplementation(t, []string{"git", "diff", "--invalid-flag"})
 	before, _ := f.cases.Get(f.ctx, id)
-	impl, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &implementationModel{}).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	impl, err := newImplementer(t, f, &implementationModel{}).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
 	if err != nil || impl.Record == nil || impl.Record.AllPassed {
 		t.Fatalf("%+v %v", impl, err)
 	}

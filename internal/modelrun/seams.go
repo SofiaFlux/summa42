@@ -3,6 +3,7 @@ package modelrun
 import (
 	"os/user"
 	"strings"
+	"time"
 )
 
 // SetSeamsForTest replaces sudo with the given executable and the user lookup.
@@ -16,4 +17,12 @@ func SetSeamsForTest(sudo string, lookup func(string) (*user.User, error)) {
 		}
 		return append(argv, "-u", runAs, "--")
 	}
+}
+
+// SetKillGraceForTest shortens the pause between the model-side TERM and KILL
+// of an early cancel and returns the restore function.
+func SetKillGraceForTest(d time.Duration) func() {
+	old := killGrace
+	killGrace = d
+	return func() { killGrace = old }
 }
