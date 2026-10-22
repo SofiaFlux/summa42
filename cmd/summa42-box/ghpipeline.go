@@ -91,6 +91,7 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 	grounding := registerGroundingFlags(flags)
 	registerTriageModelFlags(flags, "producer model binary (triage worker, planner, implementer)")
 	registerModelFlags(flags, "review-model", "reviewer model binary (triage review, plan review, code review)")
+	registerValidationFlags(flags)
 	if err := flags.Parse(args); err != nil {
 		return nil, 0, err
 	}
@@ -106,6 +107,10 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 		return nil, 0, errors.New("run-gh-pipeline requires exactly one of --once or a positive --interval")
 	}
 	producer, err := triageModelConfig(flags)
+	if err != nil {
+		return nil, 0, err
+	}
+	validation, err := validationConfigFrom(flags)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -134,7 +139,7 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 		},
 		perCase: []pipelineStage{
 			{"implement", ghtriage.ImplementationLease(producer.Timeout) - time.Minute, runGHImplement, slices.Concat(
-				[]string{"--source-repo=" + source, "--workspace-root=" + root}, produce)},
+				[]string{"--source-repo=" + source, "--workspace-root=" + root, "--validation-user=" + validation.User, "--validation-timeout=" + validation.Timeout.String()}, produce)},
 			{"code-review", ghtriage.CodeReviewLease(reviewer.Timeout) - time.Minute, runGHCodeReview, slices.Concat(
 				[]string{"--source-repo=" + source}, review)},
 			{"publish", ghtriage.PublicationLeaseDuration - time.Minute, runGHPublish, []string{

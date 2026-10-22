@@ -48,7 +48,10 @@ func newImplementer(t *testing.T, f *driverFixture, m ghtriage.ImplementationMod
 		t.Fatal(err)
 	}
 	t.Cleanup(cleanup)
-	v, err := repoworkspace.NewValidator(modelruntest.User, nil)
+	if err := modelruntest.LockModelHome(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := repoworkspace.NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,14 +314,17 @@ func TestImplementationRefusesToRunWithoutAModelUserValidator(t *testing.T) {
 	}
 }
 
-func TestImplementationValidationGoesThroughTheModelLauncher(t *testing.T) {
+func TestImplementationValidationGoesThroughTheValidationUserLauncher(t *testing.T) {
 	f, cfg, id := readyImplementation(t)
 	_, sudoLog, cleanup, err := modelruntest.Install()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	v, err := repoworkspace.NewValidator(modelruntest.User, nil)
+	if err := modelruntest.LockModelHome(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := repoworkspace.NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +334,7 @@ func TestImplementationValidationGoesThroughTheModelLauncher(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 	logged, _ := os.ReadFile(sudoLog)
-	if !strings.Contains(string(logged), "-u "+modelruntest.User+" -- /bin/sh -c") {
-		t.Fatalf("validation ran without the model launcher: %q", logged)
+	if !strings.Contains(string(logged), "-u "+modelruntest.ValidationUser+" -- /bin/sh -c") {
+		t.Fatalf("validation ran without the validation-user launcher: %q", logged)
 	}
 }

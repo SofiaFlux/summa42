@@ -5,6 +5,7 @@ root, useradd and sudoers. run_as_model is replaced by a function that runs the
 command as the current user inside a fake HOME.
 """
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -33,6 +34,20 @@ class Pure(unittest.TestCase):
         self.assertEqual(out.splitlines(), [
             "alice ALL=(summa42-model) NOPASSWD: SETENV: ALL",
             "Defaults>summa42-model !log_allowed"])
+
+    def test_sudoers_content_for_the_validation_user(self):
+        out = bash('sudoers_content alice summa42-validate').stdout
+        self.assertEqual(out.splitlines(), [
+            "alice ALL=(summa42-validate) NOPASSWD: SETENV: ALL",
+            "Defaults>summa42-validate !log_allowed"])
+        visudo = shutil.which("visudo") or "/usr/sbin/visudo"
+        if os.path.exists(visudo):
+            with tempfile.TemporaryDirectory() as d:
+                frag = os.path.join(d, "f")
+                Path(frag).write_text(out)
+                r = subprocess.run([visudo, "-cf", frag], capture_output=True, text=True)
+                if "Permission denied" not in r.stderr:
+                    self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_wsl_detection(self):
         with tempfile.TemporaryDirectory() as d:
@@ -127,6 +142,92 @@ class Pure(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(os.stat(real).st_mode), 0o700)
 
 
+class ValidationUser(unittest.TestCase):
+    """The validation user must hold no credentials and must run the toolchain."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = os.path.join(self.tmp.name, "validate-home")
+        os.makedirs(self.home + "/go-cache")
+        os.makedirs(self.home + "/tmp")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def clean(self):
+        return bash(f"""
+            VALIDATE_HOME={self.home}; VALIDATE_USER=summa42-validate
+            run_as_validate() {{ env HOME="$VALIDATE_HOME" "$@"; }}
+            validate_home_clean
+        """)
+
+    def test_clean_home_passes(self):
+        Path(self.home + "/go-cache/x").write_text("ghp_" + "a" * 30)  # compiled output is not scanned
+        Path(self.home + "/tmp/y").write_text("ghp_" + "a" * 30)
+        self.assertEqual(self.clean().returncode, 0)
+
+    def test_known_login_files_are_refused(self):
+        for rel in (".claude/.credentials.json", ".codex/auth.json", ".gemini/oauth_creds.json",
+                    ".config/github-copilot/hosts.json", ".config/gh/hosts.yml", ".git-credentials"):
+            path = os.path.join(self.home, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            Path(path).write_text("{}")
+            r = self.clean()
+            self.assertNotEqual(r.returncode, 0, rel)
+            self.assertIn(rel, r.stderr)
+            os.remove(path)
+        self.assertEqual(self.clean().returncode, 0)
+
+    def test_token_content_anywhere_in_the_home_is_refused(self):
+        Path(self.home + "/notes.txt").write_text("token ghp_" + "b" * 30)
+        r = self.clean()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("notes.txt", r.stderr)
+
+    def toolchain(self, dirs, go_body):
+        gobin = os.path.join(self.tmp.name, "tc", "bin")
+        os.makedirs(gobin, exist_ok=True)
+        go = os.path.join(gobin, "go")
+        Path(go).write_text("#!/bin/sh\n" + go_body)
+        os.chmod(go, 0o755)
+        return bash(f"""
+            VALIDATE_HOME={self.home}; VALIDATE_USER=summa42-validate; OWNER_HOME=/home/owner
+            TOOLCHAIN_DIRS='{dirs.replace("@", gobin)}'
+            run_as_validate() {{ env HOME="$VALIDATE_HOME" "$@"; }}
+            check_toolchain
+        """)
+
+    def test_toolchain_must_run_as_the_validation_user(self):
+        r = self.toolchain("@", 'echo "go version go1.27.1 linux/amd64"')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("go1.27.1", r.stdout)
+        r = self.toolchain("@", "echo permission denied >&2; exit 126")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("go version", r.stderr)
+        self.assertNotEqual(self.toolchain("relative/bin", "true").returncode, 0)
+
+    def test_toolchain_check_is_skipped_when_unset(self):
+        r = bash("TOOLCHAIN_DIRS=''; check_toolchain")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(r.stdout, "")
+
+    def test_require_unreadable_checks_the_named_user(self):
+        secret = os.path.join(self.tmp.name, "secret")
+        Path(secret).write_text("x")
+        r = bash(f"""
+            fail=0
+            run_as_model() {{ return 1; }}
+            run_as_validate() {{ return 0; }}
+            require_unreadable {secret} required model
+            echo "model fail=$fail"
+            require_unreadable {secret} required validate
+            echo "validate fail=$fail"
+        """)
+        self.assertIn("model fail=0", r.stdout)
+        self.assertIn("validate fail=1", r.stdout)
+        self.assertIn("READABLE by validate", r.stderr)
+
+
 class Executed(unittest.TestCase):
     def run_script(self, *args, user="summa42-model"):
         env = dict(os.environ, SUMMA42_MODEL_USER=user)
@@ -136,6 +237,16 @@ class Executed(unittest.TestCase):
         r = self.run_script(user="x;ALL")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("not a valid system user name", r.stderr)
+
+    def test_validation_user_must_be_valid_and_differ_from_the_model_user(self):
+        env = dict(os.environ, SUMMA42_VALIDATION_USER="x;ALL")
+        r = subprocess.run(["bash", SCRIPT], capture_output=True, text=True, env=env)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("SUMMA42_VALIDATION_USER", r.stderr)
+        env = dict(os.environ, SUMMA42_MODEL_USER="same-user", SUMMA42_VALIDATION_USER="same-user")
+        r = subprocess.run(["bash", SCRIPT], capture_output=True, text=True, env=env)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("must differ from the model user", r.stderr)
 
     def test_unknown_flag_is_a_usage_error(self):
         self.assertEqual(self.run_script("--nope").returncode, 2)

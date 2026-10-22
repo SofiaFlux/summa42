@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -357,5 +358,22 @@ func TestCodeReviewLeaseCoversASlowModelCall(t *testing.T) {
 	got, err := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).WithModelTimeout(30*time.Minute).Review(f.ctx, id, cfg.Source.LocalPath)
 	if err != nil || !got.Accepted {
 		t.Fatalf("slow but healthy code review lost its attempt: %+v %v", got, err)
+	}
+}
+
+// Recorded validation results come from running the candidate's own code, which
+// can fake them, so the reviewer must be told they are not proof.
+func TestCodeReviewPromptSaysValidationResultsAreNotProof(t *testing.T) {
+	f, cfg, id, _ := implementedFixture(t)
+	var question string
+	m := &codeReviewModel{verdict: "ACCEPT", onCall: func(in ghtriage.CodeReviewInput) { question = in.Question }}
+	r := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m)
+	if _, err := r.Review(f.ctx, id, cfg.Source.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"candidate's own code", "not proof", "read the tests"} {
+		if !strings.Contains(question, want) {
+			t.Fatalf("review question lacks %q: %s", want, question)
+		}
 	}
 }

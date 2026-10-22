@@ -108,11 +108,17 @@ func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 func gitStream(ctx context.Context, dir string, out io.Writer, args ...string) error {
+	return gitStreamTimeout(ctx, dir, out, 30*time.Second, args...)
+}
+
+// gitStreamTimeout is gitStream with its own limit, for the slow candidate
+// archive stream.
+func gitStreamTimeout(ctx context.Context, dir string, out io.Writer, timeout time.Duration, args ...string) error {
 	binary, err := exec.LookPath("git")
 	if err != nil {
 		return err
 	}
-	runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	fixed := []string{"--no-replace-objects", "--literal-pathspecs", "-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false", "-c", "core.autocrlf=false", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always"}
 	cmd := exec.CommandContext(runCtx, binary, append(fixed, args...)...)

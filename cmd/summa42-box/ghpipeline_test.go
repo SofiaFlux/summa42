@@ -259,7 +259,7 @@ func TestPipelineStageArgvParsesWithEachStageParser(t *testing.T) {
 			return err
 		},
 		"implement": func(args []string) error {
-			_, _, _, model, err := parseGHImplementFlags(args)
+			_, _, _, model, _, err := parseGHImplementFlags(args)
 			modelIs("implement", "/bin/producer", model.Binary)
 			return err
 		},
@@ -320,5 +320,25 @@ func TestPipelineRequiresPublicationAndSourceFlagsAtStartup(t *testing.T) {
 		if _, _, err := parsePipelineFlags(missing); err == nil {
 			t.Fatalf("missing %s accepted", flag)
 		}
+	}
+}
+
+func TestPipelineForwardsTheValidationSettingsToTheImplementStage(t *testing.T) {
+	args := append(validPipelineArgs(t), "--validation-user", "summa42-validate", "--validation-timeout", "20m")
+	p, _ := parsedPipeline(t, args)
+	var implement []string
+	for _, s := range p.perCase {
+		if s.name == "implement" {
+			implement = s.args
+		}
+	}
+	for _, want := range []string{"--validation-user=summa42-validate", "--validation-timeout=20m0s"} {
+		if !slices.Contains(implement, want) {
+			t.Fatalf("implement argv %v lacks %s", implement, want)
+		}
+	}
+	_, _, _, _, validation, err := parseGHImplementFlags(slices.Concat([]string{"--case", "c1"}, implement))
+	if err != nil || validation.User != "summa42-validate" || validation.Timeout != 20*time.Minute {
+		t.Fatalf("%+v %v", validation, err)
 	}
 }

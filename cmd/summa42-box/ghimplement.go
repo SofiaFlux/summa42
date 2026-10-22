@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
@@ -20,12 +21,13 @@ import (
 )
 
 // parseGHImplementFlags is run-gh-implement's flag parsing, without filesystem checks.
-func parseGHImplementFlags(args []string) (caseID, source, root string, modelConfig climodel.Config, err error) {
+func parseGHImplementFlags(args []string) (caseID, source, root string, modelConfig climodel.Config, validation validationConfig, err error) {
 	flags := flag.NewFlagSet("run-gh-implement", flag.ContinueOnError)
 	flags.StringVar(&caseID, "case", "", "active implementation case ID")
 	flags.StringVar(&source, "source-repo", "", "absolute local Git repository matching accepted plan")
 	flags.StringVar(&root, "workspace-root", "", "existing absolute directory outside source for isolated attempts")
 	registerTriageModelFlags(flags, "model binary returning strict complete-file edits for the accepted plan")
+	registerValidationFlags(flags)
 	if err = flags.Parse(args); err != nil {
 		return
 	}
@@ -33,7 +35,10 @@ func parseGHImplementFlags(args []string) (caseID, source, root string, modelCon
 		err = errors.New("run-gh-implement requires --case, absolute --source-repo and --workspace-root, and no positional arguments")
 		return
 	}
-	modelConfig, err = triageModelConfig(flags)
+	if modelConfig, err = triageModelConfig(flags); err != nil {
+		return
+	}
+	validation, err = validationConfigFrom(flags)
 	return
 }
 
@@ -42,7 +47,7 @@ func runGHImplement(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	caseID, source, root, modelConfig, err := parseGHImplementFlags(args)
+	caseID, source, root, modelConfig, validation, err := parseGHImplementFlags(args)
 	if err != nil {
 		return err
 	}
@@ -77,7 +82,7 @@ func runGHImplement(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
-	validator, err := validatorFromEnv(modelConfig.RunAsUser)
+	validator, err := validatorFor(validation, modelConfig.RunAsUser)
 	if err != nil {
 		return err
 	}
@@ -94,14 +99,49 @@ func runGHImplement(ctx context.Context, args []string) error {
 }
 
 // validationToolchainEnv names the colon-separated, absolute directories put in
-// front of the model user's fixed PATH when validation commands run (for
-// example the Go toolchain's bin directory). The Box's own PATH is never used.
+// front of the validation user's fixed PATH when validation commands run (for
+// example a Go toolchain's bin directory that the validation user can
+// execute). The Box's own PATH is never used.
 const validationToolchainEnv = "SUMMA42_VALIDATION_TOOLCHAIN_DIRS"
 
-// validatorFromEnv builds the validator that runs the validation commands as
-// the model user. It fails closed when no model user is configured.
-func validatorFromEnv(runAsUser string) (*repoworkspace.Validator, error) {
-	return repoworkspace.NewValidator(runAsUser, splitPathList(os.Getenv(validationToolchainEnv)))
+// validationConfig is the validation user and the per-command time limit.
+type validationConfig struct {
+	User    string
+	Timeout time.Duration
+}
+
+// registerValidationFlags puts the validation flags on a flag set. The user
+// is required (empty fails closed when the validator is built) and must be a
+// dedicated account with no credentials, different from the model user.
+func registerValidationFlags(flags *flag.FlagSet) {
+	flags.String("validation-user", os.Getenv("SUMMA42_VALIDATION_USER"),
+		"dedicated OS user validation commands (candidate code) run as via sudo -n -u (required; env SUMMA42_VALIDATION_USER; "+
+			"must have no credentials and differ from the model user, the Box user and root; see scripts/setup-model-user.sh)")
+	timeout := os.Getenv("SUMMA42_VALIDATION_TIMEOUT")
+	if timeout == "" {
+		timeout = repoworkspace.DefaultCommandTimeout.String()
+	}
+	flags.String("validation-timeout", timeout,
+		"per-command validation time limit (env SUMMA42_VALIDATION_TIMEOUT; generous by default)")
+}
+
+func validationConfigFrom(flags *flag.FlagSet) (validationConfig, error) {
+	cfg := validationConfig{User: strings.TrimSpace(flags.Lookup("validation-user").Value.String())}
+	timeout, err := time.ParseDuration(flags.Lookup("validation-timeout").Value.String())
+	if err != nil {
+		return cfg, fmt.Errorf("--validation-timeout: %w", err)
+	}
+	if timeout <= 0 {
+		return cfg, errors.New("--validation-timeout must be positive")
+	}
+	cfg.Timeout = timeout
+	return cfg, nil
+}
+
+// validatorFor builds the validator that runs the validation commands as the
+// validation user. It fails closed when no validation user is configured.
+func validatorFor(cfg validationConfig, modelUser string) (*repoworkspace.Validator, error) {
+	return repoworkspace.NewValidator(cfg.User, modelUser, splitPathList(os.Getenv(validationToolchainEnv)), cfg.Timeout)
 }
 
 func splitPathList(raw string) []string {

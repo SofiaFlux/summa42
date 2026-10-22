@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -17,18 +21,28 @@ import (
 // testValidator runs validation through the fake sudo of modelruntest: the same
 // launcher as production, minus the privilege drop. It returns the fake model
 // home and the sudo log.
+//
+// The returned home is the validation user's (where scratch directories
+// appear). The model home is made unreadable, as the isolation probe requires
+// of the validation user.
 func testValidator(t *testing.T, toolchain ...string) (v *Validator, home, sudoLog string) {
 	t.Helper()
-	home, sudoLog, cleanup, err := modelruntest.Install()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	_, sudoLog, cleanup, err := modelruntest.Install()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(cleanup)
-	v, err = NewValidator(modelruntest.User, toolchain)
+	if err := modelruntest.LockModelHome(); err != nil {
+		t.Fatal(err)
+	}
+	v, err = NewValidator(modelruntest.ValidationUser, modelruntest.User, toolchain, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return v, home, sudoLog
+	return v, modelruntest.ValidationHome(), sudoLog
 }
 
 func validationFixture(t *testing.T) (string, Candidate) {
@@ -84,8 +98,8 @@ func TestValidationRunsOnACopyAndLeavesTheCheckoutAlone(t *testing.T) {
 		t.Fatalf("model-side command altered the Box checkout: %q", raw)
 	}
 	logged, _ := os.ReadFile(sudoLog)
-	if !strings.Contains(string(logged), "-u "+modelruntest.User+" -- ") {
-		t.Fatalf("validation did not go through the model launcher: %q", logged)
+	if !strings.Contains(string(logged), "-u "+modelruntest.ValidationUser+" -- ") {
+		t.Fatalf("validation did not go through the launcher as the validation user: %q", logged)
 	}
 	left, _ := filepath.Glob(filepath.Join(home, "tmp", "run.*"))
 	if len(left) != 0 {
@@ -93,22 +107,114 @@ func TestValidationRunsOnACopyAndLeavesTheCheckoutAlone(t *testing.T) {
 	}
 }
 
-func TestValidationFailsClosedWithoutAModelUser(t *testing.T) {
+func TestValidationFailsClosedWithoutADistinctValidationUser(t *testing.T) {
 	dir, c := validationFixture(t)
 	if _, err := (*Validator)(nil).ValidateCandidate(context.Background(), dir, c, [][]string{{"true"}}); err == nil {
 		t.Fatal("nil validator ran the commands")
 	}
-	for _, name := range []string{"", " ", "root", "no-such-user-xyz"} {
-		if _, err := NewValidator(name, nil); err == nil {
-			t.Fatalf("validator built for user %q", name)
+	testValidator(t) // installs the fake users
+	self, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"", " ", "root", "no-such-user-xyz", self.Username, modelruntest.User} {
+		if _, err := NewValidator(name, modelruntest.User, nil, 0); err == nil {
+			t.Fatalf("validator built for validation user %q", name)
 		}
 	}
-	testValidator(t)
-	if _, err := NewValidator(modelruntest.User, []string{"relative/bin"}); err == nil {
+	for _, model := range []string{"", "root", "no-such-user-xyz", self.Username} {
+		if _, err := NewValidator(modelruntest.ValidationUser, model, nil, 0); err == nil {
+			t.Fatalf("validator built for model user %q", model)
+		}
+	}
+	if _, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, []string{"relative/bin"}, 0); err == nil {
 		t.Fatal("relative toolchain dir accepted")
 	}
-	if _, err := NewValidator(modelruntest.User, []string{"/opt/a:/opt/b"}); err == nil {
+	if _, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, []string{"/opt/a:/opt/b"}, 0); err == nil {
 		t.Fatal("toolchain dir with a path separator accepted")
+	}
+	for _, d := range []time.Duration{-time.Second, time.Millisecond, 25 * time.Hour} {
+		if _, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, d); err == nil {
+			t.Fatalf("command timeout %s accepted", d)
+		}
+	}
+}
+
+func TestValidationTimeoutDefaultsToTenMinutesAndIsConfigurable(t *testing.T) {
+	v, _, _ := testValidator(t)
+	if v.timeout != 10*time.Minute || DefaultCommandTimeout != 10*time.Minute {
+		t.Fatalf("default per-command timeout is %s", v.timeout)
+	}
+	custom, err := NewValidator(modelruntest.ValidationUser, modelruntest.User, nil, 25*time.Minute)
+	if err != nil || custom.timeout != 25*time.Minute {
+		t.Fatalf("%v %v", custom, err)
+	}
+}
+
+// Candidate code must not run where the model's logins live: the validation
+// user must not be able to read the model user's home.
+func TestValidationRefusesWhenTheValidationUserCanReadTheModelHome(t *testing.T) {
+	dir, c := validationFixture(t)
+	v, _, _ := testValidator(t)
+	modelHome := v.modelHome
+	if err := os.Chmod(modelHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.ValidateCandidate(context.Background(), dir, c, [][]string{{"true"}}); err == nil || !strings.Contains(err.Error(), "can read") {
+		t.Fatalf("validation ran with a readable model home: %v", err)
+	}
+}
+
+// Whatever the outcome, every process of the validation user is killed and
+// its scratch removed afterwards, through sudo as that user.
+func TestValidationSweepsTheValidationUserAfterEveryRun(t *testing.T) {
+	dir, c := validationFixture(t)
+	v, home, sudoLog := testValidator(t)
+	stale := filepath.Join(home, "tmp", "run.stale")
+	if err := os.MkdirAll(filepath.Join(stale, "ro"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(filepath.Join(stale, "ro"), 0o500)
+	for name, commands := range map[string][][]string{"pass": {{"true"}}, "fail": {{"sh", "-c", "exit 3"}}} {
+		before, _ := os.ReadFile(sudoLog)
+		if _, err := v.ValidateCandidate(context.Background(), dir, c, commands); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		after, _ := os.ReadFile(sudoLog)
+		added := string(after[len(before):])
+		if !strings.Contains(added, "-u "+modelruntest.ValidationUser+" -- ") || !strings.Contains(added, "-KILL -1") {
+			t.Fatalf("%s: no kill-all sweep as the validation user: %q", name, added)
+		}
+		if _, err := os.Stat(stale); !os.IsNotExist(err) {
+			t.Fatalf("%s: scratch dirs not removed (%v)", name, err)
+		}
+	}
+	// A cancelled run is swept too.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	before, _ := os.ReadFile(sudoLog)
+	if _, err := v.ValidateCandidate(ctx, dir, c, [][]string{{"true"}}); err == nil {
+		t.Fatal("cancelled context ran")
+	}
+	after, _ := os.ReadFile(sudoLog)
+	if !strings.Contains(string(after[len(before):]), "-KILL -1") {
+		t.Fatal("a cancelled run was not swept")
+	}
+}
+
+func TestValidationKeepsAPersistentGoCacheInTheValidationHome(t *testing.T) {
+	dir, c := validationFixture(t)
+	v, home, _ := testValidator(t)
+	got, err := v.ValidateCandidate(context.Background(), dir, c, [][]string{{"sh", "-c", "printf %s \"$GOCACHE\"; echo kept > \"$GOCACHE/marker\""}})
+	if err != nil || len(got) != 1 || got[0].Output != filepath.Join(home, "go-cache") {
+		t.Fatalf("%+v %v", got, err)
+	}
+	got, err = v.ValidateCandidate(context.Background(), dir, c, [][]string{{"sh", "-c", "cat \"$GOCACHE/marker\""}})
+	if err != nil || got[0].Output != "kept\n" {
+		t.Fatalf("the Go cache does not survive between runs: %+v %v", got, err)
+	}
+	if info, err := os.Stat(filepath.Join(home, "go-cache")); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("%v %v", info, err)
 	}
 }
 
@@ -129,11 +235,9 @@ func TestValidationTimeoutIsPerCommandAndRecorded(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix fixture")
 	}
-	old := commandTimeout
-	commandTimeout = 1 * time.Second
-	defer func() { commandTimeout = old }()
 	dir, c := validationFixture(t)
 	v, _, _ := testValidator(t)
+	v.timeout = 1 * time.Second
 	start := time.Now()
 	got, err := v.ValidateCandidate(context.Background(), dir, c, [][]string{{"sh", "-c", "sleep 30"}, {"sh", "-c", "echo after"}})
 	if err != nil || len(got) != 2 || !got[0].TimedOut || got[0].Passed || !got[1].Passed || got[1].Output != "after\n" {
@@ -195,7 +299,7 @@ func TestValidationDoesNotInheritHostGoCaches(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 	parts := strings.Split(got[0].Output, "|")
-	if len(parts) != 4 || parts[2] != "unset" || parts[3] == "" || !strings.HasPrefix(parts[0], parts[3]+"/") || !strings.HasPrefix(parts[1], parts[3]+"/") || parts[0] == parts[1] {
+	if len(parts) != 4 || parts[2] != "unset" || parts[3] == "" || parts[0] == "/host/x" || !strings.HasPrefix(parts[1], parts[3]+"/") || parts[0] == parts[1] {
 		t.Fatalf("host caches inherited or caches not private: %q", got[0].Output)
 	}
 }
@@ -219,12 +323,18 @@ func TestValidationReplyMustBeExactlyOneDocument(t *testing.T) {
 		"unknown field":     `{"results":[{"exit":0,"timed_out":false,"ms":1,"truncated":false,"output_b64":"","extra":1}]}`,
 		"bad base64":        `{"results":[{"exit":0,"timed_out":false,"ms":1,"truncated":false,"output_b64":"!!"}]}`,
 		"not json":          `oops`,
+		"trailing closers":  one + "\n}}]]",
 	} {
 		buf := &boundedBuffer{limit: 1 << 20}
 		buf.Write([]byte(reply))
 		if _, err := parseValidationReply(buf, commands, time.Second); err == nil {
 			t.Fatalf("%s accepted", name)
 		}
+	}
+	empty := &boundedBuffer{limit: 1 << 20}
+	empty.Write([]byte(`{"results":[]}}}]]`))
+	if _, err := parseValidationReply(empty, nil, time.Second); err == nil {
+		t.Fatal("closing brackets after the document accepted")
 	}
 	buf := &boundedBuffer{limit: 1 << 20}
 	buf.Write([]byte(one + "\n"))
@@ -239,5 +349,132 @@ func TestValidationQuotesArgvLiterally(t *testing.T) {
 	got, err := v.ValidateCandidate(context.Background(), dir, c, [][]string{{"printf", "%s", "it's \"a\" $HOME `x`\nline"}})
 	if err != nil || got[0].Output != "it's \"a\" $HOME `x`\nline" {
 		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+// candidateWithFiles commits the given files as a candidate on top of the
+// fixture's base commit.
+func candidateWithFiles(t *testing.T, files map[string]string, deletes ...string) (string, Candidate) {
+	t.Helper()
+	cfg, dir := candidateFixture(t)
+	var allowed []string
+	var edits []Edit
+	for name, content := range files {
+		allowed = append(allowed, name)
+		edits = append(edits, Edit{Path: name, Content: content})
+	}
+	for _, name := range deletes {
+		allowed = append(allowed, name)
+		edits = append(edits, Edit{Path: name, Delete: true})
+	}
+	c, err := PrepareCandidate(context.Background(), dir, cfg.Commit, allowed, edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir, c
+}
+
+// A real compiler through the real script: the file-size limit must leave room
+// for the compiler's package archives (the runtime alone is several MiB).
+func TestValidationRunsARealGoTestAndVet(t *testing.T) {
+	goBin, err := exec.LookPath("go")
+	if err != nil || runtime.GOOS == "windows" {
+		t.Skip("needs go on PATH and a Unix shell")
+	}
+	dir, c := candidateWithFiles(t, map[string]string{
+		"go.mod":       "module example.invalid/tiny\n\ngo 1.20\n",
+		"tiny.go":      "package tiny\n\nfunc Add(a, b int) int { return a + b }\n",
+		"tiny_test.go": "package tiny\n\nimport \"testing\"\n\nfunc TestAdd(t *testing.T) {\n\tif Add(1, 2) != 3 {\n\t\tt.Fatal(\"bad\")\n\t}\n}\n",
+	}, "code.go")
+	v, _, _ := testValidator(t, filepath.Dir(goBin))
+	got, err := v.ValidateCandidate(context.Background(), dir, c, [][]string{{"go", "test", "-p", "1", "./...", "-count=1"}, {"go", "vet", "-p", "1", "./..."}})
+	if err != nil || len(got) != 2 || !got[0].Passed || !got[1].Passed {
+		t.Fatalf("a real go test/vet did not pass: %+v %v", got, err)
+	}
+}
+
+func processAlive(pid string) bool {
+	raw, err := os.ReadFile("/proc/" + pid + "/stat")
+	if err != nil {
+		return false
+	}
+	// Field 3 is the state; a zombie is dead for our purposes.
+	fields := strings.Fields(string(raw[strings.LastIndexByte(string(raw), ')')+1:]))
+	return len(fields) > 0 && fields[0] != "Z"
+}
+
+// Cancelling a validation must stop the running command (which sits in its own
+// process group because coreutils timeout makes one) and remove the scratch.
+func TestCancelledValidationLeavesNoProcessAndNoScratch(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("needs /proc")
+	}
+	dir, c := validationFixture(t)
+	v, home, _ := testValidator(t)
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := v.ValidateCandidate(ctx, dir, c, [][]string{{"sh", "-c", "echo $$ > " + pidFile + "; exec sleep 300"}})
+		done <- err
+	}()
+	var pid string
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if raw, _ := os.ReadFile(pidFile); strings.HasSuffix(string(raw), "\n") {
+			pid = strings.TrimSpace(string(raw))
+			break
+		}
+	}
+	if pid == "" {
+		t.Fatal("command never started")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled validation reported success")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("cancelled validation did not return")
+	}
+	for deadline := time.Now().Add(5 * time.Second); processAlive(pid) && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+	}
+	if processAlive(pid) {
+		syscall.Kill(mustAtoi(t, pid), syscall.SIGKILL)
+		t.Fatal("the validation command survived the cancel")
+	}
+	if left, _ := filepath.Glob(filepath.Join(home, "tmp", "run.*")); len(left) != 0 {
+		t.Fatalf("scratch left behind: %v", left)
+	}
+}
+
+func mustAtoi(t *testing.T, s string) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// An in-tree .gitattributes must not hide files from, or rewrite files for,
+// the validation copy.
+func TestValidationArchiveIgnoresInTreeGitAttributes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix fixture")
+	}
+	dir, c := candidateWithFiles(t, map[string]string{
+		".gitattributes": "hidden/** export-ignore\nsecret_test.go export-ignore\nstamp.txt export-subst\n",
+		"hidden/h.go":    "package hidden\n",
+		"secret_test.go": "package x\n",
+		"stamp.txt":      "$Format:%H$\n",
+	})
+	v, _, _ := testValidator(t)
+	got, err := v.ValidateCandidate(context.Background(), dir, c, [][]string{{"sh", "-c", "test -f hidden/h.go && test -f secret_test.go && cat stamp.txt"}})
+	if err != nil || len(got) != 1 || !got[0].Passed || got[0].Output != "$Format:%H$\n" {
+		t.Fatalf("export attributes changed the validated tree: %+v %v", got, err)
+	}
+	// The identity of the candidate is untouched by the override.
+	if err := VerifyCandidate(context.Background(), dir, c); err != nil {
+		t.Fatal(err)
 	}
 }

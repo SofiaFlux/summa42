@@ -568,10 +568,10 @@ var subcommands = map[string]func(context.Context, []string) error{
 	"run-final-verifier":     runFinalVerifier,
 }
 
-// registerIsolationProbe makes the first model launch check, as the model
-// user, that the Box database and keys directory are unreadable. Best effort
-// only in the sense that a Box that cannot load its configuration cannot run
-// a model either (every command loads it again and fails).
+// registerIsolationProbe makes the first launch for each dedicated user (model
+// and validation) check, as that user, that the Box's secrets are unreadable.
+// Best effort only in the sense that a Box that cannot load its configuration
+// cannot run a model either (every command loads it again and fails).
 func registerIsolationProbe() {
 	home, err := localconfig.ResolveHome("")
 	if err != nil {
@@ -581,7 +581,31 @@ func registerIsolationProbe() {
 	if err != nil {
 		return
 	}
-	modelrun.RequireUnreadable(cfg.DatabasePath, filepath.Join(home, "keys"))
+	boxHome, _ := os.UserHomeDir()
+	required, optional := isolationProbePaths(home, cfg, boxHome)
+	modelrun.RegisterProbe(required, optional)
+}
+
+// isolationProbePaths lists the secret files by full path, because `test -r
+// DIR` only reads the directory's own bit and says nothing about the files
+// inside. Required paths must exist; optional ones are only checked when
+// present.
+func isolationProbePaths(home string, cfg localconfig.Config, boxHome string) (required, optional []string) {
+	keys := filepath.Join(home, "keys")
+	required = []string{home, keys, cfg.DatabasePath, cfg.EvidencePath, filepath.Join(home, "config.json")}
+	if entries, err := os.ReadDir(keys); err == nil {
+		for _, entry := range entries {
+			required = append(required, filepath.Join(keys, entry.Name()))
+		}
+	}
+	optional = []string{filepath.Join(keys, "owner.key"), cfg.DatabasePath + "-wal", cfg.DatabasePath + "-shm"}
+	for _, name := range []string{"github_token", "gh-app.pem", "gh-app.json", "discord_auth.json", "openrouter_key"} {
+		optional = append(optional, filepath.Join(home, name))
+	}
+	if boxHome != "" {
+		optional = append(optional, filepath.Join(boxHome, ".config", "gh"), filepath.Join(boxHome, ".config", "gh", "hosts.yml"))
+	}
+	return required, optional
 }
 
 func main() {

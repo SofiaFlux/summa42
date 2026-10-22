@@ -2,14 +2,20 @@
 # One-time setup of the dedicated OS user that Summa42 model processes run as.
 #
 # Run as:  sudo scripts/setup-model-user.sh [--yes|--default-approve]
-#            [--summa-home DIR] [--db FILE] [--evidence DIR]
+#            [--summa-home DIR] [--db FILE] [--evidence DIR] [--toolchain-dirs DIRS]
 #
-# Idempotent. It prints every step. It creates the system user summa42-model
-# (own home, no login shell, no extra groups), authorises the invoking user to
-# run commands as it (and only as it) via sudoers, locks the invoking user's
-# ~/.summa42 and ~/.config/gh to mode 0700, and then PROVES the model user cannot
-# read the Box secrets. It exits non-zero if any secret is readable or if a
-# configured secret path cannot be evaluated.
+# Idempotent. It prints every step. It creates two system users, each with its
+# own home, no login shell and no extra groups:
+#   summa42-model     runs the model CLIs (may hold their copied logins)
+#   summa42-validate  runs validation commands, i.e. candidate code; it has NO
+#                     credentials, never receives a copy of any, and a scan
+#                     refuses if it finds any in its home
+# It authorises the invoking user to run commands as each of them (and only as
+# them) via sudoers, locks the invoking user's ~/.summa42 and ~/.config/gh and
+# the model home to mode 0700, and then PROVES neither user can read the Box
+# secrets and that the validation user cannot read the model home. It exits
+# non-zero if any secret is readable or if a configured secret path cannot be
+# evaluated.
 #
 # Trust boundary: the model user owns its home and a prompt-injected model can
 # plant symlinks there. Root therefore never reads, writes, chmods or chowns
@@ -19,7 +25,12 @@
 set -euo pipefail
 
 MODEL_USER="${SUMMA42_MODEL_USER:-summa42-model}"
+VALIDATE_USER="${SUMMA42_VALIDATION_USER:-summa42-validate}"
 SUDOERS_FILE="/etc/sudoers.d/summa42-model"
+SUDOERS_VALIDATE_FILE="/etc/sudoers.d/summa42-validate"
+# Colon-separated absolute directories holding the Go toolchain the validation
+# user runs (sudo strips the environment, so --toolchain-dirs also sets it).
+TOOLCHAIN_DIRS="${SUMMA42_VALIDATION_TOOLCHAIN_DIRS:-}"
 WSL_INTEROP_FILE="${WSL_INTEROP_FILE:-/proc/sys/fs/binfmt_misc/WSLInterop}"
 PROC_VERSION_FILE="${PROC_VERSION_FILE:-/proc/version}"
 
@@ -128,17 +139,38 @@ chmod_owner_dir() {
   fi
 }
 
-# Run a command as the model user, with a clean environment and cwd /. Root
-# never touches the model home itself; this is the only way it is reached.
-run_as_model() {
+# Run a command as a dedicated user, with a clean environment and cwd /. Root
+# never touches such a home itself; this is the only way it is reached.
+run_as() {
+  local who="$1" home="$2"; shift 2
   (
     cd /
     if command -v runuser >/dev/null 2>&1; then
-      exec runuser -u "$MODEL_USER" -- env -i HOME="$MODEL_HOME" PATH=/usr/local/bin:/usr/bin:/bin "$@"
+      exec runuser -u "$who" -- env -i HOME="$home" PATH=/usr/local/bin:/usr/bin:/bin "$@"
     else
-      exec sudo -n -u "$MODEL_USER" -- env -i HOME="$MODEL_HOME" PATH=/usr/local/bin:/usr/bin:/bin "$@"
+      exec sudo -n -u "$who" -- env -i HOME="$home" PATH=/usr/local/bin:/usr/bin:/bin "$@"
     fi
   )
+}
+run_as_model() { run_as "$MODEL_USER" "$MODEL_HOME" "$@"; }
+run_as_validate() { run_as "$VALIDATE_USER" "$VALIDATE_HOME" "$@"; }
+
+# The validation user must hold no credentials at all: refuse if its home has
+# any known CLI login file or anything matching a token pattern. Everything is
+# read BY the validation user, never by root. Its Go caches and scratch are
+# not scanned (they hold compiled output, not logins).
+validate_home_clean() {
+  local rel cli found="" hits
+  for cli in claude codex gemini copilot; do
+    for rel in $(group_files "$cli") .claude.json .config/gh/hosts.yml .netrc .git-credentials .ssh; do
+      if run_as_validate test -e "$VALIDATE_HOME/$rel"; then found+="$VALIDATE_HOME/$rel"$'\n'; fi
+    done
+  done
+  hits="$(run_as_validate grep -rlaE --exclude-dir=go-cache --exclude-dir=tmp -e "$(secret_pattern default)" -- "$VALIDATE_HOME" 2>/dev/null || true)"
+  [ -z "$hits" ] || found+="$hits"$'\n'
+  [ -z "$found" ] && return 0
+  printf 'the validation user %s must hold no credentials, but its home has:\n%s' "$VALIDATE_USER" "$found" >&2
+  return 1
 }
 
 # Runs as the model user: unpack one relative path from stdin and rename it into place.
@@ -295,20 +327,84 @@ print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' "$SUMMA_HOME/config.js
 }
 
 fail=0
-# require_unreadable PATH KIND: KIND is "required" (must exist) or "optional".
+# require_unreadable PATH KIND [WHO]: KIND is "required" (must exist) or
+# "optional"; WHO is model (default) or validate.
 require_unreadable() {
-  local path="$1" kind="$2"
+  local path="$1" kind="$2" who="${3:-model}"
   if [ ! -e "$path" ]; then
     if [ "$kind" = required ]; then
       printf '  MISSING (cannot evaluate): %s\n' "$path" >&2; fail=1
     fi
     return 0
   fi
-  if run_as_model test -r "$path"; then
-    printf '  READABLE (BAD): %s\n' "$path" >&2; fail=1
+  if "run_as_$who" test -r "$path"; then
+    printf '  READABLE by %s (BAD): %s\n' "$who" "$path" >&2; fail=1
   else
-    printf '  ok, not readable: %s\n' "$path"
+    printf '  ok, not readable by %s: %s\n' "$who" "$path"
   fi
+}
+
+# ensure_user NAME PURPOSE: create a dedicated system user (or accept an existing
+# nologin system account) and set ENSURED_HOME. Root only creates the user.
+ensure_user() {
+  local name="$1" purpose="$2" shell uid uid_min
+  if id "$name" >/dev/null 2>&1; then
+    shell="$(getent passwd "$name" | cut -d: -f7)"
+    uid="$(id -u "$name")"
+    uid_min="$(awk '$1=="UID_MIN"{print $2}' /etc/login.defs 2>/dev/null || true)"
+    case "$shell" in */nologin|*/false) ;; *) die "existing user $name has login shell $shell; refusing to use a real account" ;; esac
+    [ "$uid" -lt "${uid_min:-1000}" ] || die "existing user $name (uid $uid) is not a system account; refusing to use it"
+    say "user $name already exists; leaving it as is"
+  else
+    say "creating system user $name ($purpose; home /var/lib/$name, no login shell, no groups)"
+    useradd --system --create-home --home-dir "/var/lib/$name" \
+      --shell /usr/sbin/nologin --user-group "$name"
+  fi
+  ENSURED_HOME="$(getent passwd "$name" | cut -d: -f6)"
+  [ "$(id -u "$name")" -ne 0 ] || die "$name resolved to uid 0"
+  local extra_groups
+  extra_groups="$(id -nG "$name" | tr ' ' '\n' | grep -vx "$name" || true)"
+  [ -z "$extra_groups" ] || die "$name belongs to extra groups ($extra_groups); remove them"
+}
+
+# install_sudoers FILE USER: validated as a fragment, installed, then the whole
+# configuration is re-checked and the drop-in rolled back if that fails.
+install_sudoers() {
+  local file="$1" target="$2" tmp backup had_old=0
+  tmp="$(mktemp)"; backup="$(mktemp)"
+  sudoers_content "$OWNER" "$target" >"$tmp"
+  if ! visudo -cf "$tmp" >/dev/null; then rm -f "$tmp" "$backup"; die "generated sudoers entry for $target failed visudo -cf"; fi
+  if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
+    say "$file already up to date; leaving it as is"
+  else
+    if [ -f "$file" ]; then cp -p -- "$file" "$backup"; had_old=1; fi
+    say "writing $file: $OWNER may run commands as $target without a password (sudo does not log them)"
+    install -m 0440 -o root -g root "$tmp" "$file.new"
+    mv -f "$file.new" "$file"
+    if ! visudo -c >/dev/null; then
+      if [ "$had_old" -eq 1 ]; then mv -f "$backup" "$file"; else rm -f "$file"; fi
+      rm -f "$tmp" "$backup"
+      die "full sudoers configuration failed visudo -c with the new drop-in for $target; rolled it back"
+    fi
+  fi
+  rm -f "$tmp" "$backup"
+}
+
+# check_toolchain: the Go toolchain named in TOOLCHAIN_DIRS must run as the
+# validation user (it validates this repo with GOTOOLCHAIN=local, so it must be
+# the version the repo needs, e.g. go1.27.x under /usr/local/go1.27).
+check_toolchain() {
+  [ -n "$TOOLCHAIN_DIRS" ] || return 0
+  local dir out dirs
+  IFS=: read -ra dirs <<<"$TOOLCHAIN_DIRS"
+  for dir in "${dirs[@]}"; do
+    case "$dir" in /*) ;; *) die "toolchain dir $dir must be absolute" ;; esac
+  done
+  say "checking that the validation user can run the Go toolchain in $TOOLCHAIN_DIRS"
+  if ! out="$(run_as_validate env GOTOOLCHAIN=local PATH="$TOOLCHAIN_DIRS:/usr/local/bin:/usr/bin:/bin" go version 2>&1)"; then
+    die "\`go version\` fails as $VALIDATE_USER with PATH=$TOOLCHAIN_DIRS: $out (the directories must be readable and executable by $VALIDATE_USER, e.g. install Go under /usr/local/go1.27, not under $OWNER_HOME)"
+  fi
+  say "  $out"
 }
 
 main() {
@@ -320,17 +416,22 @@ main() {
       --summa-home) arg_home="${2:?}"; shift ;;
       --db) arg_db="${2:?}"; shift ;;
       --evidence) arg_evidence="${2:?}"; shift ;;
-      *) printf 'usage: %s [--yes|--default-approve] [--summa-home DIR] [--db FILE] [--evidence DIR]\n' "$0" >&2; exit 2 ;;
+      --toolchain-dirs) TOOLCHAIN_DIRS="${2:?}"; shift ;;
+      *) printf 'usage: %s [--yes|--default-approve] [--summa-home DIR] [--db FILE] [--evidence DIR] [--toolchain-dirs DIRS]\n' "$0" >&2; exit 2 ;;
     esac
     shift
   done
   valid_model_user "$MODEL_USER" || die "SUMMA42_MODEL_USER=$MODEL_USER is not a valid system user name (^[a-z_][a-z0-9_-]{0,31}\$)"
+
+  valid_model_user "$VALIDATE_USER" || die "SUMMA42_VALIDATION_USER=$VALIDATE_USER is not a valid system user name (^[a-z_][a-z0-9_-]{0,31}\$)"
+  [ "$VALIDATE_USER" != "$MODEL_USER" ] || die "the validation user must differ from the model user: candidate code must not run with the model's logins"
 
   [ "$(id -u)" -eq 0 ] || die "run with sudo: sudo $0"
   OWNER="${SUDO_USER:-}"
   [ -n "$OWNER" ] && [ "$OWNER" != root ] || die "run via sudo from the Box owner's account (SUDO_USER is unset or root)"
   valid_owner_name "$OWNER" || die "unusual owner account name: $OWNER"
   [ "$OWNER" != "$MODEL_USER" ] || die "the model user must differ from the Box owner"
+  [ "$OWNER" != "$VALIDATE_USER" ] || die "the validation user must differ from the Box owner"
   OWNER_HOME="$(getent passwd "$OWNER" | cut -d: -f6)"
   [ -d "$OWNER_HOME" ] || die "cannot find the home directory of $OWNER"
   SUMMA_HOME="${arg_home:-${SUMMA42_HOME:-$OWNER_HOME/.summa42}}"
@@ -338,49 +439,23 @@ main() {
 
   if is_wsl; then wsl_warning; fi
 
-  # 1. The user. Root creates it and its home, nothing more.
-  if id "$MODEL_USER" >/dev/null 2>&1; then
-    local shell uid uid_min
-    shell="$(getent passwd "$MODEL_USER" | cut -d: -f7)"
-    uid="$(id -u "$MODEL_USER")"
-    uid_min="$(awk '$1=="UID_MIN"{print $2}' /etc/login.defs 2>/dev/null || true)"
-    case "$shell" in */nologin|*/false) ;; *) die "existing user $MODEL_USER has login shell $shell; refusing to use a real account" ;; esac
-    [ "$uid" -lt "${uid_min:-1000}" ] || die "existing user $MODEL_USER (uid $uid) is not a system account; refusing to use it"
-    say "user $MODEL_USER already exists; leaving it as is"
-  else
-    say "creating system user $MODEL_USER (home /var/lib/$MODEL_USER, no login shell, no groups)"
-    useradd --system --create-home --home-dir "/var/lib/$MODEL_USER" \
-      --shell /usr/sbin/nologin --user-group "$MODEL_USER"
-  fi
-  MODEL_HOME="$(getent passwd "$MODEL_USER" | cut -d: -f6)"
-  [ "$(id -u "$MODEL_USER")" -ne 0 ] || die "$MODEL_USER resolved to uid 0"
+  # 1. The users. Root creates them and their homes, nothing more.
+  ensure_user "$MODEL_USER" "runs the model CLIs"
+  MODEL_HOME="$ENSURED_HOME"
+  ensure_user "$VALIDATE_USER" "runs validation commands, i.e. candidate code; holds no credentials"
+  VALIDATE_HOME="$ENSURED_HOME"
+  [ "$MODEL_HOME" != "$VALIDATE_HOME" ] || die "the model and validation users share the home $MODEL_HOME"
   say "ensuring $MODEL_HOME and $MODEL_HOME/tmp are private to $MODEL_USER (0700), as $MODEL_USER"
   run_as_model chmod 0700 "$MODEL_HOME"
   run_as_model mkdir -p -m 0700 "$MODEL_HOME/tmp"
-  local extra_groups
-  extra_groups="$(id -nG "$MODEL_USER" | tr ' ' '\n' | grep -vx "$MODEL_USER" || true)"
-  [ -z "$extra_groups" ] || die "$MODEL_USER belongs to extra groups ($extra_groups); remove them"
+  say "ensuring $VALIDATE_HOME, $VALIDATE_HOME/tmp and the persistent Go cache are private to $VALIDATE_USER (0700), as $VALIDATE_USER"
+  run_as_validate chmod 0700 "$VALIDATE_HOME"
+  run_as_validate mkdir -p -m 0700 "$VALIDATE_HOME/tmp" "$VALIDATE_HOME/go-cache"
+  validate_home_clean || die "refusing to continue; remove the credentials from $VALIDATE_HOME (nothing is ever copied there)"
 
-  # 2. sudoers drop-in: validated as a fragment, installed, then the whole
-  # configuration is re-checked and the drop-in rolled back if that fails.
-  local tmp backup
-  tmp="$(mktemp)"; backup="$(mktemp)"
-  trap 'rm -f "$tmp" "$backup"' EXIT
-  sudoers_content "$OWNER" "$MODEL_USER" >"$tmp"
-  visudo -cf "$tmp" >/dev/null || die "generated sudoers entry failed visudo -cf"
-  if [ -f "$SUDOERS_FILE" ] && cmp -s "$tmp" "$SUDOERS_FILE"; then
-    say "$SUDOERS_FILE already up to date; leaving it as is"
-  else
-    local had_old=0
-    if [ -f "$SUDOERS_FILE" ]; then cp -p -- "$SUDOERS_FILE" "$backup"; had_old=1; fi
-    say "writing $SUDOERS_FILE: $OWNER may run commands as $MODEL_USER without a password (sudo does not log them)"
-    install -m 0440 -o root -g root "$tmp" "$SUDOERS_FILE.new"
-    mv -f "$SUDOERS_FILE.new" "$SUDOERS_FILE"
-    if ! visudo -c >/dev/null; then
-      if [ "$had_old" -eq 1 ]; then mv -f "$backup" "$SUDOERS_FILE"; else rm -f "$SUDOERS_FILE"; fi
-      die "full sudoers configuration failed visudo -c with the new drop-in; rolled it back"
-    fi
-  fi
+  # 2. sudoers drop-ins, one per user.
+  install_sudoers "$SUDOERS_FILE" "$MODEL_USER"
+  install_sudoers "$SUDOERS_VALIDATE_FILE" "$VALIDATE_USER"
 
   # 3. Lock the Box owner's secret directories (never through a symlink).
   chmod_owner_dir "$SUMMA_HOME"
@@ -404,33 +479,57 @@ main() {
 
   # 4. Prove the model user cannot read the secrets. Every path is resolved as
   # the invoking user and the check fails if one cannot be evaluated.
-  say "verifying $MODEL_USER cannot read the Box secrets"
+  say "verifying $MODEL_USER and $VALIDATE_USER cannot read the Box secrets"
   run_as_model test -r /etc/passwd || die "cannot run commands as $MODEL_USER; the readability check would be vacuous"
+  run_as_validate test -r /etc/passwd || die "cannot run commands as $VALIDATE_USER; the readability check would be vacuous"
   local db evidence
   db="${arg_db:-$(owner_config_value database_path)}"
   evidence="${arg_evidence:-$(owner_config_value evidence_path)}"
   [ -n "$db" ] || die "cannot determine the state DB path (no database_path in $SUMMA_HOME/config.json); pass --db FILE"
   [ -n "$evidence" ] || die "cannot determine the evidence path; pass --evidence DIR"
-  require_unreadable "$SUMMA_HOME" required
-  require_unreadable "$SUMMA_HOME/keys" required
-  require_unreadable "$db" required
-  require_unreadable "$db-wal" optional
-  require_unreadable "$db-shm" optional
-  require_unreadable "$evidence" required
-  require_unreadable "$SUMMA_HOME/logs" optional
-  local f
-  for f in github_token gh-app.pem gh-app.json discord_auth.json openrouter_key config.json; do
-    require_unreadable "$SUMMA_HOME/$f" optional
+  local who
+  for who in model validate; do
+    require_unreadable "$SUMMA_HOME" required "$who"
+    require_unreadable "$SUMMA_HOME/keys" required "$who"
+    require_unreadable "$SUMMA_HOME/keys/owner.key" optional "$who"
+    local k
+    for k in "$SUMMA_HOME"/keys/*; do
+      [ -e "$k" ] && require_unreadable "$k" required "$who"
+    done
+    require_unreadable "$db" required "$who"
+    require_unreadable "$db-wal" optional "$who"
+    require_unreadable "$db-shm" optional "$who"
+    require_unreadable "$evidence" required "$who"
+    require_unreadable "$SUMMA_HOME/logs" optional "$who"
+    local f
+    for f in github_token gh-app.pem gh-app.json discord_auth.json openrouter_key config.json; do
+      require_unreadable "$SUMMA_HOME/$f" optional "$who"
+    done
+    require_unreadable "$OWNER_HOME/.config/gh" optional "$who"
+    require_unreadable "$OWNER_HOME/.config/gh/hosts.yml" optional "$who"
+    # A broad sweep as well as the named paths.
+    local leaked
+    leaked="$("run_as_$who" find "$SUMMA_HOME" "$OWNER_HOME/.config/gh" "$(dirname "$db")" "$evidence" -readable 2>/dev/null | head -5 || true)"
+    if [ -n "$leaked" ]; then printf '  READABLE by %s (BAD):\n%s\n' "$who" "$leaked" >&2; fail=1; fi
   done
-  require_unreadable "$OWNER_HOME/.config/gh" optional
-  # A broad sweep as well as the named paths.
-  local leaked
-  leaked="$(run_as_model find "$SUMMA_HOME" "$OWNER_HOME/.config/gh" "$(dirname "$db")" "$evidence" -readable 2>/dev/null | head -5 || true)"
-  if [ -n "$leaked" ]; then printf '  READABLE (BAD):\n%s\n' "$leaked" >&2; fail=1; fi
+  # Candidate code must not reach the model's logins: the validation user may
+  # not read the model home (mode 0700), nor any copied login file in it.
+  say "verifying $VALIDATE_USER cannot read the model home $MODEL_HOME"
+  require_unreadable "$MODEL_HOME" required validate
+  local cli rel
+  for cli in claude codex gemini copilot; do
+    for rel in $(group_files "$cli") .claude.json; do
+      require_unreadable "$MODEL_HOME/$rel" optional validate
+    done
+  done
+  check_toolchain
   if is_wsl && run_as_model test -r /mnt/c 2>/dev/null; then
     warn "$MODEL_USER can read /mnt/c (see the WSL warning above)."
   fi
-  [ "$fail" -eq 0 ] || die "the model user can read Box secrets or a secret path could not be evaluated; fix the lines above and re-run"
+  if is_wsl && run_as_validate test -r /mnt/c 2>/dev/null; then
+    warn "$VALIDATE_USER can read /mnt/c (see the WSL warning above)."
+  fi
+  [ "$fail" -eq 0 ] || die "a dedicated user can read Box secrets (or the validation user the model home) or a secret path could not be evaluated; fix the lines above and re-run"
 
   cat <<NEXT
 
@@ -442,10 +541,19 @@ Done. Next steps (as the Box owner, not root):
        sudo -u $MODEL_USER -H claude     # /login
      The Copilot executor also needs its MCP server definition in $MODEL_HOME/.copilot/mcp-config.json
      (offered above with the same content scan, or create it as the model user).
+     Never log in as $VALIDATE_USER: it must hold no credentials (this script refuses if it finds any).
   2. Make sure the model binaries are executable by $MODEL_USER (not under $OWNER_HOME).
-  3. Tell Summa42 which user to use:
+  3. Validation runs candidate code as $VALIDATE_USER with GOTOOLCHAIN=local. Install the Go toolchain this
+     repository needs where $VALIDATE_USER can execute it (summa42 itself needs go1.27.x, e.g. under
+     /usr/local/go1.27; /usr/bin/go is usually older) and list its bin directory:
+       export SUMMA42_VALIDATION_TOOLCHAIN_DIRS=/usr/local/go1.27/bin
+     Re-run this script with --toolchain-dirs /usr/local/go1.27/bin to check that \`go version\` works as $VALIDATE_USER.
+     $VALIDATE_USER keeps a persistent Go cache in $VALIDATE_HOME/go-cache (shared with nobody else).
+  4. Tell Summa42 which users to use:
        export SUMMA42_MODEL_USER=$MODEL_USER
-     or pass --model-user=$MODEL_USER to summa42-box.
+       export SUMMA42_VALIDATION_USER=$VALIDATE_USER
+     or pass --model-user=$MODEL_USER and --validation-user=$VALIDATE_USER to summa42-box.
+  5. Verify on this real host: see "Verify isolation on a real host" in the README.
 NEXT
 }
 
