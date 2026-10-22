@@ -88,10 +88,18 @@ type Implementer struct {
 	verify   *verification.Service
 	evidence *evidence.Store
 	model    ImplementationModel
+	// modelTimeout sizes the attempt lease (zero keeps ImplementationLeaseDuration).
+	modelTimeout time.Duration
+}
+
+// WithModelTimeout derives the attempt lease from the model call timeout.
+func (i *Implementer) WithModelTimeout(d time.Duration) *Implementer {
+	i.modelTimeout = d
+	return i
 }
 
 func NewImplementer(cases *workflowcase.Service, exec *execution.Service, verify *verification.Service, store *evidence.Store, model ImplementationModel) *Implementer {
-	return &Implementer{cases, exec, verify, store, model}
+	return &Implementer{cases: cases, exec: exec, verify: verify, evidence: store, model: model}
 }
 
 // Prepare produces the implementation record and holds the case when validation did not pass.
@@ -174,7 +182,7 @@ func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 	}); err != nil {
 		return ImplementationResult{}, err
 	}
-	attempt, err := i.exec.StartAttempt(ctx, task.ID, "github-issue-structured-implementer", ImplementationLeaseDuration)
+	attempt, err := i.exec.StartAttempt(ctx, task.ID, "github-issue-structured-implementer", ImplementationLease(i.modelTimeout))
 	if err != nil {
 		current, getErr := i.exec.Task(ctx, task.ID)
 		if getErr == nil && current.State != domain.TaskEligible {
@@ -188,7 +196,7 @@ func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 		cleanupErr := failStage(cleanup, i.cases, i.exec, i.evidence, c, task.ID, attempt.ID, "implementation", err)
 		return ImplementationResult{}, errors.Join(err, cleanupErr)
 	}
-	runCtx, cancel := context.WithTimeout(ctx, 14*time.Minute)
+	runCtx, cancel := context.WithTimeout(ctx, ImplementationLease(i.modelTimeout)-time.Minute)
 	defer cancel()
 	destination := filepath.Join(root, string(attempt.ID))
 	if _, err := repoworkspace.Checkout(runCtx, cfg, destination); err != nil {
@@ -200,7 +208,13 @@ func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 	if err := json.Unmarshal(inputRaw, &modelInput); err != nil {
 		return fail(err)
 	}
-	modelCtx, modelCancel := context.WithTimeout(runCtx, 2*time.Minute)
+	// The adapter enforces the configured model timeout; this bound only keeps
+	// the historical 2m ceiling when no model timeout was configured.
+	modelBound := 2 * time.Minute
+	if i.modelTimeout > 0 {
+		modelBound = i.modelTimeout
+	}
+	modelCtx, modelCancel := context.WithTimeout(runCtx, modelBound)
 	output, modelErr := i.model.Implement(modelCtx, modelInput)
 	modelCancel()
 	if modelErr != nil {

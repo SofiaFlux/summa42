@@ -62,7 +62,7 @@ func runGHPlanReview(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
-	reviewer := ghtriage.NewPlanReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter)
+	reviewer := ghtriage.NewPlanReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout())
 	result, err := reviewer.Tick(ctx, domain.ID(strings.TrimSpace(mission)))
 	if err != nil {
 		return err

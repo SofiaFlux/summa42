@@ -41,10 +41,18 @@ func exitStatus(err error, stderr io.Writer) int {
 	}
 }
 
-// pipelineWorkerLease is the lease run-gh-pipeline gives the triage worker.
-// The worker stage's own timeout sits below it, so the executor's deadline is
-// the stage's and the triage retry guard sees the real time left.
-const pipelineWorkerLease = 5 * time.Minute
+// pipelineWorkerLease is the lease run-gh-pipeline gives the triage worker: the
+// model timeout plus a margin, so a slow but healthy model call is never cut
+// off by its own lease. The worker stage's own timeout sits below it, so the
+// executor's deadline is the stage's and the triage retry guard sees the real
+// time left.
+func pipelineWorkerLease(model time.Duration) time.Duration { return model + 5*time.Minute }
+
+// pipelineBatchTimeout bounds a stage that makes one model call per case in a
+// tick: never below 15m, and always room for two full model calls.
+func pipelineBatchTimeout(model time.Duration) time.Duration {
+	return max(15*time.Minute, 2*model)
+}
 
 // A pipelineStage is one run-gh-* subcommand run in-process with fixed argv.
 type pipelineStage struct {
@@ -116,16 +124,16 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 		stages: []pipelineStage{
 			{"recover", time.Minute, recoverExpiredLeases, nil},
 			{"triage-driver", 5 * time.Minute, runGHTriageDriver, missionArgs},
-			{"worker", pipelineWorkerLease - time.Minute, runWorker, slices.Concat(
-				[]string{"--once", "--workspace-root=" + root, "--lease-duration=" + pipelineWorkerLease.String(), "--credential-file=" + credential}, produce)},
-			{"triage-review", 15 * time.Minute, runGHTriageReview, slices.Concat(missionArgs, review)},
-			{"plan", 15 * time.Minute, runGHPlan, slices.Concat(missionArgs, grounding.argv(), produce)},
-			{"plan-review", 15 * time.Minute, runGHPlanReview, slices.Concat(missionArgs, review)},
+			{"worker", pipelineWorkerLease(producer.Timeout) - time.Minute, runWorker, slices.Concat(
+				[]string{"--once", "--workspace-root=" + root, "--lease-duration=" + pipelineWorkerLease(producer.Timeout).String(), "--credential-file=" + credential}, produce)},
+			{"triage-review", pipelineBatchTimeout(reviewer.Timeout), runGHTriageReview, slices.Concat(missionArgs, review)},
+			{"plan", pipelineBatchTimeout(producer.Timeout), runGHPlan, slices.Concat(missionArgs, grounding.argv(), produce)},
+			{"plan-review", pipelineBatchTimeout(reviewer.Timeout), runGHPlanReview, slices.Concat(missionArgs, review)},
 		},
 		perCase: []pipelineStage{
-			{"implement", ghtriage.ImplementationLeaseDuration - time.Minute, runGHImplement, slices.Concat(
+			{"implement", ghtriage.ImplementationLease(producer.Timeout) - time.Minute, runGHImplement, slices.Concat(
 				[]string{"--source-repo=" + source, "--workspace-root=" + root}, produce)},
-			{"code-review", ghtriage.CodeReviewLeaseDuration - time.Minute, runGHCodeReview, slices.Concat(
+			{"code-review", ghtriage.CodeReviewLease(reviewer.Timeout) - time.Minute, runGHCodeReview, slices.Concat(
 				[]string{"--source-repo=" + source}, review)},
 			{"publish", ghtriage.PublicationLeaseDuration - time.Minute, runGHPublish, []string{
 				"--source-repo=" + source, "--base-branch=" + base, "--repository=" + repo, "--credential-file=" + credential}},

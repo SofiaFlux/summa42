@@ -272,3 +272,12 @@ func TestImplementationInputUsesTypedVerdict(t *testing.T) {
 		})
 	}
 }
+
+func TestImplementationLeaseCoversASlowModelCall(t *testing.T) {
+	f, cfg, id := readyImplementation(t)
+	m := &implementationModel{onCall: func(ghtriage.ImplementationInput) { f.clock.Advance(20 * time.Minute) }}
+	got, err := ghtriage.NewImplementer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).WithModelTimeout(30*time.Minute).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	if err != nil || got.Record == nil {
+		t.Fatalf("slow but healthy implementation lost its attempt: %+v %v", got, err)
+	}
+}

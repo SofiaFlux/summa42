@@ -350,3 +350,12 @@ func TestCodeReviewCannotAcceptChallengedTriage(t *testing.T) {
 		t.Fatalf("accepted challenged triage %+v %v %s", got, err, task.State)
 	}
 }
+
+func TestCodeReviewLeaseCoversASlowModelCall(t *testing.T) {
+	f, cfg, id, _ := implementedFixture(t)
+	m := &codeReviewModel{verdict: "ACCEPT", onCall: func(ghtriage.CodeReviewInput) { f.clock.Advance(20 * time.Minute) }}
+	got, err := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m).WithModelTimeout(30*time.Minute).Review(f.ctx, id, cfg.Source.LocalPath)
+	if err != nil || !got.Accepted {
+		t.Fatalf("slow but healthy code review lost its attempt: %+v %v", got, err)
+	}
+}

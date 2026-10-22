@@ -35,11 +35,12 @@ type PlannerConfig struct {
 }
 
 func (c PlannerConfig) withDefaults() PlannerConfig {
-	if c.TickBudget <= 0 {
-		c.TickBudget = 5 * time.Minute
-	}
 	if c.ModelTimeout <= 0 {
 		c.ModelTimeout = 60 * time.Second
+	}
+	if c.TickBudget <= 0 {
+		// Room for at least one full model call plus the usual overhead.
+		c.TickBudget = max(5*time.Minute, c.ModelTimeout+5*time.Minute)
 	}
 	if c.MaxPlanFailures <= 0 {
 		c.MaxPlanFailures = 3

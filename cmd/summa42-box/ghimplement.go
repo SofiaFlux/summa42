@@ -76,7 +76,7 @@ func runGHImplement(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
-	impl := ghtriage.NewImplementer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter)
+	impl := ghtriage.NewImplementer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout())
 	result, err := impl.Prepare(ctx, domain.ID(strings.TrimSpace(caseID)), source, root)
 	if err != nil {
 		return err

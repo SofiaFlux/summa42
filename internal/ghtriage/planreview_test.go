@@ -283,3 +283,14 @@ func TestPlanReviewNewerRevisionHoldsCase(t *testing.T) {
 		t.Fatal("no superseded-by assessment recorded")
 	}
 }
+
+// A model call longer than the old fixed lease must not lose its attempt when
+// the lease is derived from the configured model timeout.
+func TestPlanReviewLeaseCoversASlowModelCall(t *testing.T) {
+	f, model := readyPlanReview(t, true)
+	model.onCall = func() { f.clock.Advance(20 * time.Minute) }
+	out, err := ghtriage.NewPlanReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model).WithModelTimeout(30*time.Minute).Tick(f.ctx, f.missionID)
+	if err != nil || out.Reviewed != 1 || len(out.Failures) != 0 {
+		t.Fatalf("slow but healthy review lost its attempt: %+v %v", out, err)
+	}
+}

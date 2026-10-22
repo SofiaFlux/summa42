@@ -67,7 +67,7 @@ func runGHCodeReview(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
-	reviewer := ghtriage.NewCodeReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter)
+	reviewer := ghtriage.NewCodeReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout())
 	result, err := reviewer.Review(ctx, domain.ID(strings.TrimSpace(caseID)), source)
 	if err != nil {
 		return err

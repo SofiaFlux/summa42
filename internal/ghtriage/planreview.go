@@ -13,6 +13,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/verification"
 	"github.com/SofiaFlux/summa42/internal/workflow"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
+	"time"
 )
 
 const ImplementationWorkKind = "github.issue.implement"
@@ -62,6 +63,14 @@ type PlanReviewer struct {
 	verify   *verification.Service
 	evidence *evidence.Store
 	model    PlanReviewModel
+	// modelTimeout sizes the attempt lease (zero keeps PlanReviewLeaseDuration).
+	modelTimeout time.Duration
+}
+
+// WithModelTimeout derives the attempt lease from the model call timeout.
+func (r *PlanReviewer) WithModelTimeout(d time.Duration) *PlanReviewer {
+	r.modelTimeout = d
+	return r
 }
 
 func NewPlanReviewer(cases *workflowcase.Service, exec *execution.Service, verify *verification.Service, store *evidence.Store, model PlanReviewModel) *PlanReviewer {

@@ -66,10 +66,18 @@ type CodeReviewer struct {
 	verify   *verification.Service
 	evidence *evidence.Store
 	model    CodeReviewModel
+	// modelTimeout sizes the attempt lease (zero keeps CodeReviewLeaseDuration).
+	modelTimeout time.Duration
+}
+
+// WithModelTimeout derives the attempt lease from the model call timeout.
+func (r *CodeReviewer) WithModelTimeout(d time.Duration) *CodeReviewer {
+	r.modelTimeout = d
+	return r
 }
 
 func NewCodeReviewer(cases *workflowcase.Service, exec *execution.Service, verify *verification.Service, store *evidence.Store, model CodeReviewModel) *CodeReviewer {
-	return &CodeReviewer{cases, exec, verify, store, model}
+	return &CodeReviewer{cases: cases, exec: exec, verify: verify, evidence: store, model: model}
 }
 
 func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo string) (CodeReviewResult, error) {
@@ -177,7 +185,7 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 			if task.State != domain.TaskEligible {
 				return CodeReviewResult{}, fmt.Errorf("review task %s needs operator recovery", task.State)
 			}
-			attempt, err := r.exec.StartAttempt(ctx, task.ID, "github-issue-code-review", CodeReviewLeaseDuration)
+			attempt, err := r.exec.StartAttempt(ctx, task.ID, "github-issue-code-review", CodeReviewLease(r.modelTimeout))
 			if err != nil {
 				current, e := r.exec.Task(ctx, task.ID)
 				if e == nil && current.State != domain.TaskEligible {
@@ -193,7 +201,7 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 			if err := json.Unmarshal(frozen, &modelInput); err != nil {
 				return CodeReviewResult{}, err
 			}
-			callCtx, cancel := context.WithTimeout(ctx, CodeReviewLeaseDuration-time.Minute)
+			callCtx, cancel := context.WithTimeout(ctx, CodeReviewLease(r.modelTimeout)-time.Minute)
 			output, err := r.model.ReviewCode(callCtx, modelInput)
 			cancel()
 			if err == nil {

@@ -63,6 +63,11 @@ KNOWN_SCHEMAS = {
 # ponytail: prevents orphaned children when --timeout is tight.
 MIN_BACKEND_TIME = 5
 
+# Overall budget for one call including every fallback. The Box kills a model
+# call at --model-timeout (default 30m); 25m leaves headroom for startup and
+# for the Box to read the answer.
+DEFAULT_TIMEOUT = 25 * 60
+
 # Argv size cap for argv-only backends (agy uses -p <prompt>).
 # ponytail: sends stdin to all other backends; keeps us under ARG_MAX.
 ARGV_PROMPT_LIMIT = 100 * 1024  # 100 KiB
@@ -688,7 +693,8 @@ def _clean_env():
     return env
 
 
-def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=180):
+def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=None):
+    timeout = DEFAULT_TIMEOUT if timeout is None else timeout
     """Execute a backend and return its raw text output.
 
     Stdin-capable backends (claude, codex, opencode) receive the full prompt
@@ -828,7 +834,9 @@ def main():
     parser.add_argument("--fallback", default=None, help="Fallback backend if primary fails")
     parser.add_argument("--list-backends", action="store_true", help="List available cognitive worker backends")
     parser.add_argument("--list-models", action="store_true", help="List available models for the backend")
-    parser.add_argument("--timeout", type=int, default=180, help="Execution timeout in seconds")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
+                        help="Overall execution timeout in seconds across all fallbacks "
+                             "(default stays inside the Box's 30m --model-timeout)")
     parser.add_argument("--rules", default=None, help="Inline review rules")
     parser.add_argument("--rules-file", default=None, help="Path to file containing review rules")
     parser.add_argument("--allow-remote", action="store_true",

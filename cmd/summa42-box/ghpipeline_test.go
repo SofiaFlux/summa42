@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
@@ -233,7 +234,7 @@ func TestPipelineStageArgvParsesWithEachStageParser(t *testing.T) {
 		"triage-driver": func(args []string) error { _, err := parseGHTriageDriverFlags(args); return err },
 		"worker": func(args []string) error {
 			once, root, cred, _, lease, model, err := parseWorkerArgs(args)
-			if err == nil && (!once || root != "/work" || lease != pipelineWorkerLease || cred != "/secret/token") {
+			if err == nil && (!once || root != "/work" || lease != pipelineWorkerLease(model.Timeout) || cred != "/secret/token") {
 				err = fmt.Errorf("worker once=%v root=%q lease=%v credential=%q", once, root, lease, cred)
 			}
 			modelIs("worker", "/bin/producer", model.Binary)
@@ -289,8 +290,16 @@ func TestPipelineStageArgvParsesWithEachStageParser(t *testing.T) {
 		t.Fatalf("stages missing from the pipeline: %v", parsers)
 	}
 	for _, s := range p.stages {
-		if s.name == "worker" && s.timeout >= pipelineWorkerLease {
-			t.Fatalf("worker stage timeout %v is not below its lease %v", s.timeout, pipelineWorkerLease)
+		lease := pipelineWorkerLease(30 * time.Minute)
+		if s.name == "worker" && s.timeout >= lease {
+			t.Fatalf("worker stage timeout %v is not below its lease %v", s.timeout, lease)
+		}
+		// Every stage that wraps a model call outlives the default 30m model timeout.
+		switch s.name {
+		case "worker", "triage-review", "plan", "plan-review":
+			if s.timeout < 30*time.Minute {
+				t.Fatalf("stage %s timeout %v is shorter than the 30m model timeout", s.name, s.timeout)
+			}
 		}
 	}
 }

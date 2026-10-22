@@ -905,6 +905,9 @@ func runWorker(ctx context.Context, args []string) error {
 	}
 	if leaseDuration > 0 {
 		runtimeCfg.LeaseDuration = leaseDuration
+	} else if modelConfig.Timeout > 0 {
+		// The default 5m Box lease would cut off a slow model call.
+		runtimeCfg.LeaseDuration = modelConfig.Timeout + 5*time.Minute
 	}
 	box, _, err := openWorkerBox(ctx, runtimeCfg, modelConfig, os.Stderr)
 	if err != nil {
