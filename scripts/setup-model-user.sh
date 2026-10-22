@@ -67,18 +67,27 @@ WSL
 
 # Content patterns that must never be copied to the model user. Copilot's own
 # OAuth tokens (gho_/ghu_) are the credential being copied there, so that mode
-# only refuses the broader GitHub token kinds. ADO PATs are 52 chars of base32.
+# only refuses the broader GitHub token kinds. Azure DevOps PATs come as 52
+# chars of base32 (old) or 84 chars of base64url-ish (new), quoted or not, so a
+# value of either length after `:` or `=` is refused, as is any value in a
+# *PAT / AZURE_DEVOPS_* / ADO_* key and any Authorization Bearer/Basic header.
 secret_pattern() {
-  local base='ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|ghs_[A-Za-z0-9]{20,}|ghr_[A-Za-z0-9]{20,}|"[a-z2-7]{52}"|(AZURE_DEVOPS_EXT_PAT|AZURE_DEVOPS_PAT|ADO_PAT|SYSTEM_ACCESSTOKEN)"? *[:=]|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  local base='ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|ghs_[A-Za-z0-9]{20,}|ghr_[A-Za-z0-9]{20,}'
+  base+='|"[a-z2-7]{52}"|"[A-Za-z0-9_-]{84}"'
+  base+='|[:=] *"?[a-z2-7]{52}"?([^A-Za-z0-9]|$)|[:=] *"?[A-Za-z0-9_-]{84}"?([^A-Za-z0-9_-]|$)'
+  base+='|(AZURE_DEVOPS_[A-Z_]*|ADO_[A-Z_]*|[A-Z_]*_PAT|SYSTEM_ACCESSTOKEN)"? *[:=]'
+  base+='|[Bb]earer +[A-Za-z0-9._~+/=-]{16,}|[Bb]asic +[A-Za-z0-9+/=]{16,}'
+  base+='|-----BEGIN [A-Z ]*PRIVATE KEY-----'
   if [ "${1:-}" = copilot ]; then printf '%s' "$base"; else printf '%s|gh[ou]_[A-Za-z0-9]{20,}' "$base"; fi
 }
 
 # scan_secrets MODE FILE...  prints the files holding a token pattern; returns 0
-# when at least one does.
+# when at least one does. -a: a file grep would call binary is scanned as text
+# rather than skipped.
 scan_secrets() {
   local mode="$1"; shift
   local hits
-  hits="$(grep -lEI -e "$(secret_pattern "$mode")" -- "$@" 2>/dev/null || true)"
+  hits="$(grep -laE -e "$(secret_pattern "$mode")" -- "$@" 2>/dev/null || true)"
   [ -n "$hits" ] || return 1
   printf '%s\n' "$hits"
 }
@@ -91,6 +100,19 @@ import json, sys
 src = json.load(open(sys.argv[1]))
 keep = {k: src[k] for k in ("hasCompletedOnboarding", "oauthAccount", "userID") if k in src}
 json.dump(keep, open(sys.argv[2], "w"))
+PY
+}
+
+# Gemini's settings.json carries mcpServers (env, headers), hooks and tools next
+# to the login type. Keep only security.auth (selectedType, enforcedType,
+# useExternal), scalars only.
+filter_gemini_settings() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+src = json.load(open(sys.argv[1]))
+auth = ((src.get("security") or {}).get("auth")) or {}
+keep = {k: v for k, v in auth.items() if isinstance(v, (str, bool, int)) and not isinstance(v, dict)}
+json.dump({"security": {"auth": keep}}, open(sys.argv[2], "w"))
 PY
 }
 
@@ -157,14 +179,17 @@ safe_source() {
 #            (login metadata only; mcpServers and project history are dropped)
 #   codex:   ~/.codex/auth.json
 #   gemini / agy (Antigravity shares the Gemini login): oauth_creds.json,
-#            google_accounts.json, installation_id, settings.json (auth type)
-#   copilot: ~/.copilot/config.json, ~/.config/github-copilot/{apps,hosts}.json
+#            google_accounts.json, installation_id, settings.json (only its
+#            security.auth section is copied)
+#   copilot: ~/.copilot/config.json, ~/.copilot/mcp-config.json (the executor's
+#            MCP server definition, which Copilot reads from its own home),
+#            ~/.config/github-copilot/{apps,hosts}.json
 group_files() {
   case "$1" in
     claude)  echo ".claude/.credentials.json" ;;
     codex)   echo ".codex/auth.json" ;;
     gemini)  echo ".gemini/oauth_creds.json .gemini/google_accounts.json .gemini/installation_id .gemini/settings.json" ;;
-    copilot) echo ".copilot/config.json .config/github-copilot/apps.json .config/github-copilot/hosts.json" ;;
+    copilot) echo ".copilot/config.json .copilot/mcp-config.json .config/github-copilot/apps.json .config/github-copilot/hosts.json" ;;
   esac
 }
 
@@ -182,10 +207,15 @@ ask() {
 }
 
 # import_cli NAME: copy one CLI's auth files after the content scan. Returns 2
-# when a token pattern was found (the caller aborts).
+# when a token pattern was found, 3 when any step failed. Called as
+# `import_cli x || rc=$?`, which switches errexit off for the whole body, so
+# every step here ends in an explicit `|| return 3`.
 import_cli() {
   local rc=0
-  stagedir="$(mktemp -d)"
+  stagedir="$(mktemp -d)" || return 3
+  if [ -z "$stagedir" ] || [ "$stagedir" = / ] || [ ! -d "$stagedir" ]; then
+    printf 'cannot create a staging directory\n' >&2; return 3
+  fi
   _import_cli "$1" || rc=$?
   rm -rf -- "$stagedir"
   return "$rc"
@@ -202,16 +232,26 @@ _import_cli() {
   fi
   if [ "${#files[@]}" -eq 0 ]; then return 0; fi
   [ "$name" = copilot ] && mode=copilot
-  local scan=()
+  local scan=() staged=() filtered kept=()
   for rel in "${files[@]}"; do
-    if [ "$rel" = .claude.json ]; then
-      if ! command -v python3 >/dev/null 2>&1; then warn "python3 missing; not copying .claude.json"; continue; fi
-      filter_claude_json "$OWNER_HOME/.claude.json" "$stagedir/.claude.json"
-      scan+=("$stagedir/.claude.json")
+    filtered=""
+    case "$rel" in
+      .claude.json) filtered=filter_claude_json ;;
+      .gemini/settings.json) filtered=filter_gemini_settings ;;
+    esac
+    if [ -n "$filtered" ]; then
+      # Never fall back to copying the unfiltered file.
+      if ! command -v python3 >/dev/null 2>&1; then warn "python3 missing; not copying $rel"; continue; fi
+      mkdir -p -- "$stagedir/$(dirname -- "$rel")" || return 3
+      "$filtered" "$OWNER_HOME/$rel" "$stagedir/$rel" || { printf 'cannot filter %s\n' "$rel" >&2; return 3; }
+      scan+=("$stagedir/$rel"); staged+=("$rel")
     else
       scan+=("$OWNER_HOME/$rel")
     fi
+    kept+=("$rel")
   done
+  files=("${kept[@]}")
+  if [ "${#files[@]}" -eq 0 ]; then return 0; fi
   local hits
   if hits="$(scan_secrets "$mode" "${scan[@]}")"; then
     printf 'refusing to copy %s: token patterns found in:\n%s\n' "$name" "$hits" >&2
@@ -232,10 +272,16 @@ _import_cli() {
   else
     approve "$verb $name auth (${files[*]})" "$MODEL_HOME" || { say "  skipped $name (any existing copy is left untouched)"; skipped+=("$name"); return 0; }
   fi
+  local n=0
   for rel in "${files[@]}"; do
-    if [ "$rel" = .claude.json ]; then copy_file "$stagedir" .claude.json; else copy_file "$OWNER_HOME" "$rel"; fi
+    if [[ " ${staged[*]:-} " == *" $rel "* ]]; then
+      copy_file "$stagedir" "$rel" || { printf 'copying %s failed\n' "$rel" >&2; return 3; }
+    else
+      copy_file "$OWNER_HOME" "$rel" || { printf 'copying %s failed\n' "$rel" >&2; return 3; }
+    fi
+    n=$((n + 1))
   done
-  say "  done: $verb $name (${#files[@]} file(s))"
+  say "  done: $verb $name ($n file(s))"
   copied+=("$name")
 }
 
@@ -346,7 +392,11 @@ main() {
   local cli rc
   for cli in claude codex gemini copilot; do
     rc=0; import_cli "$cli" || rc=$?
-    [ "$rc" -eq 0 ] || die "refusing to continue; nothing from $cli was copied"
+    case "$rc" in
+      0) ;;
+      2) die "refusing to continue; a token pattern was found in $cli's files and nothing from $cli was copied" ;;
+      *) die "copying the $cli auth files failed (exit $rc); the copy may be incomplete; fix the error above and re-run" ;;
+    esac
   done
   if [ "${#skipped[@]}" -gt 0 ]; then
     say "skipped (log in as $MODEL_USER instead, or re-run): ${skipped[*]}"
@@ -390,6 +440,8 @@ Done. Next steps (as the Box owner, not root):
        sudo -u $MODEL_USER -H codex login
        sudo -u $MODEL_USER -H agy        # sign in
        sudo -u $MODEL_USER -H claude     # /login
+     The Copilot executor also needs its MCP server definition in $MODEL_HOME/.copilot/mcp-config.json
+     (offered above with the same content scan, or create it as the model user).
   2. Make sure the model binaries are executable by $MODEL_USER (not under $OWNER_HOME).
   3. Tell Summa42 which user to use:
        export SUMMA42_MODEL_USER=$MODEL_USER

@@ -116,7 +116,7 @@ func (p *Planner) Tick(ctx context.Context, missionID domain.ID) (PlannerResult,
 		result.Failures = append(result.Failures, ce.Error())
 	}
 	for i, candidate := range candidates {
-		if time.Since(started)+reserve > cfg.TickBudget {
+		if i > 0 && time.Since(started)+reserve > cfg.TickBudget {
 			result.Deferred = len(candidates) - i
 			break
 		}

@@ -54,6 +54,7 @@ class Pure(unittest.TestCase):
             files = {
                 "gh": 'x ghp_' + "a" * 30, "pat": "github_pat_" + "B" * 30, "oauth": "gho_" + "c" * 30,
                 "ado": '{"mcpServers":{"ado":{"env":{"X":"' + "a2" * 26 + '"}}}}', "clean": '{"access_token":"abc"}',
+                "clean2": '{"selectedType":"oauth-personal","note":"' + "a" * 70 + ' not a token"}',
             }
             for name, content in files.items():
                 Path(os.path.join(d, name)).write_text(content)
@@ -63,9 +64,40 @@ class Pure(unittest.TestCase):
                 self.assertEqual(r.returncode, 0, bad)
                 self.assertIn(bad, r.stdout)
             self.assertNotEqual(hits("default", "clean").returncode, 0)
+            self.assertNotEqual(hits("default", "clean2").returncode, 0)
             # Copilot's own OAuth token is what is being copied there; a PAT is still refused.
             self.assertNotEqual(hits("copilot", "oauth").returncode, 0)
             self.assertEqual(hits("copilot", "gh").returncode, 0)
+
+    def test_scan_catches_the_four_known_misses(self):
+        """ADO PAT new format, unquoted PAT, Bearer header, binary-flagged file."""
+        with tempfile.TemporaryDirectory() as d:
+            ado84 = "".join("AbCdEf0123456789"[i % 16] for i in range(84))
+            files = {
+                "ado84": '{"mcpServers":{"ado":{"env":{"AZURE_DEVOPS_ORG_PAT":"' + ado84 + '"}}}}',
+                "ado84bare": '{"headers":{"X":"' + ado84 + '"}}',
+                "unquoted52": "token=" + "a2" * 26 + "\n",
+                "bearer": '{"headers":{"Authorization":"Bearer ' + "x" * 40 + '"}}',
+                "bearer2": "Authorization: Bearer " + "Ab1." * 10 + "\n",
+            }
+            for name, content in files.items():
+                Path(os.path.join(d, name)).write_text(content)
+            Path(os.path.join(d, "binary")).write_bytes(b"\x00\x01 ghp_" + b"a" * 30 + b"\x00")
+            for name in list(files) + ["binary"]:
+                r = bash(f"scan_secrets default {d}/{name}")
+                self.assertEqual(r.returncode, 0, name)
+                self.assertIn(name, r.stdout)
+
+    def test_gemini_settings_keep_only_the_auth_section(self):
+        with tempfile.TemporaryDirectory() as d:
+            src, dst = os.path.join(d, "in.json"), os.path.join(d, "out.json")
+            Path(src).write_text('{"security":{"auth":{"selectedType":"oauth-personal","useExternal":true,"extra":{"t":"x"}},"folderTrust":{"enabled":true}},'
+                                 '"mcpServers":{"ado":{"env":{"AZURE_DEVOPS_EXT_PAT":"x"},"headers":{"Authorization":"Bearer y"}}},"hooks":{"a":"rm -rf"},"tools":{},"ui":{}}')
+            self.assertEqual(bash(f"filter_gemini_settings {src} {dst}").returncode, 0)
+            import json
+            self.assertEqual(json.loads(Path(dst).read_text()), {"security": {"auth": {"selectedType": "oauth-personal", "useExternal": True}}})
+            Path(src).write_text("{not json")
+            self.assertNotEqual(bash(f"filter_gemini_settings {src} {dst}").returncode, 0)
 
     def test_claude_json_is_filtered_to_login_metadata(self):
         with tempfile.TemporaryDirectory() as d:
@@ -173,6 +205,55 @@ class Copy(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(os.path.exists(self.model + "/.copilot"))
         self.assertIn("never copied under --yes", r.stdout)
+
+    def test_failed_move_is_not_reported_as_done(self):
+        """Review N4: set -e is off inside a function called from `||`."""
+        os.makedirs(self.model + "/.codex/auth.json")  # mv -T onto a directory fails
+        r = self.run_import("codex")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertNotIn("done:", r.stdout)
+
+    def test_malformed_claude_json_is_not_reported_as_done(self):
+        Path(self.owner + "/.claude.json").write_text("{not json")
+        r = self.run_import("claude")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertNotIn("done:", r.stdout)
+        self.assertFalse(os.path.exists(self.model + "/.claude/.credentials.json"))
+
+    def test_failed_mktemp_writes_nothing_and_fails(self):
+        r = self.run_import("claude", extra="mktemp() { return 1; }")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertNotIn("done:", r.stdout)
+        self.assertFalse(os.path.exists("/.claude.json"))
+
+    def test_filtered_file_is_never_copied_unfiltered_without_python(self):
+        r = self.run_import("claude", extra="command() { if [ \"$2\" = python3 ]; then return 1; fi; builtin command \"$@\"; }")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertFalse(os.path.exists(self.model + "/.claude.json"))
+        self.assertTrue(os.path.exists(self.model + "/.claude/.credentials.json"))
+
+    def test_gemini_copies_only_the_auth_section_of_settings(self):
+        os.makedirs(self.owner + "/.gemini")
+        Path(self.owner + "/.gemini/oauth_creds.json").write_text('{"refresh_token":"x"}')
+        Path(self.owner + "/.gemini/settings.json").write_text(
+            '{"security":{"auth":{"selectedType":"oauth-personal"}},"mcpServers":{"a":{"env":{"T":"v"}}}}')
+        r = self.run_import("gemini")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        out = Path(self.model + "/.gemini/settings.json").read_text()
+        self.assertIn("oauth-personal", out)
+        self.assertNotIn("mcpServers", out)
+
+    def test_copilot_mcp_config_is_offered_with_the_same_scan(self):
+        os.makedirs(self.owner + "/.copilot")
+        Path(self.owner + "/.copilot/config.json").write_text('{"login":"u"}')
+        Path(self.owner + "/.copilot/mcp-config.json").write_text('{"mcpServers":{"ado":{"env":{"T":"ghp_' + "a" * 30 + '"}}}}')
+        r = self.run_import("copilot", yes=0, extra="ask() { return 0; }")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("mcp-config.json", r.stderr)
+        Path(self.owner + "/.copilot/mcp-config.json").write_text('{"mcpServers":{"ado":{"command":"/usr/bin/ado-mcp"}}}')
+        r = self.run_import("copilot", yes=0, extra="ask() { return 0; }")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(os.path.exists(self.model + "/.copilot/mcp-config.json"))
 
     def test_declined_copy_leaves_existing_files(self):
         os.makedirs(self.model + "/.codex")

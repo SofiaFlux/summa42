@@ -13,17 +13,17 @@ import (
 	"github.com/SofiaFlux/summa42/internal/modelrun/modelruntest"
 )
 
-var fakeSudoLog string
+var fakeSudoLog, fakeModelHome string
 
 // TestMain swaps sudo for a script that drops its options and runs the rest, and
 // the user database for one fake model user, so the launcher is exercised
 // without privileges.
 func TestMain(m *testing.M) {
-	_, sudoLog, cleanup, err := modelruntest.Install()
+	home, sudoLog, cleanup, err := modelruntest.Install()
 	if err != nil {
 		panic(err)
 	}
-	fakeSudoLog = sudoLog
+	fakeSudoLog, fakeModelHome = sudoLog, home
 	code := m.Run()
 	cleanup()
 	os.Exit(code)
@@ -167,20 +167,20 @@ func TestCopilotRejectsBadPayload(t *testing.T) {
 }
 
 func TestCopilotArgvIsClosed(t *testing.T) {
-	path := writeFakeCopilot(t, "#!/bin/sh\necho \"$@\" > \"$(pwd)/argv.txt\"\necho '{\"verdict\":\"CLEAN\",\"reviewedCommits\":[\"abc\"],\"reviewedFiles\":[\"main.go\"],\"findings\":[]}'\n")
+	argvFile := filepath.Join(t.TempDir(), "argv.txt")
+	path := writeFakeCopilot(t, "#!/bin/sh\necho \"$@\" > "+argvFile+"\necho '{\"verdict\":\"CLEAN\",\"reviewedCommits\":[\"abc\"],\"reviewedFiles\":[\"main.go\"],\"findings\":[]}'\n")
 	executor, err := executors.NewCopilotExecutor(copilotConfig(path))
 	if err != nil {
 		t.Fatal(err)
 	}
-	workspace := t.TempDir()
 	_, err = executor.Start(context.Background(), executors.AttemptEnvelope{
-		TaskID: "task-1", AttemptID: "attempt-1", Workspace: workspace,
+		TaskID: "task-1", AttemptID: "attempt-1", Workspace: t.TempDir(),
 		Objective: "review", PayloadJSON: json.RawMessage(`{"repo":"shop","pr":1,"sourceCommit":"a","targetCommit":"b"}`),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join(workspace, "argv.txt"))
+	raw, err := os.ReadFile(argvFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +262,8 @@ func TestCopilotAcceptsAllowlistedEnv(t *testing.T) {
 }
 
 func TestCopilotModelFlagPrecedence(t *testing.T) {
-	path := writeFakeCopilot(t, "#!/bin/sh\necho \"$@\" > \"$(pwd)/argv.txt\"\necho '{\"verdict\":\"CLEAN\",\"reviewedCommits\":[\"abc\"],\"reviewedFiles\":[\"main.go\"],\"findings\":[]}'\n")
+	argvFile := filepath.Join(t.TempDir(), "argv.txt")
+	path := writeFakeCopilot(t, "#!/bin/sh\necho \"$@\" > "+argvFile+"\necho '{\"verdict\":\"CLEAN\",\"reviewedCommits\":[\"abc\"],\"reviewedFiles\":[\"main.go\"],\"findings\":[]}'\n")
 	cfg := copilotConfig(path)
 	cfg.Model = "flag-model"
 	cfg.Environment = map[string]string{"COPILOT_MODEL": "env-model"}
@@ -270,14 +271,13 @@ func TestCopilotModelFlagPrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	workspace := t.TempDir()
 	if _, err := executor.Start(context.Background(), executors.AttemptEnvelope{
-		TaskID: "task-1", AttemptID: "attempt-1", Workspace: workspace,
+		TaskID: "task-1", AttemptID: "attempt-1", Workspace: t.TempDir(),
 		Objective: "review", PayloadJSON: json.RawMessage(`{"repo":"shop","pr":1,"sourceCommit":"a","targetCommit":"b"}`),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join(workspace, "argv.txt"))
+	raw, err := os.ReadFile(argvFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -359,10 +359,41 @@ func TestCopilotFailsClosedWithoutADedicatedUserAndRunsThroughTheLauncher(t *tes
 		t.Fatal(err)
 	}
 	logged, err := os.ReadFile(fakeSudoLog)
-	if err != nil || !strings.Contains(string(logged), "-u "+modelruntest.User+" -- /usr/bin/timeout") {
+	if err != nil || !strings.Contains(string(logged), "-u "+modelruntest.User+" -- /bin/sh -c") {
 		t.Fatalf("copilot did not go through the launcher: %q (%v)", logged, err)
 	}
 	if strings.Contains(string(logged), "ghp_copilot_secret") {
 		t.Fatalf("token on the launcher argv: %q", logged)
+	}
+}
+
+// The Box-owned attempt workspace is 0700 and unreachable for the model user,
+// so Copilot must never be started inside it: it runs in a private scratch
+// directory under the model user's own tmp instead.
+func TestCopilotRunsInAModelSideScratchDirNotTheBoxWorkspace(t *testing.T) {
+	home := fakeModelHome
+	cwdFile := filepath.Join(t.TempDir(), "cwd.txt")
+	path := writeFakeCopilot(t, "#!/bin/sh\npwd > "+cwdFile+"\necho '{\"verdict\":\"CLEAN\",\"reviewedCommits\":[\"abc\"],\"reviewedFiles\":[\"main.go\"],\"findings\":[]}'\n")
+	executor, err := executors.NewCopilotExecutor(copilotConfig(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := t.TempDir()
+	if _, err := executor.Start(context.Background(), executors.AttemptEnvelope{
+		TaskID: "task-1", AttemptID: "attempt-1", Workspace: workspace,
+		Objective: "review", PayloadJSON: json.RawMessage(`{"repo":"shop","pr":1,"sourceCommit":"a","targetCommit":"b"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(cwdFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd := strings.TrimSpace(string(raw))
+	if cwd == workspace || !strings.HasPrefix(cwd, filepath.Join(home, "tmp", "run.")) {
+		t.Fatalf("copilot ran in %q, want a scratch dir under %s/tmp", cwd, home)
+	}
+	if _, err := os.Stat(cwd); !os.IsNotExist(err) {
+		t.Fatalf("scratch dir %s was not removed", cwd)
 	}
 }

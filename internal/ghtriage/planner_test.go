@@ -159,6 +159,19 @@ func TestPlannerStopsAtTickBudget(t *testing.T) {
 	}
 }
 
+// A budget clamped to exactly one case's reserve must still plan the first
+// case, or every tick defers every case forever.
+func TestPlannerAlwaysStartsTheFirstCaseWhateverTheBudget(t *testing.T) {
+	f, model := readyPlannerFixture(t)
+	model.err = errors.New("slow failure")
+	planner := ghtriage.NewPlanner(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model)
+	planner.SetConfig(ghtriage.PlannerConfig{TickBudget: time.Nanosecond, ModelTimeout: 40 * time.Millisecond})
+	result, err := planner.Tick(f.ctx, f.missionID)
+	if err != nil || model.calls != 1 || result.Deferred != 0 {
+		t.Fatalf("calls=%d deferred=%d err=%v", model.calls, result.Deferred, err)
+	}
+}
+
 func TestPlannerHoldsCaseAfterMaxFailures(t *testing.T) {
 	f, model := readyPlannerFixture(t)
 	model.err = errors.New("model exited")

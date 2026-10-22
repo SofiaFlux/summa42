@@ -158,7 +158,14 @@ func pidFileAlive(t *testing.T, path string) (alive bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return syscall.Kill(pid, 0) == nil
+	// A killed process is a zombie until its parent reaps it; give that a moment.
+	for i := 0; i < 100; i++ {
+		if syscall.Kill(pid, 0) != nil {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return true
 }
 
 func waitForFile(t *testing.T, path string) {

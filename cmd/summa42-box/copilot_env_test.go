@@ -113,3 +113,11 @@ func TestPipelineBatchTimeoutCoversThePlannerTickBudget(t *testing.T) {
 		}
 	}
 }
+
+func TestCopilotAllowlistDoesNotForwardBoxPathOrTmp(t *testing.T) {
+	for _, name := range []string{"PATH", "TMPDIR", "TMP", "TEMP"} {
+		if slices.Contains(copilotEnvAllowlist, name) {
+			t.Fatalf("allowlist forwards the Box %s", name)
+		}
+	}
+}

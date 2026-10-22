@@ -166,10 +166,6 @@ func (e *CopilotExecutor) Start(ctx context.Context, envelope AttemptEnvelope) (
 	if e == nil {
 		return ExecutionResult{}, errors.New("copilot executor is not configured")
 	}
-	workspace := strings.TrimSpace(envelope.Workspace)
-	if workspace == "" {
-		return ExecutionResult{}, errors.New("attempt workspace is required")
-	}
 	if strings.TrimSpace(envelope.Objective) == "" {
 		return ExecutionResult{}, errors.New("attempt objective is required")
 	}
@@ -203,7 +199,7 @@ func (e *CopilotExecutor) Start(ctx context.Context, envelope AttemptEnvelope) (
 	defer cancel()
 
 	cmd, err := modelrun.Command(runCtx, modelrun.Spec{
-		RunAs: e.runAs, Binary: e.path, Args: args, Dir: workspace, Env: e.environment, Timeout: e.timeout,
+		RunAs: e.runAs, Binary: e.path, Args: args, Scratch: true, Env: e.environment, Timeout: e.timeout,
 	})
 	if err != nil {
 		return ExecutionResult{}, err

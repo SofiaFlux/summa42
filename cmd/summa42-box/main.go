@@ -35,6 +35,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
+	"github.com/SofiaFlux/summa42/internal/modelrun"
 	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/SofiaFlux/summa42/internal/policy"
 	summa42runtime "github.com/SofiaFlux/summa42/internal/runtime"
@@ -337,11 +338,13 @@ func buildCopilotExecutorFromEnv(runAsUser string) (map[string]executors.Executo
 }
 
 // copilotEnvAllowlist deliberately omits GH_TOKEN and GITHUB_TOKEN: the agentic
-// Copilot child must not hold GitHub write credentials.
+// Copilot child must not hold GitHub write credentials. PATH, TMPDIR, TMP and
+// TEMP are omitted too: the launcher fixes the model's PATH and gives it its own
+// tmp, and the Box's values point at directories the model user cannot use.
 var copilotEnvAllowlist = []string{
-	"PATH", "COPILOT_MODEL", "COPILOT_GITHUB_TOKEN",
+	"COPILOT_MODEL", "COPILOT_GITHUB_TOKEN",
 	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-	"SSL_CERT_FILE", "SSL_CERT_DIR", "TMPDIR", "TMP", "TEMP",
+	"SSL_CERT_FILE", "SSL_CERT_DIR",
 }
 
 // copilotEnvironmentFromOS snapshots the allowlisted OS vars into the child
@@ -565,8 +568,25 @@ var subcommands = map[string]func(context.Context, []string) error{
 	"run-final-verifier":     runFinalVerifier,
 }
 
+// registerIsolationProbe makes the first model launch check, as the model
+// user, that the Box database and keys directory are unreadable. Best effort
+// only in the sense that a Box that cannot load its configuration cannot run
+// a model either (every command loads it again and fails).
+func registerIsolationProbe() {
+	home, err := localconfig.ResolveHome("")
+	if err != nil {
+		return
+	}
+	cfg, err := localconfig.Load(home)
+	if err != nil {
+		return
+	}
+	modelrun.RequireUnreadable(cfg.DatabasePath, filepath.Join(home, "keys"))
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	registerIsolationProbe()
 	if len(os.Args) > 1 {
 		if command, ok := subcommands[os.Args[1]]; ok {
 			code := exitStatus(command(ctx, os.Args[2:]), os.Stderr)
