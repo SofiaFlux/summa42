@@ -375,6 +375,12 @@ install_sudoers() {
   tmp="$(mktemp)"; backup="$(mktemp)"
   sudoers_content "$OWNER" "$target" >"$tmp"
   if ! visudo -cf "$tmp" >/dev/null; then rm -f "$tmp" "$backup"; die "generated sudoers entry for $target failed visudo -cf"; fi
+  local pre
+  if ! pre="$(visudo -c 2>&1)"; then
+    rm -f "$tmp" "$backup"
+    die "the existing sudoers configuration already fails visudo -c; fix it first (nothing was written):
+$pre"
+  fi
   if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
     say "$file already up to date; leaving it as is"
   else
@@ -549,7 +555,7 @@ Done. Next steps (as the Box owner, not root):
      /usr/local/go1.27; /usr/bin/go is usually older) and list its bin directory:
        export SUMMA42_VALIDATION_TOOLCHAIN_DIRS=/usr/local/go1.27/bin
      Re-run this script with --toolchain-dirs /usr/local/go1.27/bin to check that \`go version\` works as $VALIDATE_USER.
-     $VALIDATE_USER keeps a persistent Go cache in $VALIDATE_HOME/go-cache (shared with nobody else).
+     The Go build cache is per run, inside the scratch directory, and removed with it.
   4. Tell Summa42 which users to use:
        export SUMMA42_MODEL_USER=$MODEL_USER
        export SUMMA42_VALIDATION_USER=$VALIDATE_USER

@@ -457,9 +457,10 @@ func Sweep(ctx context.Context, runAs *user.User) error {
 		return cmd.CombinedOutput()
 	}
 	var errs []error
-	// kill -1 exits 1 with "No such process" when the user has nothing left,
-	// which is the normal case and not an error.
-	if out, err := run(killAllBinary, "-KILL", "-1"); err != nil && !bytes.Contains(out, []byte("No such process")) {
+	// kill -1 exits 1 when the user has nothing left, which is the normal case
+	// and not an error: older kills say "No such process", procps-ng 4 says
+	// nothing. A sudo failure always prints a message.
+	if out, err := run(killAllBinary, "-KILL", "-1"); err != nil && len(bytes.TrimSpace(out)) > 0 && !bytes.Contains(out, []byte("No such process")) {
 		errs = append(errs, fmt.Errorf("kill all processes of %s: %w: %s", runAs.Username, err, strings.TrimSpace(string(out))))
 	}
 	const clean = `for d in "$1"/run.*; do [ -e "$d" ] || continue; chmod -R u+rwX -- "$d" 2>/dev/null; rm -rf -- "$d"; done`
