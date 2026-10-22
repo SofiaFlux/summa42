@@ -363,3 +363,26 @@ func TestPRProviderFindAcceptsReadyMarkedPR(t *testing.T) {
 		}
 	}
 }
+
+func TestBranchProviderLookupConfirmsLandedBranchAfterBaseMoved(t *testing.T) {
+	intent := branchIntent(t)
+	client := &http.Client{Transport: transport(func(r *http.Request) (*http.Response, error) {
+		if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/git/ref/heads/main") {
+			return response(200, map[string]any{"object": map[string]string{"sha": strings.Repeat("f", 40)}}), nil
+		}
+		if r.Method == "GET" && strings.Contains(r.URL.Path, "/git/ref/heads/summa42/") {
+			return response(200, map[string]any{"object": map[string]string{"sha": intent.Export.Candidate.CandidateSHA}}), nil
+		}
+		t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		return nil, nil
+	})}
+	p, err := NewBranchProvider(Config{Repository: "o/r", CredentialSource: tokenSource{}, HTTPClient: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := p.CanonicalIntent(intent)
+	out, err := p.LookupOutcome(t.Context(), operations.ProviderDispatchRequest{CanonicalIntent: raw})
+	if err != nil || out.State != domain.OperationConfirmedEffect {
+		t.Fatalf("%+v %v", out, err)
+	}
+}

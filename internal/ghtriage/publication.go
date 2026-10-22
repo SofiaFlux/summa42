@@ -23,6 +23,13 @@ import (
 
 const KindPublication = "github.issue.publication"
 const PublicationVersion = "github.issue.publication.v1"
+
+// ReasonPublicationNoEffect blocks the case when a provider confirms a publication
+// op wrote nothing because the reviewed refs changed (base moved, head branch
+// taken, or base tree differs). The candidate is stale for good: retrying only
+// mints another Owner approval request that is doomed to the same outcome.
+const ReasonPublicationNoEffect = "publication-no-effect: base moved or head branch changed since review; candidate must be rebuilt on the new base"
+
 const PublicationLeaseDuration = 10 * time.Minute
 
 var publicationCapabilities = []string{"github.repo.publish", "github.pr.create"}
@@ -52,6 +59,8 @@ type PublicationResult struct {
 	Busy        bool               `json:"busy"`
 	Pending     bool               `json:"pending"`
 	Reused      bool               `json:"reused"`
+	Blocked     bool               `json:"blocked,omitempty"`
+	Reason      string             `json:"reason,omitempty"`
 	EvidenceID  domain.ID          `json:"evidence_id,omitempty"`
 	Record      *PublicationRecord `json:"record,omitempty"`
 }
@@ -390,6 +399,12 @@ func (p *Publisher) Publish(ctx context.Context, id domain.ID, source, baseBranc
 			}
 			if err != nil {
 				return PublicationResult{}, err
+			}
+			if op.State == domain.OperationConfirmedNoEffect {
+				if err = moveCase(ctx, p.cases, c, workflow.Unknown, ReasonPublicationNoEffect, impl.EvidenceID); err != nil {
+					return PublicationResult{}, err
+				}
+				return PublicationResult{Blocked: true, Reason: ReasonPublicationNoEffect}, nil
 			}
 			if op.State != domain.OperationConfirmedEffect {
 				return PublicationResult{}, errors.New("publication effect not confirmed")

@@ -296,10 +296,8 @@ func (p *BranchProvider) LookupOutcome(ctx context.Context, r operations.Provide
 	if e := p.validate(v); e != nil {
 		return unknown(), e
 	}
-	base, _, e := p.c.ref(ctx, v.BaseBranch)
-	if e != nil || base != v.Export.Candidate.BaseSHA {
-		return unknown(), nil
-	}
+	// The head ref at the reviewed candidate SHA is the effect, wherever the base
+	// branch has moved since: the candidate commit's parent is the reviewed base.
 	head, _, e := p.c.ref(ctx, v.HeadBranch)
 	if e != nil || head != v.Export.Candidate.CandidateSHA {
 		return unknown(), nil

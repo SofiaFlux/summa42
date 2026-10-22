@@ -34,6 +34,7 @@ type publicationProvider struct {
 	name, cap       string
 	writes, lookups int
 	unknown         bool
+	noEffect        bool
 	onDispatch      func()
 }
 
@@ -56,6 +57,9 @@ func (p *publicationProvider) Dispatch(context.Context, operations.ProviderDispa
 	p.writes++
 	if p.onDispatch != nil {
 		p.onDispatch()
+	}
+	if p.noEffect {
+		return operations.ProviderOutcome{State: domain.OperationConfirmedNoEffect}, nil
 	}
 	if p.unknown {
 		return operations.ProviderOutcome{State: domain.OperationOutcomeUnknown}, nil
@@ -403,5 +407,30 @@ func TestPublicationReplayAfterCrashPerformsTheMove(t *testing.T) {
 	f.store.DB().ExecContext(f.ctx, `UPDATE workflow_cases SET grant_json='{"Capabilities":[],"Actions":[]}' WHERE case_id=?`, id)
 	if _, err = pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main"); err == nil {
 		t.Fatal("revoked receipt replay")
+	}
+}
+
+func TestPublicationNoEffectIsTerminalForCandidate(t *testing.T) {
+	f, cfg, id, _ := implementedFixture(t)
+	_, err := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &codeReviewModel{verdict: "ACCEPT"}).Review(f.ctx, id, cfg.Source.LocalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantPublication(t, f, id)
+	ops, b, p := publicationOps(t, f)
+	b.noEffect = true // the base branch moved: the provider confirms nothing was written
+	pub := ghtriage.NewPublisher(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, ops)
+	got, err := pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main")
+	if err != nil || !got.Blocked || !strings.Contains(got.Reason, "rebuilt") {
+		t.Fatalf("%+v %v", got, err)
+	}
+	c, err := f.cases.Get(f.ctx, id)
+	if err != nil || c.State != workflowcase.Blocked {
+		t.Fatalf("case must be BLOCKED: %+v %v", c.State, err)
+	}
+	// Lease expiry must not start a new attempt or a new approval request.
+	f.clock.Advance(ghtriage.PublicationLeaseDuration + time.Second)
+	if _, err = pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main"); !errors.Is(err, ghtriage.ErrCaseNotAtStage) || b.writes != 1 || p.writes != 0 {
+		t.Fatalf("blocked case retried: %v writes=%d/%d", err, b.writes, p.writes)
 	}
 }
