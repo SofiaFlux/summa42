@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func groundingFixture(t *testing.T) ghtriage.GroundingConfig {
@@ -288,5 +289,21 @@ func TestPrefixMustBeTrackedDirectory(t *testing.T) {
 		if err != nil || result.Planned != 0 || len(result.Failures) != 1 || model.selCalls != 0 {
 			t.Fatalf("prefix %q: result=%+v selCalls=%d err=%v", prefix, result, model.selCalls, err)
 		}
+	}
+}
+
+// With the 30m default model timeout the planner reserves two calls per case in
+// --allowed-prefix mode; the default TickBudget must cover that, or every case
+// is deferred on every tick.
+func TestPrefixModePlansWithA30MinuteModelTimeout(t *testing.T) {
+	research := []string{"internal/purpose/research.go"}
+	f, model, planner := prefixPlanner(t, ghtriage.FileSelection{ContextFiles: research, AllowedPaths: research})
+	planner.SetConfig(ghtriage.PlannerConfig{ModelTimeout: 30 * time.Minute})
+	result, err := planner.Tick(f.ctx, f.missionID)
+	if err != nil || result.Deferred != 0 || result.Planned != 1 || model.selCalls != 1 {
+		t.Fatalf("result=%+v sel=%d err=%v, want the case planned and not deferred", result, model.selCalls, err)
+	}
+	if got, want := ghtriage.PlanStageTimeout(30*time.Minute), 65*time.Minute; got != want {
+		t.Fatalf("PlanStageTimeout = %s, want %s", got, want)
 	}
 }

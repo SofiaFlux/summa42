@@ -17,6 +17,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawnSync } = require('child_process');
 const os = require('os');
+const { checkModelUser, modelLaunchArgv, spawnTimeoutMs } = require('./model-launch.js');
 
 // Load ACP SDK from global npm module acp-discord
 const ACP_SDK_PATH = path.join(
@@ -274,23 +275,22 @@ function modelUserOrError() {
   if (!name) {
     return { error: '⛔ **Chat is disabled:** `SUMMA42_MODEL_USER` is not set. Model CLIs must run as a dedicated OS user that cannot read the Box secrets. Run `scripts/setup-model-user.sh` once with sudo, then set `SUMMA42_MODEL_USER=summa42-model`.' };
   }
-  if (name === 'root' || name === os.userInfo().username) {
-    return { error: `⛔ **Chat is disabled:** SUMMA42_MODEL_USER=${name} is root or the Box's own user; use a dedicated model user.` };
-  }
   const pw = spawnSync('getent', ['passwd', name], { encoding: 'utf-8' });
   const fields = pw.status === 0 ? pw.stdout.trim().split(':') : [];
-  const home = fields[5];
-  if (fields[2] === '0' || !home || !home.startsWith('/')) {
-    return { error: `⛔ **Chat is disabled:** SUMMA42_MODEL_USER=${name} does not exist, is root, or has no home directory.` };
+  const checked = checkModelUser(name, fields, os.userInfo());
+  if (checked.error) {
+    return { error: `⛔ **Chat is disabled:** SUMMA42_MODEL_USER: ${checked.error}; use a dedicated model user.` };
   }
-  return { name, home };
+  return checked;
 }
 
-function spawnAsModelUser(model, bin, args, timeout) {
-  const basePath = process.env.PATH || '/usr/local/bin:/usr/bin:/bin';
-  return spawnSync('sudo', ['-n', '-u', model.name, '--', '/usr/bin/env', '-i', '-C', model.home,
-    `HOME=${model.home}`, `PATH=${basePath}`, `LANG=${process.env.LANG || 'C.UTF-8'}`, `TMPDIR=${model.home}/tmp`,
-    bin, ...args], { encoding: 'utf-8', timeout, cwd: '/', env: { PATH: basePath } });
+function spawnAsModelUser(model, bin, args, timeoutMs, input) {
+  const opts = {
+    encoding: 'utf-8', cwd: '/', env: { PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' },
+    timeout: spawnTimeoutMs(timeoutMs), killSignal: 'SIGKILL',
+  };
+  if (input !== undefined) opts.input = input;
+  return spawnSync('sudo', modelLaunchArgv(model, bin, args, timeoutMs, process.env.LANG), opts);
 }
 
 function chatWithCollective(userText, requestorId) {
@@ -338,7 +338,7 @@ function chatWithCollective(userText, requestorId) {
     // 2. Local GPU acceleration via Ollama
     if (!rawReply) {
       try {
-        const res = spawnAsModelUser(modelUser, 'ollama', ['run', 'qwen-gpu', prompt], 20000);
+        const res = spawnAsModelUser(modelUser, 'ollama', ['run', 'qwen-gpu'], 20000, prompt);
         if (!res.error && res.status === 0 && res.stdout && res.stdout.trim()) {
           rawReply = res.stdout.trim();
         }

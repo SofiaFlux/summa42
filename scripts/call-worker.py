@@ -694,12 +694,12 @@ def _clean_env():
 
 
 def run_backend(backend, model, prompt, script_cmd=None, wrapper=None, timeout=None):
-    timeout = DEFAULT_TIMEOUT if timeout is None else timeout
     """Execute a backend and return its raw text output.
 
     Stdin-capable backends (claude, codex, opencode) receive the full prompt
     on stdin.  Argv-only backends (agy) receive it in -p, capped at 100 KiB.
     """
+    timeout = DEFAULT_TIMEOUT if timeout is None else timeout
     if backend == "script":
         if not script_cmd:
             raise ValueError("--script must be specified when using backend 'script'")

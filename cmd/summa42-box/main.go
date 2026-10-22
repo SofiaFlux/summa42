@@ -307,7 +307,7 @@ func splitCSV(raw string) []string {
 	return out
 }
 
-func buildCopilotExecutorFromEnv() (map[string]executors.Executor, error) {
+func buildCopilotExecutorFromEnv(runAsUser string) (map[string]executors.Executor, error) {
 	path := strings.TrimSpace(os.Getenv("SUMMA42_COPILOT_PATH"))
 	if path == "" {
 		return nil, nil
@@ -326,7 +326,7 @@ func buildCopilotExecutorFromEnv() (map[string]executors.Executor, error) {
 		timeout = parsed
 	}
 	executor, err := executors.NewCopilotExecutor(executors.CopilotConfig{
-		Path: path, Model: strings.TrimSpace(os.Getenv("SUMMA42_COPILOT_MODEL")),
+		Path: path, RunAsUser: runAsUser, Model: strings.TrimSpace(os.Getenv("SUMMA42_COPILOT_MODEL")),
 		MCPServer: server, AllowedTools: tools, Timeout: timeout,
 		Environment: copilotEnvironmentFromOS(),
 	})
@@ -889,7 +889,7 @@ func runWorker(ctx context.Context, args []string) error {
 		OperationProviders:  operationProviders,
 		CapabilityProviders: capabilityProviders,
 	}
-	copilotExecutors, err := buildCopilotExecutorFromEnv()
+	copilotExecutors, err := buildCopilotExecutorFromEnv(modelConfig.RunAsUser)
 	if err != nil {
 		return err
 	}

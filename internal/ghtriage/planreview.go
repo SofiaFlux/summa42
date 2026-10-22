@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/execution"
@@ -13,7 +15,6 @@ import (
 	"github.com/SofiaFlux/summa42/internal/verification"
 	"github.com/SofiaFlux/summa42/internal/workflow"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
-	"time"
 )
 
 const ImplementationWorkKind = "github.issue.implement"

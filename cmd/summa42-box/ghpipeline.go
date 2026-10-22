@@ -49,9 +49,11 @@ func exitStatus(err error, stderr io.Writer) int {
 func pipelineWorkerLease(model time.Duration) time.Duration { return model + 5*time.Minute }
 
 // pipelineBatchTimeout bounds a stage that makes one model call per case in a
-// tick: never below 15m, and always room for two full model calls.
+// tick: never below 15m, and never below the planner's TickBudget (two model
+// calls per case in grounding mode plus a margin), so the stage cannot be cut
+// off before the planner has started a case.
 func pipelineBatchTimeout(model time.Duration) time.Duration {
-	return max(15*time.Minute, 2*model)
+	return max(15*time.Minute, ghtriage.PlanStageTimeout(model))
 }
 
 // A pipelineStage is one run-gh-* subcommand run in-process with fixed argv.

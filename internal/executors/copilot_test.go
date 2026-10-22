@@ -10,7 +10,24 @@ import (
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/executors"
+	"github.com/SofiaFlux/summa42/internal/modelrun/modelruntest"
 )
+
+var fakeSudoLog string
+
+// TestMain swaps sudo for a script that drops its options and runs the rest, and
+// the user database for one fake model user, so the launcher is exercised
+// without privileges.
+func TestMain(m *testing.M) {
+	_, sudoLog, cleanup, err := modelruntest.Install()
+	if err != nil {
+		panic(err)
+	}
+	fakeSudoLog = sudoLog
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
+}
 
 func writeFakeCopilot(t *testing.T, script string) string {
 	t.Helper()
@@ -23,7 +40,7 @@ func writeFakeCopilot(t *testing.T, script string) string {
 
 func copilotConfig(path string) executors.CopilotConfig {
 	return executors.CopilotConfig{
-		Path: path, MCPServer: "ado",
+		Path: path, RunAsUser: modelruntest.User, MCPServer: "ado",
 		AllowedTools: []string{"repo_pull_request"},
 		Timeout:      time.Minute,
 	}
@@ -316,5 +333,36 @@ func TestCopilotEvidenceIsCanonical(t *testing.T) {
 	}
 	if found[executors.EvidenceStdout] == 0 {
 		t.Fatal("STDOUT evidence required when stdout non-empty")
+	}
+}
+
+func TestCopilotFailsClosedWithoutADedicatedUserAndRunsThroughTheLauncher(t *testing.T) {
+	path := writeFakeCopilot(t, "#!/bin/sh\necho '{\"verdict\":\"CLEAN\",\"reviewedCommits\":[\"abc\"],\"reviewedFiles\":[\"main.go\"],\"findings\":[]}'\n")
+	for _, runAs := range []string{"", "root", "no-such-user-xyz"} {
+		cfg := copilotConfig(path)
+		cfg.RunAsUser = runAs
+		if _, err := executors.NewCopilotExecutor(cfg); err == nil {
+			t.Fatalf("run-as user %q accepted", runAs)
+		}
+	}
+	cfg := copilotConfig(path)
+	cfg.Environment = map[string]string{"COPILOT_GITHUB_TOKEN": "ghp_copilot_secret"}
+	executor, err := executors.NewCopilotExecutor(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(fakeSudoLog)
+	if _, err := executor.Start(context.Background(), executors.AttemptEnvelope{
+		TaskID: "t", AttemptID: "a", Workspace: t.TempDir(), Objective: "review",
+		PayloadJSON: json.RawMessage(`{"repo":"shop","pr":1,"sourceCommit":"a","targetCommit":"b"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logged, err := os.ReadFile(fakeSudoLog)
+	if err != nil || !strings.Contains(string(logged), "-u "+modelruntest.User+" -- /usr/bin/timeout") {
+		t.Fatalf("copilot did not go through the launcher: %q (%v)", logged, err)
+	}
+	if strings.Contains(string(logged), "ghp_copilot_secret") {
+		t.Fatalf("token on the launcher argv: %q", logged)
 	}
 }

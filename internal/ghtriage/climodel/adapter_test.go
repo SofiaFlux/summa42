@@ -11,42 +11,25 @@ import (
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/modelrun/modelruntest"
 )
 
-const testUser = "summa42-model-test"
+const testUser = modelruntest.User
 
 var testHome, fakeSudoLog string
 
-// TestMain swaps the real sudo for a script that drops its "-n -u user --"
-// prefix and runs the rest directly, and the user database for one fake model
-// user, so the whole argv contract is exercised without privileges.
+// TestMain swaps the real sudo for a script that drops its options and runs the
+// rest directly, and the user database for one fake model user, so the whole
+// argv contract is exercised without privileges.
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "climodel-test")
+	home, sudoLog, cleanup, err := modelruntest.Install()
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(dir)
-	testHome = filepath.Join(dir, "home")
-	if err := os.MkdirAll(filepath.Join(testHome, "tmp"), 0o755); err != nil {
-		panic(err)
-	}
-	fakeSudoLog = filepath.Join(dir, "sudo.log")
-	fake := filepath.Join(dir, "fakesudo")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + fakeSudoLog + "\nshift 4\nexec \"$@\"\n"
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		panic(err)
-	}
-	launchPrefix = func(runAs string) []string { return []string{fake, "-n", "-u", runAs, "--"} }
-	lookupUser = func(name string) (*user.User, error) {
-		switch name {
-		case testUser:
-			return &user.User{Uid: "4242", Username: name, HomeDir: testHome}, nil
-		case "root":
-			return &user.User{Uid: "0", Username: name, HomeDir: "/root"}, nil
-		}
-		return user.Lookup(name)
-	}
-	os.Exit(m.Run())
+	testHome, fakeSudoLog = home, sudoLog
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
 }
 
 // writeScript creates an executable that consumes the prompt on stdin and
@@ -455,10 +438,10 @@ func TestRunLaunchesAsTheModelUserWithACleanEnvironment(t *testing.T) {
 		t.Fatalf("model saw %q, want %q", out.Reason, want)
 	}
 	logged, err := os.ReadFile(fakeSudoLog)
-	if err != nil || !strings.HasPrefix(string(logged), "-n -u "+testUser+" -- /usr/bin/env -i") {
-		t.Fatalf("launcher saw %q (%v), want sudo -n -u %s -- /usr/bin/env -i ...", logged, err, testUser)
+	if err != nil || !strings.HasPrefix(string(logged), "-n --preserve-env=ALLOWED -u "+testUser+" -- /usr/bin/timeout --kill-after=15s 5s /bin/sh -c") {
+		t.Fatalf("launcher saw %q (%v), want sudo -n --preserve-env=ALLOWED -u %s -- timeout ...", logged, err, testUser)
 	}
-	if strings.Contains(string(logged), "/home/box-owner") || strings.Contains(string(logged), "secret") {
+	if strings.Contains(string(logged), "/home/box-owner") || strings.Contains(string(logged), "secret") || strings.Contains(string(logged), "ALLOWED=yes") {
 		t.Fatalf("Box state leaked into the launch command: %q", logged)
 	}
 }

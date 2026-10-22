@@ -34,14 +34,37 @@ type PlannerConfig struct {
 	MaxPlanFailures int           // default 3; the case is held after this many failures
 }
 
-func (c PlannerConfig) withDefaults() PlannerConfig {
+// planCaseReserve is the budget one case needs before it may start: one model
+// call, or two (file selection, then plan) in allowed-prefix grounding mode.
+func planCaseReserve(modelTimeout time.Duration, grounded bool) time.Duration {
+	if grounded {
+		return 2 * modelTimeout
+	}
+	return modelTimeout
+}
+
+// PlanStageTimeout is the least time a plan stage must be given so that a tick
+// can start at least one case: the per-case reserve in grounding mode plus the
+// tick margin.
+func PlanStageTimeout(modelTimeout time.Duration) time.Duration {
+	if modelTimeout <= 0 {
+		modelTimeout = 60 * time.Second
+	}
+	return planCaseReserve(modelTimeout, true) + planTickMargin
+}
+
+const planTickMargin = 5 * time.Minute
+
+func (c PlannerConfig) withDefaults(reserve time.Duration) PlannerConfig {
 	if c.ModelTimeout <= 0 {
 		c.ModelTimeout = 60 * time.Second
 	}
 	if c.TickBudget <= 0 {
-		// Room for at least one full model call plus the usual overhead.
-		c.TickBudget = max(5*time.Minute, c.ModelTimeout+5*time.Minute)
+		// Room for the per-case reserve plus the usual overhead.
+		c.TickBudget = max(5*time.Minute, reserve+planTickMargin)
 	}
+	// A budget below one case's reserve would defer every case, every tick.
+	c.TickBudget = max(c.TickBudget, reserve)
 	if c.MaxPlanFailures <= 0 {
 		c.MaxPlanFailures = 3
 	}
@@ -77,7 +100,12 @@ func (p *Planner) Tick(ctx context.Context, missionID domain.ID) (PlannerResult,
 	if p == nil || p.cases == nil || p.evidence == nil || p.model == nil {
 		return PlannerResult{}, errors.New("planner is not configured")
 	}
-	cfg := p.cfg.withDefaults()
+	cfg := p.cfg
+	if cfg.ModelTimeout <= 0 {
+		cfg.ModelTimeout = 60 * time.Second
+	}
+	reserve := planCaseReserve(cfg.ModelTimeout, p.grounding != nil && len(p.grounding.AllowedPrefixes) > 0)
+	cfg = cfg.withDefaults(reserve)
 	started := time.Now()
 	candidates, caseErrs, err := p.gate.List(ctx, missionID)
 	if err != nil {
@@ -86,10 +114,6 @@ func (p *Planner) Tick(ctx context.Context, missionID domain.ID) (PlannerResult,
 	var result PlannerResult
 	for _, ce := range caseErrs {
 		result.Failures = append(result.Failures, ce.Error())
-	}
-	reserve := cfg.ModelTimeout
-	if p.grounding != nil && len(p.grounding.AllowedPrefixes) > 0 {
-		reserve *= 2 // file selection plus plan
 	}
 	for i, candidate := range candidates {
 		if time.Since(started)+reserve > cfg.TickBudget {

@@ -95,7 +95,7 @@ func workerRuntimeConfigFor(t *testing.T, ctx context.Context, config localconfi
 	if err != nil {
 		t.Fatal(err)
 	}
-	copilot, err := buildCopilotExecutorFromEnv()
+	copilot, err := buildCopilotExecutorFromEnv("nobody")
 	if err != nil {
 		t.Fatal(err)
 	}

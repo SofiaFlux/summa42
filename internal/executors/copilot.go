@@ -6,15 +6,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/SofiaFlux/summa42/internal/domain"
 	"os/exec"
+	"os/user"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/SofiaFlux/summa42/internal/domain"
+	"github.com/SofiaFlux/summa42/internal/modelrun"
 )
 
 type CopilotConfig struct {
-	Path         string
+	Path string
+	// RunAsUser is the dedicated OS user the CLI runs as (required, fail closed).
+	RunAsUser    string
 	Model        string
 	MCPServer    string
 	AllowedTools []string
@@ -24,6 +30,7 @@ type CopilotConfig struct {
 
 type CopilotExecutor struct {
 	path        string
+	runAs       *user.User
 	model       string
 	server      string
 	tools       []string
@@ -96,6 +103,17 @@ func NewCopilotExecutor(config CopilotConfig) (*CopilotExecutor, error) {
 	if config.Timeout <= 0 {
 		return nil, errors.New("copilot timeout must be positive")
 	}
+	runAs, err := modelrun.ResolveRunAsUser(config.RunAsUser)
+	if err != nil {
+		return nil, fmt.Errorf("copilot: %w", err)
+	}
+	path, err := exec.LookPath(config.Path)
+	if err != nil {
+		return nil, fmt.Errorf("copilot binary %q is not usable: %w", config.Path, err)
+	}
+	if path, err = filepath.Abs(path); err != nil {
+		return nil, err
+	}
 	server := strings.TrimSpace(config.MCPServer)
 	if !copilotServerPattern.MatchString(server) {
 		return nil, fmt.Errorf("copilot MCP server %q is invalid", config.MCPServer)
@@ -134,7 +152,8 @@ func NewCopilotExecutor(config CopilotConfig) (*CopilotExecutor, error) {
 		}
 	}
 	return &CopilotExecutor{
-		path:        config.Path,
+		path:        path,
+		runAs:       runAs,
 		model:       strings.TrimSpace(config.Model),
 		server:      server,
 		tools:       qualified,
@@ -183,9 +202,12 @@ func (e *CopilotExecutor) Start(ctx context.Context, envelope AttemptEnvelope) (
 	runCtx, cancel := context.WithTimeout(ctx, e.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(runCtx, e.path, args...)
-	cmd.Dir = workspace
-	cmd.Env = environmentList(e.environment)
+	cmd, err := modelrun.Command(runCtx, modelrun.Spec{
+		RunAs: e.runAs, Binary: e.path, Args: args, Dir: workspace, Env: e.environment, Timeout: e.timeout,
+	})
+	if err != nil {
+		return ExecutionResult{}, err
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

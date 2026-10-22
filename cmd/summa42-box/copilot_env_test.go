@@ -1,7 +1,10 @@
 package main
 
 import (
+	"time"
+
 	"flag"
+	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"slices"
 	"strings"
 	"testing"
@@ -9,7 +12,7 @@ import (
 
 func TestBuildCopilotExecutorAbsentWithoutPath(t *testing.T) {
 	t.Setenv("SUMMA42_COPILOT_PATH", "")
-	executors, err := buildCopilotExecutorFromEnv()
+	executors, err := buildCopilotExecutorFromEnv("nobody")
 	if err != nil || executors != nil {
 		t.Fatalf("result = %v, %v; want nil, nil", executors, err)
 	}
@@ -18,7 +21,7 @@ func TestBuildCopilotExecutorAbsentWithoutPath(t *testing.T) {
 func TestBuildCopilotExecutorRejectsBadConfig(t *testing.T) {
 	t.Setenv("SUMMA42_COPILOT_PATH", "/bin/true")
 	t.Setenv("SUMMA42_COPILOT_TOOLS", "shell")
-	if _, err := buildCopilotExecutorFromEnv(); err == nil {
+	if _, err := buildCopilotExecutorFromEnv("nobody"); err == nil {
 		t.Fatal("accepted shell tool")
 	}
 }
@@ -28,7 +31,7 @@ func TestBuildCopilotExecutorDefaultsReadTools(t *testing.T) {
 	t.Setenv("SUMMA42_COPILOT_TOOLS", "")
 	t.Setenv("SUMMA42_COPILOT_MCP_SERVER", "ado")
 	t.Setenv("SUMMA42_COPILOT_TIMEOUT", "")
-	built, err := buildCopilotExecutorFromEnv()
+	built, err := buildCopilotExecutorFromEnv("nobody")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +49,7 @@ func TestBuildCopilotExecutorDoesNotLeakNonAllowlistedEnv(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin:/bin")
 	t.Setenv("GH_TOKEN", "token-value")
 	t.Setenv("COPILOT_MODEL", "env-model")
-	built, err := buildCopilotExecutorFromEnv()
+	built, err := buildCopilotExecutorFromEnv("nobody")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,5 +91,25 @@ func TestModelEnvFlagRejectsCredentials(t *testing.T) {
 	config, err := triageModelConfig(flags)
 	if err != nil || !slices.Equal(config.EnvAllowlist, []string{"OPENAI_API_KEY", "FOO"}) {
 		t.Fatalf("config = %+v, %v", config, err)
+	}
+}
+
+func TestBuildCopilotExecutorFailsClosedWithoutAModelUser(t *testing.T) {
+	t.Setenv("SUMMA42_COPILOT_PATH", "/bin/true")
+	t.Setenv("SUMMA42_COPILOT_MCP_SERVER", "ado")
+	t.Setenv("SUMMA42_COPILOT_TOOLS", "")
+	t.Setenv("SUMMA42_COPILOT_TIMEOUT", "")
+	for _, runAs := range []string{"", "root"} {
+		if _, err := buildCopilotExecutorFromEnv(runAs); err == nil {
+			t.Fatalf("copilot built with run-as user %q", runAs)
+		}
+	}
+}
+
+func TestPipelineBatchTimeoutCoversThePlannerTickBudget(t *testing.T) {
+	for _, model := range []time.Duration{time.Minute, 10 * time.Minute, 30 * time.Minute} {
+		if got, need := pipelineBatchTimeout(model), ghtriage.PlanStageTimeout(model); got < need {
+			t.Fatalf("model %s: stage timeout %s is below the planner tick budget %s", model, got, need)
+		}
 	}
 }

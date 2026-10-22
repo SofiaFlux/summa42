@@ -6,54 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"os/user"
-	"strings"
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
+	"github.com/SofiaFlux/summa42/internal/modelrun"
 )
 
-// Seams for the user database and the privilege-drop launcher. Production uses
-// the real ones; the package tests substitute a fake sudo so no real user switch
-// is needed. They are unexported on purpose: there is no setting that lets a
-// deployment skip the dedicated user.
-var (
-	lookupUser    = user.Lookup
-	currentUser   = user.Current
-	launchPrefix  = func(runAs string) []string { return []string{"sudo", "-n", "-u", runAs, "--"} }
-	defaultPATH   = "/usr/local/bin:/usr/bin:/bin"
-	defaultLocale = "C.UTF-8"
-)
-
-// ResolveRunAsUser validates the dedicated model user: it must be named, exist,
-// and be neither the current user nor root. This is the fail-closed gate that
-// keeps a model process from ever sharing a uid with the Box's secrets.
-func ResolveRunAsUser(name string) (*user.User, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil, errors.New("model run-as user is required: set --model-user or SUMMA42_MODEL_USER to a dedicated OS user that cannot read the Box secrets (see scripts/setup-model-user.sh)")
-	}
-	target, err := lookupUser(name)
-	if err != nil {
-		return nil, fmt.Errorf("model run-as user %q is not usable: %w", name, err)
-	}
-	if name == "root" || target.Uid == "0" {
-		return nil, fmt.Errorf("model run-as user %q is root; models must run as a dedicated unprivileged user", name)
-	}
-	self, err := currentUser()
-	if err != nil {
-		return nil, fmt.Errorf("determine the current user: %w", err)
-	}
-	if self.Uid == target.Uid {
-		return nil, fmt.Errorf("model run-as user %q is the Box's own user; models must run as a different, dedicated user", name)
-	}
-	if target.HomeDir == "" || !strings.HasPrefix(target.HomeDir, "/") {
-		return nil, fmt.Errorf("model run-as user %q has no absolute home directory", name)
-	}
-	return target, nil
-}
+// ResolveRunAsUser is the fail-closed dedicated-user gate shared by every model
+// launcher; see modelrun.
+func ResolveRunAsUser(name string) (*user.User, error) { return modelrun.ResolveRunAsUser(name) }
 
 type Config struct {
 	// RunAsUser is the dedicated OS user model processes run as, through
@@ -70,8 +33,7 @@ type Config struct {
 }
 
 type Adapter struct {
-	runAs     string
-	home      string
+	runAs     *user.User
 	binary    string
 	args      []string
 	timeout   time.Duration
@@ -95,7 +57,7 @@ func New(config Config) (*Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("model binary %q is not usable: %w", config.Binary, err)
 	}
-	return &Adapter{runAs: target.Username, home: target.HomeDir, binary: resolved, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist}, nil
+	return &Adapter{runAs: target, binary: resolved, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist}, nil
 }
 
 // Timeout is the per-call model timeout.
@@ -193,15 +155,12 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
-	argv := a.argv()
-	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
-	// The launcher itself carries no Box state: sudo resets the environment and
-	// the model's own environment is given on the env command line. "/" because
-	// the Box's cwd may not be reachable by the model user; env -C moves the
-	// model into its own home once the user switch is done.
-	cmd.Env = []string{"PATH=" + a.envValue("PATH", defaultPATH)}
-	cmd.Dir = "/"
-	isolateProcessTree(cmd)
+	cmd, err := modelrun.Command(runCtx, modelrun.Spec{
+		RunAs: a.runAs, Binary: a.binary, Args: a.args, Allowlist: a.allowlist, Timeout: a.timeout,
+	})
+	if err != nil {
+		return nil, err
+	}
 	cmd.Stdin = bytes.NewReader(prompt)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -223,44 +182,4 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 		return nil, fmt.Errorf("model invocation failed: %w: %s", err, stderr.String())
 	}
 	return stdout.Bytes(), nil
-}
-
-func (a *Adapter) envValue(name, fallback string) string {
-	if v, ok := os.LookupEnv(name); ok && v != "" {
-		return v
-	}
-	return fallback
-}
-
-// argv is the whole launch command: the privilege drop, then env -i so the
-// model sees only what is listed here. HOME is the model user's own home and
-// TMPDIR a private directory inside it; the Box's HOME never appears.
-func (a *Adapter) argv() []string {
-	argv := append([]string{}, launchPrefix(a.runAs)...)
-	argv = append(argv, "/usr/bin/env", "-i", "-C", a.home,
-		"HOME="+a.home,
-		"PATH="+a.envValue("PATH", defaultPATH),
-		"LANG="+a.envValue("LANG", defaultLocale),
-		"TMPDIR="+a.home+"/tmp",
-	)
-	argv = append(argv, a.childEnv()...)
-	argv = append(argv, a.binary)
-	return append(argv, a.args...)
-}
-
-// childEnv is the allowlisted Box variables forwarded to the model, each only
-// when present. HOME, PATH, TMPDIR and LANG are fixed by argv and cannot be
-// overridden through the allowlist.
-func (a *Adapter) childEnv() []string {
-	env := []string{}
-	for _, name := range a.allowlist {
-		switch name {
-		case "HOME", "PATH", "TMPDIR", "LANG":
-			continue
-		}
-		if value, ok := os.LookupEnv(name); ok {
-			env = append(env, name+"="+value)
-		}
-	}
-	return env
 }
