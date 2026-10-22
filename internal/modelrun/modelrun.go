@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"os/user"
@@ -37,6 +38,7 @@ var (
 	}
 	timeoutBinary = "/usr/bin/timeout"
 	killBinary    = "/bin/kill"
+	killAllBinary = "/bin/kill"
 	killGrace     = 10 * time.Second
 	shellBinary   = "/bin/sh"
 	defaultPATH   = DefaultPATH
@@ -69,26 +71,44 @@ const pgidMarker = "__S42_PGID="
 // and be neither the current user nor root. This is the fail-closed gate that
 // keeps a model process from ever sharing a uid with the Box's secrets.
 func ResolveRunAsUser(name string) (*user.User, error) {
+	return resolveUser(name, "model run-as user", "set --model-user or SUMMA42_MODEL_USER to a dedicated OS user that cannot read the Box secrets (see scripts/setup-model-user.sh)")
+}
+
+// ResolveValidationUser is the same gate for the user that runs validation
+// commands (candidate code). It must also differ from the model user: the
+// model user holds the CLI logins, which candidate code must never reach.
+func ResolveValidationUser(name string, modelUser *user.User) (*user.User, error) {
+	target, err := resolveUser(name, "validation user", "set --validation-user or SUMMA42_VALIDATION_USER to a dedicated OS user with no credentials (see scripts/setup-model-user.sh)")
+	if err != nil {
+		return nil, err
+	}
+	if modelUser == nil || modelUser.Uid == target.Uid || modelUser.Username == target.Username {
+		return nil, fmt.Errorf("validation user %q must differ from the model user: candidate code must not run with the model's logins", name)
+	}
+	return target, nil
+}
+
+func resolveUser(name, role, hint string) (*user.User, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return nil, errors.New("model run-as user is required: set --model-user or SUMMA42_MODEL_USER to a dedicated OS user that cannot read the Box secrets (see scripts/setup-model-user.sh)")
+		return nil, fmt.Errorf("%s is required: %s", role, hint)
 	}
 	target, err := lookupUser(name)
 	if err != nil {
-		return nil, fmt.Errorf("model run-as user %q is not usable: %w", name, err)
+		return nil, fmt.Errorf("%s %q is not usable: %w", role, name, err)
 	}
 	if name == "root" || target.Uid == "0" {
-		return nil, fmt.Errorf("model run-as user %q is root; models must run as a dedicated unprivileged user", name)
+		return nil, fmt.Errorf("%s %q is root; processes must run as a dedicated unprivileged user", role, name)
 	}
 	self, err := currentUser()
 	if err != nil {
 		return nil, fmt.Errorf("determine the current user: %w", err)
 	}
 	if self.Uid == target.Uid {
-		return nil, fmt.Errorf("model run-as user %q is the Box's own user; models must run as a different, dedicated user", name)
+		return nil, fmt.Errorf("%s %q is the Box's own user; it must be a different, dedicated user", role, name)
 	}
 	if target.HomeDir == "" || !strings.HasPrefix(target.HomeDir, "/") {
-		return nil, fmt.Errorf("model run-as user %q has no absolute home directory", name)
+		return nil, fmt.Errorf("%s %q has no absolute home directory", role, name)
 	}
 	return target, nil
 }
@@ -109,6 +129,10 @@ type Spec struct {
 	// removed when the call ends. Stale ones (older than a day, e.g. after a
 	// SIGKILL) are swept at the start of the next scratch call. Not with Dir.
 	Scratch bool
+	// Unreadable lists extra paths this user must not be able to read (for
+	// example another model user's home). They are probed like the registered
+	// Box paths, once per user and path, and a missing one refuses.
+	Unreadable []string
 	// Allowlist names the Box environment variables forwarded to the model.
 	// Values travel in the launcher's environment (never argv), so they are not
 	// shown in ps or logged by sudo. HOME, PATH, TMPDIR and LANG are fixed.
@@ -259,7 +283,9 @@ func validEnvName(name string) bool {
 }
 
 // Cmd is an exec.Cmd whose cancellation reaches the model user's processes.
-// Run and Start/Wait must be used (not Output), so the pgid marker is read.
+// Run and Start/Wait must be used, so the pgid marker is read; the promoted
+// Output and CombinedOutput would skip the marker filter and are shadowed with
+// methods that refuse.
 type Cmd struct {
 	*exec.Cmd
 	runAs    string
@@ -290,7 +316,21 @@ func (c *Cmd) Wait() error {
 	if c.filter != nil {
 		c.filter.flush()
 	}
+	if c.pgid.Load() == 0 {
+		log.Printf("modelrun: no process-group marker from the launcher for user %s: an early cancel falls back to local signals and may not stop its processes", c.runAs)
+	}
 	return err
+}
+
+// Output is not supported: it would bypass the marker filter and leave
+// cancellation without a process group to signal. Set Stdout and call Run.
+func (c *Cmd) Output() ([]byte, error) {
+	return nil, errors.New("modelrun: Output is not supported; set Stdout and use Run")
+}
+
+// CombinedOutput is not supported either; see Output.
+func (c *Cmd) CombinedOutput() ([]byte, error) {
+	return nil, errors.New("modelrun: CombinedOutput is not supported; set Stdout and Stderr and use Run")
 }
 
 func (c *Cmd) Run() error {
@@ -326,7 +366,13 @@ func (c *Cmd) killModelGroup(pgid int64) {
 	}()
 }
 
-// markerFilter removes the first stderr line when it is the pgid marker.
+// sudoPrefix starts every line sudo itself prints (for example "sudo: unable
+// to resolve host ..."). Only sudo runs before the prologue, so such lines
+// ahead of the marker are sudo's, never the model's.
+const sudoPrefix = "sudo: "
+
+// markerFilter removes the pgid marker line, which is the first line the
+// launcher's prologue prints; lines sudo printed before it pass through.
 type markerFilter struct {
 	dst     io.Writer
 	found   func(int64)
@@ -342,27 +388,39 @@ func (f *markerFilter) Write(p []byte) (int, error) {
 		return f.dst.Write(p)
 	}
 	f.buf = append(f.buf, p...)
-	line, rest, ok := bytes.Cut(f.buf, []byte("\n"))
-	if !ok {
-		compatible := strings.HasPrefix(pgidMarker, string(f.buf)) || bytes.HasPrefix(f.buf, []byte(pgidMarker))
-		if compatible && len(f.buf) < 32 {
-			return len(p), nil
+	for {
+		line, rest, ok := bytes.Cut(f.buf, []byte("\n"))
+		if !ok {
+			compatible := strings.HasPrefix(pgidMarker, string(f.buf)) || bytes.HasPrefix(f.buf, []byte(pgidMarker))
+			if compatible && len(f.buf) < 32 {
+				return len(p), nil
+			}
+			if (strings.HasPrefix(sudoPrefix, string(f.buf)) || bytes.HasPrefix(f.buf, []byte(sudoPrefix))) && len(f.buf) < 1024 {
+				return len(p), nil
+			}
+			return len(p), f.release()
+		}
+		if bytes.HasPrefix(line, []byte(sudoPrefix)) {
+			if _, err := f.dst.Write(f.buf[:len(line)+1]); err != nil {
+				return len(p), err
+			}
+			f.buf = append([]byte(nil), rest...)
+			continue
+		}
+		f.decided = true
+		if bytes.HasPrefix(line, []byte(pgidMarker)) {
+			if pgid, err := strconv.ParseInt(string(line[len(pgidMarker):]), 10, 64); err == nil {
+				f.found(pgid)
+				f.buf = nil
+				if len(rest) > 0 {
+					_, err := f.dst.Write(rest)
+					return len(p), err
+				}
+				return len(p), nil
+			}
 		}
 		return len(p), f.release()
 	}
-	f.decided = true
-	if bytes.HasPrefix(line, []byte(pgidMarker)) {
-		if pgid, err := strconv.ParseInt(string(line[len(pgidMarker):]), 10, 64); err == nil {
-			f.found(pgid)
-			f.buf = nil
-			if len(rest) > 0 {
-				_, err := f.dst.Write(rest)
-				return len(p), err
-			}
-			return len(p), nil
-		}
-	}
-	return len(p), f.release()
 }
 
 // release passes the held bytes through unchanged.
@@ -380,4 +438,33 @@ func (f *markerFilter) flush() {
 	if !f.decided && len(f.buf) > 0 {
 		_ = f.release()
 	}
+}
+
+// Sweep is the backstop after a run as a dedicated user: it kills every
+// process the user still has (an escaped double-fork included) and removes the
+// user's scratch directories. It is only safe for a user that has no other
+// work in flight, so callers serialize their runs per user. Best effort: the
+// error is for logging.
+func Sweep(ctx context.Context, runAs *user.User) error {
+	if runAs == nil || runAs.HomeDir == "" {
+		return errors.New("sweep: user is not resolved")
+	}
+	run := func(args ...string) ([]byte, error) {
+		argv := append(launchPrefix(runAs.Username, nil), args...)
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		cmd.Env = []string{"PATH=" + defaultPATH}
+		cmd.Dir = "/"
+		return cmd.CombinedOutput()
+	}
+	var errs []error
+	// kill -1 exits 1 with "No such process" when the user has nothing left,
+	// which is the normal case and not an error.
+	if out, err := run(killAllBinary, "-KILL", "-1"); err != nil && !bytes.Contains(out, []byte("No such process")) {
+		errs = append(errs, fmt.Errorf("kill all processes of %s: %w: %s", runAs.Username, err, strings.TrimSpace(string(out))))
+	}
+	const clean = `for d in "$1"/run.*; do [ -e "$d" ] || continue; chmod -R u+rwX -- "$d" 2>/dev/null; rm -rf -- "$d"; done`
+	if out, err := run("/usr/bin/env", "-i", "PATH="+defaultPATH, shellBinary, "-c", clean, "sh", runAs.HomeDir+"/tmp"); err != nil {
+		errs = append(errs, fmt.Errorf("remove scratch directories of %s: %w: %s", runAs.Username, err, strings.TrimSpace(string(out))))
+	}
+	return errors.Join(errs...)
 }

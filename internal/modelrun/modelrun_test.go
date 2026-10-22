@@ -1,6 +1,7 @@
 package modelrun_test
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/user"
@@ -48,7 +49,7 @@ func TestSecretsTravelInEnvironmentNotArgv(t *testing.T) {
 			t.Fatalf("secret on argv: %q", a)
 		}
 	}
-	out, err := cmd.Output()
+	out, err := runOutput(cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +266,7 @@ func TestScratchGivesAPrivatePerRunDirectoryThatIsRemoved(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out, err := cmd.Output()
+		out, err := runOutput(cmd)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -322,7 +323,7 @@ func TestLowercaseAllowlistNamesKeepTheBoxValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := cmd.Output()
+	out, err := runOutput(cmd)
 	if err != nil || string(out) != "box-dir|box-home|box-path|box-lang" {
 		t.Fatalf("%q %v", out, err)
 	}
@@ -371,7 +372,7 @@ func TestModelGetsTheFixedPathNotTheBoxPath(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		out, err := cmd.Output()
+		out, err := runOutput(cmd)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -439,4 +440,12 @@ func TestProbeNeedsAWorkingLauncher(t *testing.T) {
 	if _, err := modelrun.Command(context.Background(), modelrun.Spec{RunAs: fakeUser(home), Binary: "/bin/true", Timeout: 20 * time.Second}); err == nil {
 		t.Fatal("a launcher that fails every command passed the probe")
 	}
+}
+
+// runOutput is Output for a modelrun.Cmd, which refuses the promoted one.
+func runOutput(cmd *modelrun.Cmd) ([]byte, error) {
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	return out.Bytes(), err
 }

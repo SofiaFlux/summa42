@@ -10,6 +10,8 @@ import (
 // It exists for the modelruntest helper only.
 func SetSeamsForTest(sudo string, lookup func(string) (*user.User, error)) {
 	lookupUser = lookup
+	// Never the real kill -1: the fake sudo keeps the test's own uid.
+	killAllBinary = "/bin/true"
 	launchPrefix = func(runAs string, preserve []string) []string {
 		argv := []string{sudo, "-n"}
 		if len(preserve) > 0 {
