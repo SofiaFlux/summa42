@@ -109,3 +109,19 @@ func hasAssessmentReason(t *testing.T, f *driverFixture, reason string) bool {
 	}
 	return false
 }
+
+// A provider quota or rate limit is not the case's fault: any number of them
+// leaves the case ACTIVE, and the next real answer is used.
+func TestProviderUnavailableNeverHoldsCase(t *testing.T) {
+	f, model := readyPlanReview(t, true)
+	quota := fmt.Errorf("model invocation failed: %w: You've reached today's limit", ghtriage.ErrModelUnavailable)
+	m := &failingReviewModel{planReviewModel: *model, errs: []error{quota, quota, quota, quota, quota}}
+	tickReview(t, f, m, 5)
+	if f.caseState(t, fixtureRevision) != string(workflowcase.Active) {
+		t.Fatalf("quota errors held the case: %s", f.caseState(t, fixtureRevision))
+	}
+	tickReview(t, f, m, 1)
+	if m.calls != 6 || hasAssessmentReason(t, f, "plan-review-failed:unavailable") {
+		t.Fatalf("calls=%d; the review after the quota errors must run and no unavailable hold be recorded", m.calls)
+	}
+}

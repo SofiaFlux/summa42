@@ -27,12 +27,18 @@ type parseError struct{ err error }
 func (e *parseError) Error() string { return e.err.Error() }
 func (e *parseError) Unwrap() error { return e.err }
 
-// failureClass is one of timeout, model-exit, parse, validation, internal.
+// ErrModelUnavailable marks a model call refused by the provider (quota or rate
+// limit). It is not the case's fault, so it never counts toward holding the case.
+var ErrModelUnavailable = errors.New("model provider unavailable (quota or rate limit)")
+
+// failureClass is one of unavailable, timeout, model-exit, parse, validation, internal.
 func failureClass(err error) string {
 	var parse *parseError
 	var f *planFailure
 	var exit *exec.ExitError
 	switch {
+	case errors.Is(err, ErrModelUnavailable):
+		return "unavailable"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
 	case errors.As(err, &parse):
@@ -59,7 +65,9 @@ func failStage(ctx context.Context, cases *workflowcase.Service, ex *execution.S
 	class := failureClass(cause)
 	signature := failureSignature(stage, c.CurrentWorkID, cause)
 	prior := 0
-	if transientClass(class) {
+	// Unavailable is numbered like the transient classes, so repeats never trip
+	// the same-signature block, but it is never counted toward the hold.
+	if transientClass(class) || class == "unavailable" {
 		var err error
 		if prior, err = ex.CountFailures(ctx, taskID, signature+"#"); err != nil {
 			return err

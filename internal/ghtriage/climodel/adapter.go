@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"os/user"
+	"strings"
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
@@ -196,6 +197,9 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 		if runCtx.Err() != nil {
 			return nil, fmt.Errorf("model invocation timed out: %w: %s", runCtx.Err(), stderr.String())
 		}
+		if providerRefused(stderr.String() + stdout.String()) {
+			return nil, fmt.Errorf("model invocation failed: %w: %w: %s", ghtriage.ErrModelUnavailable, err, stderr.String())
+		}
 		return nil, fmt.Errorf("model invocation failed: %w: %s", err, stderr.String())
 	}
 	if a.commandCode {
@@ -223,4 +227,17 @@ func (a *Adapter) env() map[string]string {
 		return map[string]string{"CMD_ZDR": "1"}
 	}
 	return nil
+}
+
+// providerRefused reports a quota or rate-limit refusal in model CLI output.
+// ponytail: substring list of the messages seen from Command Code and Codex;
+// extend it when another CLI words its limit differently.
+func providerRefused(output string) bool {
+	lower := strings.ToLower(output)
+	for _, marker := range []string{"reached today's limit", "rate limit", "usage limit", "quota exceeded"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }

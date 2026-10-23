@@ -916,3 +916,31 @@ func TestRunPropagatesTickError(t *testing.T) {
 		t.Fatal("expected tick error")
 	}
 }
+
+// A case past triage owns its next task through its own stage; intake must not
+// claim that work's idempotency key with a triage template.
+func TestObserveOnceLeavesWorkPastTriageToItsStage(t *testing.T) {
+	f := setupObserve(t)
+	lister := func() *stubLister {
+		return &stubLister{name: "o/r", pages: []stubPage{{items: []any{wireIssue()}}}}
+	}
+	first, err := ObserveOnce(f.ctx, lister(), f.cases, f.execSvc, f.evidenceStore, f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caseID := first.Ensured[0]
+	if _, err := f.store.DB().ExecContext(f.ctx, `UPDATE workflow_cases SET current_work_id = 'work_plan_review', next_work_json = ? WHERE case_id = ?`,
+		`{"Kind":"github.issue.plan.review","RequiredCapabilities":["github.issue.read"],"AuthorityCeiling":["github.issue.read"]}`, caseID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := ObserveOnce(f.ctx, lister(), f.cases, f.execSvc, f.evidenceStore, f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Failed) != 0 || len(second.Materialized) != 0 || len(second.Ensured) != 1 || second.Ensured[0] != caseID {
+		t.Fatalf("result = %+v, want the case ensured and nothing materialized", second)
+	}
+	if _, found, err := f.execSvc.FindByIdempotencyKey(f.ctx, "work_plan_review"); err != nil || found {
+		t.Fatalf("intake materialized the plan-review work (found=%v, err=%v)", found, err)
+	}
+}

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/SofiaFlux/summa42/internal/ghtriage"
 )
 
 // commandCodeFree lists the Command Code model ids billed at $0. Any other id
@@ -105,6 +107,8 @@ func commandCodeAnswer(out []byte) ([]byte, error) {
 	switch {
 	case last == nil:
 		return nil, errors.New("command code: no result line")
+	case last.Subtype != "success" && providerRefused(last.Error):
+		return nil, fmt.Errorf("command code: %w: %s", ghtriage.ErrModelUnavailable, last.Error)
 	case last.Subtype != "success":
 		return nil, fmt.Errorf("command code: %s: %s", last.Subtype, last.Error)
 	case strings.TrimSpace(last.FinalText) == "":

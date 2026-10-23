@@ -218,7 +218,7 @@ func observeIssue(ctx context.Context, cases *workflowcase.Service, execSvc *exe
 		MissionID: cfg.MissionID, Source: "github", ObjectID: issue.ObjectID(), RevisionID: issue.RevisionID(),
 		EvidenceID: string(object.ID),
 		FirstWork: workflow.WorkProposal{
-			Kind: "github.issue.triage", RequiredCapabilities: cfg.effectiveCapabilities(),
+			Kind: triageWorkKind, RequiredCapabilities: cfg.effectiveCapabilities(),
 			AuthorityCeiling: append([]string(nil), cfg.Grant.Capabilities...),
 		},
 		Grant: cfg.Grant, MaxSteps: cfg.MaxSteps, RemainingBudget: cfg.RemainingBudget,
@@ -232,11 +232,20 @@ func observeIssue(ctx context.Context, cases *workflowcase.Service, execSvc *exe
 	return nil
 }
 
+// triageWorkKind is the first work of every issue case.
+const triageWorkKind = "github.issue.triage"
+
 // materializeHit rebuilds the Task of an already-registered case. The request
 // hash covers the envelope, objective and payload, so those come from the
 // already-materialized work keyed by the case's current work ID: deriving them
 // from mutable config would fail the replay and brick a live case.
 func materializeHit(ctx context.Context, cases *workflowcase.Service, execSvc *execution.Service, cfg ObserveConfig, issue Issue, existing workflowcase.Case, result *ObserveResult) error {
+	// Past triage, the case's own stage materializes its work; a triage
+	// template here would take that work's idempotency key and brick the stage.
+	if existing.NextWork.Kind != triageWorkKind {
+		result.Ensured = append(result.Ensured, existing.ID)
+		return nil
+	}
 	template, err := taskTemplate(cfg, issue, existing.ObservationEvidenceID)
 	if err != nil {
 		return err

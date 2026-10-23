@@ -2,6 +2,7 @@ package climodel
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -147,5 +148,37 @@ func TestModelOutputIsCapped(t *testing.T) {
 	}
 	if _, err := b.Write([]byte("x")); err == nil {
 		t.Fatal("output past the cap was buffered")
+	}
+}
+
+func TestProviderLimitsAreMarkedUnavailable(t *testing.T) {
+	for name, stdout := range map[string]string{
+		"rate limit result": resultLine("error", "", "Rate limit exceeded"),
+		"other error":       resultLine("error", "", "model crashed"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			binary, _ := fakeCommandCode(t, stdout)
+			adapter, err := New(Config{RunAsUser: testUser, Binary: binary, CommandCodeModel: "reflection/beam:free", Timeout: 10 * time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = adapter.ReviewPlan(context.Background(), ghtriage.PlanReviewInput{Schema: ghtriage.PlanReviewVersion})
+			if got, want := errors.Is(err, ghtriage.ErrModelUnavailable), name == "rate limit result"; got != want {
+				t.Fatalf("unavailable = %v, want %v (err %v)", got, want, err)
+			}
+		})
+	}
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "cmd")
+	script := "#!/bin/sh\ncat > /dev/null\necho \"Error: You've reached today's limit on Glyph Cluster.\" >&2\nexit 5\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := New(Config{RunAsUser: testUser, Binary: binary, CommandCodeModel: "stealth/glyph-cluster:free", Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ReviewPlan(context.Background(), ghtriage.PlanReviewInput{Schema: ghtriage.PlanReviewVersion}); !errors.Is(err, ghtriage.ErrModelUnavailable) {
+		t.Fatalf("daily limit exit not marked unavailable: %v", err)
 	}
 }
