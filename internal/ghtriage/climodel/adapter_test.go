@@ -16,12 +16,19 @@ import (
 
 const testUser = modelruntest.User
 
+// realHost is set by realhost_test.go (build tag realhost).
+var realHost bool
+
 var testHome, fakeSudoLog string
 
 // TestMain swaps the real sudo for a script that drops its options and runs the
 // rest directly, and the user database for one fake model user, so the whole
-// argv contract is exercised without privileges.
+// argv contract is exercised without privileges. Under the realhost tag the
+// real sudo and users are used.
 func TestMain(m *testing.M) {
+	if realHost {
+		os.Exit(m.Run())
+	}
 	home, sudoLog, cleanup, err := modelruntest.Install()
 	if err != nil {
 		panic(err)

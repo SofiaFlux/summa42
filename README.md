@@ -177,7 +177,7 @@ Every `run-gh-*` command also has a `run-repo-*` alias (for example `run-repo-pi
 
 The tests use fakes. After `sudo scripts/setup-model-user.sh` on the real host, check the isolation yourself, as the Box owner (needs real sudo; the Windows/WSL gap is warning-only):
 
-Steps 3–6 and the probe check of step 8 are automated (as the Box owner, after the setup script): `S42_TOOLCHAIN=/usr/local/go1.27/bin go test -tags realhost -run RealHost -v ./internal/repoworkspace`. A cancelled (SIGKILLed) model call keeps its scratch directory until the day-old sweep of a later call.
+Steps 3–6 and the probe check of step 8 are automated (as the Box owner, after the setup script): `S42_TOOLCHAIN=/usr/local/go1.27/bin go test -tags realhost -run RealHost -v ./internal/repoworkspace`. A cancelled (SIGKILLed) model call keeps its scratch directory until the day-old sweep of a later call. One real model call (Command Code, free model, as `summa42-model`): `S42_CMD=/opt/summa42-node/bin/cmd go test -tags realhost -run RealHost -v ./internal/ghtriage/climodel`. Model binaries must be outside your home and executable by the model user, for example root-owned copies under `/opt` with `node` linked into `/usr/local/bin` (the model PATH is fixed).
 
 1. Run `sudo scripts/setup-model-user.sh` and confirm it exits 0. Then, for both users (`summa42-model`, `summa42-validate`), confirm each secret is unreadable. Each of these prints `1`:
    ```sh
