@@ -182,3 +182,28 @@ func TestGCRemovesTerminalAttemptDirs(t *testing.T) {
 		t.Fatal("relative root accepted")
 	}
 }
+
+func TestFitContextKeepsPinnedAndDropsWhatOverflows(t *testing.T) {
+	cfg := sourceFixture(t)
+	third := MaxContextBytes / 3
+	for name, size := range map[string]int{"a": third, "b": third, "big": MaxContextBytes, "c": third} {
+		os.WriteFile(filepath.Join(cfg.LocalPath, name), []byte(strings.Repeat("x", size)), 0600)
+	}
+	gitTest(t, cfg.LocalPath, "add", ".")
+	gitTest(t, cfg.LocalPath, "commit", "-qm", "files")
+	cfg.Commit = gitTest(t, cfg.LocalPath, "rev-parse", "HEAD")
+	got, err := FitContext(t.Context(), cfg.LocalPath, cfg.Commit, []string{"code.go", "a", "big", "b", "c"}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "code.go,a,b" {
+		t.Fatalf("fit = %v, want code.go,a,b (big and then c overflow)", got)
+	}
+	cfg.Paths = got
+	if _, err := Capture(t.Context(), cfg); err != nil {
+		t.Fatalf("fitted context does not capture: %v", err)
+	}
+	if got, err := FitContext(t.Context(), cfg.LocalPath, cfg.Commit, []string{"big", "a"}, 1); err != nil || strings.Join(got, ",") != "big" {
+		t.Fatalf("pinned file must be kept even when it overflows: %v %v", got, err)
+	}
+}

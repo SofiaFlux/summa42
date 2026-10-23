@@ -154,7 +154,11 @@ func (p *Planner) captureGrounding(ctx context.Context, repository string, issue
 		if err != nil {
 			return nil, err
 		}
-		capture.Paths = contextPaths(cfg.Source.Paths, selection.ContextFiles)
+		// The model sees paths, not sizes: drop the selected files that would
+		// overflow the context instead of failing the case on size alone.
+		if capture.Paths, err = repoworkspace.FitContext(ctx, capture.LocalPath, capture.Commit, contextPaths(cfg.Source.Paths, selection.ContextFiles), len(cfg.Source.Paths)); err != nil {
+			return nil, err
+		}
 		allowed = selection.AllowedPaths
 	}
 	snapshot, err := repoworkspace.Capture(ctx, capture)
