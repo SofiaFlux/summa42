@@ -154,6 +154,7 @@ func TestModelOutputIsCapped(t *testing.T) {
 func TestProviderLimitsAreMarkedUnavailable(t *testing.T) {
 	for name, stdout := range map[string]string{
 		"rate limit result": resultLine("error", "", "Rate limit exceeded"),
+		"withdrawn model":   resultLine("error", "", "MiniMax M3.1 Flash is no longer available."),
 		"other error":       resultLine("error", "", "model crashed"),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -163,7 +164,7 @@ func TestProviderLimitsAreMarkedUnavailable(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = adapter.ReviewPlan(context.Background(), ghtriage.PlanReviewInput{Schema: ghtriage.PlanReviewVersion})
-			if got, want := errors.Is(err, ghtriage.ErrModelUnavailable), name == "rate limit result"; got != want {
+			if got, want := errors.Is(err, ghtriage.ErrModelUnavailable), name != "other error"; got != want {
 				t.Fatalf("unavailable = %v, want %v (err %v)", got, want, err)
 			}
 		})

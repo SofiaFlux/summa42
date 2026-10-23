@@ -229,12 +229,13 @@ func (a *Adapter) env() map[string]string {
 	return nil
 }
 
-// providerRefused reports a quota or rate-limit refusal in model CLI output.
+// providerRefused reports a quota or rate-limit refusal, or a model the
+// provider has withdrawn, in model CLI output.
 // ponytail: substring list of the messages seen from Command Code and Codex;
 // extend it when another CLI words its limit differently.
 func providerRefused(output string) bool {
 	lower := strings.ToLower(output)
-	for _, marker := range []string{"reached today's limit", "rate limit", "usage limit", "quota exceeded"} {
+	for _, marker := range []string{"reached today's limit", "rate limit", "usage limit", "quota exceeded", "no longer available"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}

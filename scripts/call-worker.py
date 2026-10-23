@@ -109,7 +109,6 @@ COMMANDCODE_FREE_MODELS = {
     "poolside/laguna-s-2.1-free",
     "reflection/beam:free",
     "stealth/glyph-cluster:free",
-    "minimax/minimax-m3.1-flash:free",
 }
 COMMANDCODE_MAX_TURNS = 30
 
