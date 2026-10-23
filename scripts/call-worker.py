@@ -110,7 +110,7 @@ COMMANDCODE_FREE_MODELS = {
     "reflection/beam:free",
     "stealth/glyph-cluster:free",
 }
-COMMANDCODE_MAX_TURNS = 30
+COMMANDCODE_MAX_TURNS = 4
 
 
 def commandcode_check(model):

@@ -24,8 +24,16 @@ var commandCodeFree = []string{
 	"stealth/glyph-cluster:free",
 }
 
-// commandCodeMaxTurns bounds one headless cmd run.
-const commandCodeMaxTurns = 30
+// commandCodeMaxTurns bounds one headless cmd run. Every turn resends the whole
+// prompt (often 50k+ tokens), and the answer needs one; the slack covers a
+// model that reaches for a read-only tool anyway.
+const commandCodeMaxTurns = 4
+
+// commandCodePreamble goes before every Command Code prompt: cmd is an agent
+// with read-only tools in plan mode, and a model that explores its empty
+// scratch directory burns turns and the plan's pool for nothing.
+const commandCodePreamble = "Everything you need is in this message. Do not use any tools. " +
+	"Reply with the requested JSON object only: no Markdown, no code fence, no other text.\n\n"
 
 // looksLikeCommandCode catches the names the command-code package installs, so
 // a cmd launched without CommandCodeModel cannot skip the guards below.

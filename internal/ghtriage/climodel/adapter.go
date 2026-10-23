@@ -179,6 +179,9 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if a.commandCode {
+		prompt = append([]byte(commandCodePreamble), prompt...)
+	}
 	cmd.Stdin = bytes.NewReader(prompt)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -203,9 +206,29 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 		return nil, fmt.Errorf("model invocation failed: %w: %s", err, stderr.String())
 	}
 	if a.commandCode {
-		return commandCodeAnswer(stdout.Bytes())
+		answer, err := commandCodeAnswer(stdout.Bytes())
+		return unfence(answer), err
 	}
-	return stdout.Bytes(), nil
+	return unfence(stdout.Bytes()), nil
+}
+
+// unfence returns the body of an answer that is exactly one Markdown code
+// block (```json ... ```), which models add despite being told not to. The
+// body still goes through the strict parser; anything else is returned as is.
+func unfence(answer []byte) []byte {
+	trimmed := bytes.TrimSpace(answer)
+	if !bytes.HasPrefix(trimmed, []byte("```")) || !bytes.HasSuffix(trimmed, []byte("```")) || len(trimmed) < 6 {
+		return answer
+	}
+	body := trimmed[3 : len(trimmed)-3]
+	newline := bytes.IndexByte(body, '\n')
+	if newline < 0 || bytes.Contains(body, []byte("```")) {
+		return answer
+	}
+	if info := bytes.TrimSpace(body[:newline]); len(info) > 0 && !bytes.Equal(bytes.ToLower(info), []byte("json")) {
+		return answer
+	}
+	return bytes.TrimSpace(body[newline+1:])
 }
 
 // maxModelOutput bounds what the Box buffers from a model process, so a model

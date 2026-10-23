@@ -183,3 +183,40 @@ func TestProviderLimitsAreMarkedUnavailable(t *testing.T) {
 		t.Fatalf("daily limit exit not marked unavailable: %v", err)
 	}
 }
+
+func TestUnfenceOnlyUnwrapsOneWholeJSONBlock(t *testing.T) {
+	for in, want := range map[string]string{
+		"```json\n{\"a\":1}\n```":            `{"a":1}`,
+		"  ```JSON\n{\"a\":1}\n```\n":        `{"a":1}`,
+		"```\n{\"a\":1}\n```":                `{"a":1}`,
+		`{"a":1}`:                            `{"a":1}`,
+		"```python\nx = 1\n```":              "```python\nx = 1\n```",
+		"```json\n{}\n```\n```json\n{}\n```": "```json\n{}\n```\n```json\n{}\n```",
+		"Here: ```json\n{}\n```":             "Here: ```json\n{}\n```",
+	} {
+		if got := string(unfence([]byte(in))); got != want {
+			t.Errorf("unfence(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCommandCodePromptStartsWithTheNoToolsPreamble(t *testing.T) {
+	dir := t.TempDir()
+	stdinFile := filepath.Join(dir, "stdin")
+	binary := filepath.Join(dir, "cmd")
+	script := "#!/bin/sh\ncat > " + stdinFile + "\nprintf '%s\\n' '" + strings.ReplaceAll(resultLine("success", "```json\\n"+reviewAnswer+"\\n```", ""), "\n", "' '") + "'\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := New(Config{RunAsUser: testUser, Binary: binary, CommandCodeModel: "reflection/beam:free", Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ReviewPlan(context.Background(), ghtriage.PlanReviewInput{Schema: ghtriage.PlanReviewVersion}); err != nil {
+		t.Fatalf("fenced answer not accepted: %v", err)
+	}
+	got, _ := os.ReadFile(stdinFile)
+	if !strings.HasPrefix(string(got), commandCodePreamble+"{") {
+		t.Fatalf("prompt = %.120q, want the preamble then the JSON document", got)
+	}
+}
