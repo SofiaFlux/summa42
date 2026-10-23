@@ -67,3 +67,12 @@ func (g *groundingFlags) argv() []string {
 	})
 	return out
 }
+
+// planBase passes the pinned commit to plan review, so a plan grounded on an
+// older commit is held instead of reviewed.
+func planBase(g *groundingFlags) []string {
+	if g.sha == "" {
+		return nil
+	}
+	return []string{"--source-sha=" + g.sha}
+}

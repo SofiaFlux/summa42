@@ -294,3 +294,30 @@ func TestPlanReviewLeaseCoversASlowModelCall(t *testing.T) {
 		t.Fatalf("slow but healthy review lost its attempt: %+v %v", out, err)
 	}
 }
+
+// A plan grounded on another commit than the one the Box now pins is held
+// without asking the model: reviewing it against old code would be noise.
+func TestPlanReviewHoldsAPlanOnAStaleBase(t *testing.T) {
+	f, model := readyPlanReview(t, true)
+	stale := strings.Repeat("0", 40)
+	out, err := ghtriage.NewPlanReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model).WithBaseSHA(stale).Tick(f.ctx, f.missionID)
+	if err != nil || len(out.Failures) != 0 || model.calls != 0 {
+		t.Fatalf("stale plan: %+v calls=%d %v", out, model.calls, err)
+	}
+	if f.caseState(t, fixtureRevision) != string(workflowcase.Blocked) {
+		t.Fatalf("stale plan not held: %s", f.caseState(t, fixtureRevision))
+	}
+	base := groundingFixture(t).Source.Commit
+	if !hasAssessmentReason(t, f, "plan-review:stale-base:"+base) {
+		t.Fatal("hold does not name the plan's stale base")
+	}
+}
+
+func TestPlanReviewReviewsAPlanOnTheCurrentBase(t *testing.T) {
+	f, model := readyPlanReview(t, true)
+	base := groundingFixture(t).Source.Commit
+	out, err := ghtriage.NewPlanReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model).WithBaseSHA(base).Tick(f.ctx, f.missionID)
+	if err != nil || out.Reviewed != 1 || model.calls != 1 {
+		t.Fatalf("current plan: %+v calls=%d %v", out, model.calls, err)
+	}
+}

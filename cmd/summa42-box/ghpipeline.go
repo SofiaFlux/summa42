@@ -136,7 +136,7 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 				[]string{"--once", "--workspace-root=" + root, "--lease-duration=" + pipelineWorkerLease(producer.Timeout).String(), "--credential-file=" + credential}, produce)},
 			{"triage-review", pipelineBatchTimeout(reviewer.Timeout), runGHTriageReview, slices.Concat(missionArgs, review)},
 			{"plan", pipelineBatchTimeout(producer.Timeout), runGHPlan, slices.Concat(missionArgs, grounding.argv(), produce)},
-			{"plan-review", pipelineBatchTimeout(reviewer.Timeout), runGHPlanReview, slices.Concat(missionArgs, review)},
+			{"plan-review", pipelineBatchTimeout(reviewer.Timeout), runGHPlanReview, slices.Concat(missionArgs, planBase(grounding), review)},
 		},
 		perCase: []pipelineStage{
 			{"implement", ghtriage.ImplementationLease(producer.Timeout, ghtriage.MaxValidationCommands, validation.Timeout) - time.Minute, runGHImplement, slices.Concat(

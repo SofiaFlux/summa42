@@ -267,7 +267,7 @@ func TestPipelineStageArgvParsesWithEachStageParser(t *testing.T) {
 			return err
 		},
 		"plan-review": func(args []string) error {
-			_, model, err := parseGHPlanReviewFlags(args)
+			_, _, model, err := parseGHPlanReviewFlags(args)
 			modelIs("plan-review", "/bin/reviewer", model.Binary)
 			return err
 		},

@@ -66,6 +66,15 @@ type PlanReviewer struct {
 	model    PlanReviewModel
 	// modelTimeout sizes the attempt lease (zero keeps PlanReviewLeaseDuration).
 	modelTimeout time.Duration
+	// baseSHA is the commit the Box now pins; a plan grounded elsewhere is held
+	// unreviewed. Empty skips the check.
+	baseSHA string
+}
+
+// WithBaseSHA holds plans whose base differs from sha instead of reviewing them.
+func (r *PlanReviewer) WithBaseSHA(sha string) *PlanReviewer {
+	r.baseSHA = sha
+	return r
 }
 
 // WithModelTimeout derives the attempt lease from the model call timeout.
@@ -262,6 +271,13 @@ func (r *PlanReviewer) reviewCase(ctx context.Context, c workflowcase.Case) (boo
 	}
 	if err != nil {
 		return false, err
+	}
+	if r.baseSHA != "" && plan.Source.BaseSHA != r.baseSHA {
+		result, err := r.cases.Assess(ctx, workflowcase.AssessmentRequest{CaseID: c.ID, WorkID: c.CurrentWorkID, Assessment: workflow.Assessment{Verdict: workflow.Unknown, Reason: "plan-review:stale-base:" + plan.Source.BaseSHA, EvidenceIDs: []string{string(planID)}}, RemainingBudget: c.RemainingBudget, ProgressSignature: c.ProgressSignature})
+		if err != nil {
+			return false, err
+		}
+		return result.Decision.Outcome == workflow.OutcomeBlocked, nil
 	}
 	record, object, err := r.obtainReview(ctx, c, plan, planID, snap, source)
 	if err != nil {
