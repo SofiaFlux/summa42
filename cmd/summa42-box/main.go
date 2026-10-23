@@ -559,6 +559,7 @@ var subcommands = map[string]func(context.Context, []string) error{
 	"run-repo-plan-review":   runGHPlanReview,
 	"run-gh-implement":       runGHImplement,
 	"run-repo-implement":     runGHImplement,
+	"block-cases":            runBlockCases,
 	"run-gh-publish":         runGHPublish,
 	"run-repo-publish":       runGHPublish,
 	"run-gh-code-review":     runGHCodeReview,
