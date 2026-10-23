@@ -16,7 +16,10 @@ const (
 // receives, rather than on a string buried in a call site.
 const Stage2Question = "Classify this issue. State whether it is actionable without further " +
 	"information from the reporter, whether it needs a reproduction before it can be planned, " +
-	"how large the change would be, and what type of work it is. Answer with JSON only."
+	"how large the change would be, and what type of work it is. Answer with exactly one JSON " +
+	`object and nothing else, with exactly these fields: "is_actionable" (boolean), "needs_repro" ` +
+	`(boolean), "scope" (one of "small", "medium", "large", "huge", "unknown"), "suggested_type" ` +
+	`(one of "bug", "feature", "question", "other") and "rationale" (a short non-empty string).`
 
 type Stage2Input struct {
 	Schema      string   `json:"schema"`

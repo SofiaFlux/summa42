@@ -13,7 +13,7 @@ import (
 // never differ. A shorter question, or one that loses its closing full stop,
 // fails this test.
 func TestStage2QuestionIsTheFixedLiteral(t *testing.T) {
-	const want = `Classify this issue. State whether it is actionable without further information from the reporter, whether it needs a reproduction before it can be planned, how large the change would be, and what type of work it is. Answer with JSON only.`
+	const want = `Classify this issue. State whether it is actionable without further information from the reporter, whether it needs a reproduction before it can be planned, how large the change would be, and what type of work it is. Answer with exactly one JSON object and nothing else, with exactly these fields: "is_actionable" (boolean), "needs_repro" (boolean), "scope" (one of "small", "medium", "large", "huge", "unknown"), "suggested_type" (one of "bug", "feature", "question", "other") and "rationale" (a short non-empty string).`
 
 	input := BuildStage2Input(snapshot(nil, "Crash", "boom", TriageBug), nil)
 	if input.Question != want {
@@ -222,5 +222,22 @@ func TestBuildStage2InputStripLeadingFenceBoundaries(t *testing.T) {
 				t.Fatalf("body excerpt = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// The model only sees the question, so it must name the exact response shape:
+// every field the strict parser accepts and every value of both vocabularies.
+func TestStage2QuestionNamesTheResponseShape(t *testing.T) {
+	fields := reflect.TypeOf(stage2Response{})
+	for i := 0; i < fields.NumField(); i++ {
+		if tag := fields.Field(i).Tag.Get("json"); !strings.Contains(Stage2Question, `"`+tag+`"`) {
+			t.Errorf("question does not name field %q", tag)
+		}
+	}
+	for _, v := range []string{string(ScopeSmall), string(ScopeMedium), string(ScopeLarge), string(ScopeHuge), string(ScopeUnknown),
+		string(SuggestedTypeBug), string(SuggestedTypeFeature), string(SuggestedTypeQuestion), string(SuggestedTypeOther)} {
+		if !strings.Contains(Stage2Question, `"`+v+`"`) {
+			t.Errorf("question does not name value %q", v)
+		}
 	}
 }
