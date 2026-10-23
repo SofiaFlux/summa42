@@ -13,3 +13,11 @@ func TestBlockCasesNeedsAReasonAndCases(t *testing.T) {
 		t.Fatalf("got %q %v %v", reason, ids, err)
 	}
 }
+
+func TestCancelTasksTakesTaskIDsOnly(t *testing.T) {
+	for _, args := range [][]string{nil, {"--force", "task_1"}, {" "}} {
+		if err := runCancelTasks(t.Context(), args); err == nil {
+			t.Fatalf("%v accepted", args)
+		}
+	}
+}

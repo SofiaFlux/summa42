@@ -45,19 +45,7 @@ func runBlockCases(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	home, err := localconfig.ResolveHome("")
-	if err != nil {
-		return err
-	}
-	cfg, err := localconfig.Load(home)
-	if err != nil {
-		return err
-	}
-	material, err := loadStartupMaterial(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	box, err := summa42runtime.Open(ctx, summa42runtime.Config{StatePath: cfg.DatabasePath, EvidencePath: cfg.EvidencePath, CollectiveID: cfg.CollectiveID, OwnerPrincipalID: cfg.OwnerPrincipalID, PolicyEngine: material.policyEngine})
+	box, err := openOwnerBox(ctx)
 	if err != nil {
 		return err
 	}
@@ -90,6 +78,68 @@ func runBlockCases(ctx context.Context, args []string) error {
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d of %d cases not blocked", failed, len(ids))
+	}
+	return nil
+}
+
+// openOwnerBox opens the Box with no model, executor or operation provider,
+// for the Owner's manual repair commands.
+func openOwnerBox(ctx context.Context) (*summa42runtime.Box, error) {
+	home, err := localconfig.ResolveHome("")
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := localconfig.Load(home)
+	if err != nil {
+		return nil, err
+	}
+	material, err := loadStartupMaterial(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return summa42runtime.Open(ctx, summa42runtime.Config{StatePath: cfg.DatabasePath, EvidencePath: cfg.EvidencePath, CollectiveID: cfg.CollectiveID, OwnerPrincipalID: cfg.OwnerPrincipalID, PolicyEngine: material.policyEngine})
+}
+
+// runCancelTasks cancels ELIGIBLE tasks (the Owner's manual stop for queued
+// work), one JSON line per task; a task that is not ELIGIBLE is reported and
+// left alone.
+func runCancelTasks(ctx context.Context, args []string) error {
+	var ids []domain.ID
+	for _, id := range args {
+		if strings.TrimSpace(id) == "" || strings.HasPrefix(id, "-") {
+			return errors.New("cancel-tasks takes task IDs only")
+		}
+		ids = append(ids, domain.ID(strings.TrimSpace(id)))
+	}
+	if len(ids) == 0 {
+		return errors.New("cancel-tasks requires at least one task ID")
+	}
+	box, err := openOwnerBox(ctx)
+	if err != nil {
+		return err
+	}
+	defer box.Close()
+	out := json.NewEncoder(os.Stdout)
+	skipped := 0
+	for _, id := range ids {
+		line := map[string]any{"task_id": string(id)}
+		changed, err := box.Execution.CancelEligibleTask(ctx, id)
+		switch {
+		case err != nil:
+			skipped++
+			line["error"] = err.Error()
+		case !changed:
+			skipped++
+			line["error"] = "not ELIGIBLE"
+		default:
+			line["state"] = "CANCELLED"
+		}
+		if err := out.Encode(line); err != nil {
+			return err
+		}
+	}
+	if skipped > 0 {
+		return fmt.Errorf("%d of %d tasks not cancelled", skipped, len(ids))
 	}
 	return nil
 }

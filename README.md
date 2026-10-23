@@ -142,6 +142,8 @@ The publication Task stays `AWAITING_VERIFICATION` and the case moves to `READY_
 
 `./bin/summa42-box block-cases --reason <why> <case-id>...` is the Owner's manual stop. It moves ACTIVE cases to BLOCKED through the same assessment path a stage uses (one `workflow_assessments` row per case). It first stores one `summa42.owner.case_block` evidence object with the reason and the case list, and every assessment cites it. It prints one JSON line per case and exits non-zero if any case was not ACTIVE or could not be blocked. A case that belongs to an inactive mission cannot be assessed, so it cannot be blocked this way.
 
+`./bin/summa42-box cancel-tasks <task-id>...` moves ELIGIBLE tasks to CANCELLED with a `TASK_CANCELLED` execution event, one JSON line per task. A task that is not ELIGIBLE is reported and left alone, and the command then exits non-zero.
+
 ### Automated GitHub pipeline
 
 `run-gh-intake` observes issues and creates cases; it stays a separate command. `--once` runs a single observe pass; otherwise it polls. `--grant-capability` and `--grant-action` define what each case is granted (each `--grant-action` must also be a `--grant-capability`, and `github.issue.read` is required). `--bot-login` names the GitHub App login whose comments must not create new issue revisions. Prefer `--credential-file` over the deprecated `SUMMA42_GITHUB_TOKEN_FILE`.

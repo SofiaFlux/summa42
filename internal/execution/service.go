@@ -396,6 +396,17 @@ func (s *Service) FailAttempt(ctx context.Context, attemptID domain.ID, class do
 // ExpireEligibleTask moves an ELIGIBLE task to EXPIRED. It reports false when
 // the task is no longer ELIGIBLE (another worker leased or changed it first).
 func (s *Service) ExpireEligibleTask(ctx context.Context, taskID domain.ID) (bool, error) {
+	return s.retireEligibleTask(ctx, taskID, domain.TaskExpired, "TASK_EXPIRED")
+}
+
+// CancelEligibleTask moves an ELIGIBLE task to CANCELLED (the Owner's manual
+// stop). Like ExpireEligibleTask it reports false when the task is no longer
+// ELIGIBLE.
+func (s *Service) CancelEligibleTask(ctx context.Context, taskID domain.ID) (bool, error) {
+	return s.retireEligibleTask(ctx, taskID, domain.TaskCancelled, "TASK_CANCELLED")
+}
+
+func (s *Service) retireEligibleTask(ctx context.Context, taskID domain.ID, to domain.TaskState, event string) (bool, error) {
 	if err := s.configured(); err != nil {
 		return false, err
 	}
@@ -404,7 +415,7 @@ func (s *Service) ExpireEligibleTask(ctx context.Context, taskID domain.ID) (boo
 	err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx,
 			`UPDATE tasks SET state = ?, updated_at = ? WHERE task_id = ? AND state = ?`,
-			domain.TaskExpired, formatTime(now), taskID, domain.TaskEligible)
+			to, formatTime(now), taskID, domain.TaskEligible)
 		if err != nil {
 			return err
 		}
@@ -412,7 +423,7 @@ func (s *Service) ExpireEligibleTask(ctx context.Context, taskID domain.ID) (boo
 			return err
 		}
 		changed = true
-		return appendEvent(ctx, tx, taskID, "", "TASK_EXPIRED", now)
+		return appendEvent(ctx, tx, taskID, "", event, now)
 	})
 	return changed, err
 }
