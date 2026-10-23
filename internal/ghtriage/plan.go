@@ -16,8 +16,9 @@ const (
 	PlanSchema   = "github.issue.plan.v1"
 	KindPlan     = "github.issue.plan"
 	PlanQuestion = "Write a small, actionable implementation plan for this issue. " +
-		"Return one JSON object with a summary and 1 to 8 steps. Each step needs " +
-		"an objective and a verifiable done_when condition. Do not perform the work."
+		"Return exactly one JSON object and nothing else: " +
+		`{"summary": "at most 1000 characters", "steps": [{"objective": "at most 300 characters", ` +
+		`"done_when": "a verifiable condition, at most 1000 characters"}]} with 1 to 8 steps. Do not perform the work.`
 	PlanningAssessmentReason = "planning-started"
 	PlanReviewWorkKind       = "github.issue.plan.review"
 )
