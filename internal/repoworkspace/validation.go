@@ -208,7 +208,7 @@ func validationScript(commands [][]string, limit time.Duration) string {
 	var b strings.Builder
 	seconds := int64((limit + time.Second - 1) / time.Second)
 	b.WriteString(`w=$PWD; src=$w/src; gc=$w/go-cache
-mkdir "$src" "$w/home" "$gc" || exit 125
+mkdir "$src" "$w/home" "$w/t" "$gc" || exit 125
 tar -xf - -C "$src" || exit 125
 j=; p=
 # The command runs in its own process group (coreutils timeout makes one), so a
@@ -223,7 +223,7 @@ trap cancel TERM HUP INT
 run() {
   i=$1; shift
   s=$(date +%s%N)
-  ( cd "$src" && ulimit -f ` + strconv.Itoa(fileSizeBlocks) + ` && exec /usr/bin/timeout --kill-after=` + strconv.FormatInt(int64(validationKillAfter/time.Second), 10) + `s ` + strconv.FormatInt(seconds, 10) + `s /usr/bin/env -i       PATH="$PATH" HOME="$w/home" TMPDIR="$w/home" GOCACHE="$gc" GOMODCACHE="$w/home/go-mod-cache"       GOFLAGS=-modcacherw GOPROXY=off GOTOOLCHAIN=local GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null       GIT_TERMINAL_PROMPT=0 GIT_NO_LAZY_FETCH=1 "$@" ) >"$w/out.$i" 2>&1 </dev/null &
+  ( cd "$src" && ulimit -f ` + strconv.Itoa(fileSizeBlocks) + ` && exec /usr/bin/timeout --kill-after=` + strconv.FormatInt(int64(validationKillAfter/time.Second), 10) + `s ` + strconv.FormatInt(seconds, 10) + `s /usr/bin/env -i       PATH="$PATH" HOME="$w/home" TMPDIR="$w/t" GOCACHE="$gc" GOMODCACHE="$w/home/go-mod-cache"       GOFLAGS=-modcacherw GOPROXY=off GOTOOLCHAIN=local GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null       GIT_TERMINAL_PROMPT=0 GIT_NO_LAZY_FETCH=1 "$@" ) >"$w/out.$i" 2>&1 </dev/null &
   p=$!
   wait "$p"
   rc=$?

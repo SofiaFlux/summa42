@@ -296,7 +296,7 @@ func TestValidationDoesNotInheritHostGoCaches(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 	parts := strings.Split(got[0].Output, "|")
-	if len(parts) != 4 || parts[2] != "unset" || parts[3] == "" || parts[0] == "/host/x" || !strings.HasPrefix(parts[1], parts[3]+"/") || parts[0] == parts[1] {
+	if len(parts) != 4 || parts[2] != "unset" || parts[3] == "" || parts[0] == "/host/x" || !strings.HasPrefix(parts[1], filepath.Dir(parts[3])+"/") || parts[0] == parts[1] {
 		t.Fatalf("host caches inherited or caches not private: %q", got[0].Output)
 	}
 }

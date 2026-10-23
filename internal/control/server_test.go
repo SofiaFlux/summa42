@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -416,7 +417,7 @@ func TestListenLocalUsesPlatformLocalTransport(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix network assertion is covered on non-Windows CI; Windows is compile-gated separately")
 	}
-	listener, err := ListenLocal(filepath.Join(t.TempDir(), "control.sock"))
+	listener, err := ListenLocal(filepath.Join(shortSocketDir(t), "control.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,4 +615,17 @@ func TestClientApproveRefusesChallengeWithDifferentDigest(t *testing.T) {
 	if _, err := client.Approve(context.Background(), "approval-1", signer, "durable-digest-1"); err != nil || approvals.calls != 1 {
 		t.Fatalf("matching digest: err=%v calls=%d", err, approvals.calls)
 	}
+}
+
+// shortSocketDir is a temporary directory with a short path: t.TempDir embeds
+// the test name, and under a deep TMPDIR (the validation sandbox) the socket
+// path exceeds the 108-byte sun_path limit.
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }

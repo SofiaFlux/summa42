@@ -8,7 +8,7 @@ import (
 )
 
 func TestListenLocalRefusesToReplaceActiveSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "control.sock")
+	path := filepath.Join(shortSocketDir(t), "control.sock")
 	first, err := ListenLocal(path)
 	if err != nil {
 		t.Fatal(err)

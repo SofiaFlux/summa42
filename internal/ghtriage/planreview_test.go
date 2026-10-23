@@ -3,6 +3,7 @@ package ghtriage_test
 import (
 	"context"
 	"encoding/json"
+	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
@@ -307,17 +308,38 @@ func TestPlanReviewHoldsAPlanOnAStaleBase(t *testing.T) {
 	if f.caseState(t, fixtureRevision) != string(workflowcase.Blocked) {
 		t.Fatalf("stale plan not held: %s", f.caseState(t, fixtureRevision))
 	}
-	base := groundingFixture(t).Source.Commit
-	if !hasAssessmentReason(t, f, "plan-review:stale-base:"+base) {
+	if !hasAssessmentReason(t, f, "plan-review:stale-base:"+storedPlanBase(t, f)) {
 		t.Fatal("hold does not name the plan's stale base")
 	}
 }
 
 func TestPlanReviewReviewsAPlanOnTheCurrentBase(t *testing.T) {
 	f, model := readyPlanReview(t, true)
-	base := groundingFixture(t).Source.Commit
-	out, err := ghtriage.NewPlanReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model).WithBaseSHA(base).Tick(f.ctx, f.missionID)
+	out, err := ghtriage.NewPlanReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model).WithBaseSHA(storedPlanBase(t, f)).Tick(f.ctx, f.missionID)
 	if err != nil || out.Reviewed != 1 || model.calls != 1 {
 		t.Fatalf("current plan: %+v calls=%d %v", out, model.calls, err)
 	}
+}
+
+// storedPlanBase is the base commit of the one plan the fixture recorded
+// (groundingFixture builds a new repository, so its commit differs per call).
+func storedPlanBase(t *testing.T, f *driverFixture) string {
+	t.Helper()
+	var id string
+	if err := f.store.DB().QueryRowContext(f.ctx, `SELECT evidence_id FROM evidence_objects WHERE kind = ?`, ghtriage.KindPlan).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	_, raw, err := f.evidenceStore.Get(f.ctx, domain.ID(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan struct {
+		Source struct {
+			BaseSHA string `json:"base_sha"`
+		} `json:"source"`
+	}
+	if err := json.Unmarshal(raw, &plan); err != nil || len(plan.Source.BaseSHA) != 40 {
+		t.Fatalf("stored plan base: %q %v", plan.Source.BaseSHA, err)
+	}
+	return plan.Source.BaseSHA
 }
