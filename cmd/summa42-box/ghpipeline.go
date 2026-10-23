@@ -118,7 +118,8 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	if producer.Binary == reviewer.Binary && slices.Equal(producer.Args, reviewer.Args) {
+	// Command Code arguments are built later from the model id, so the id is part of the identity.
+	if producer.Binary == reviewer.Binary && slices.Equal(producer.Args, reviewer.Args) && producer.CommandCodeModel == reviewer.CommandCodeModel {
 		return nil, 0, errors.New("review model must differ from producer model")
 	}
 	source := grounding.local

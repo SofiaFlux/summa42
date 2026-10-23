@@ -161,6 +161,18 @@ func TestPipelineRequiresDistinctReviewModel(t *testing.T) {
 	if _, _, err := parsePipelineFlags(validPipelineArgs(t)); err != nil {
 		t.Fatalf("distinct models rejected: %v", err)
 	}
+	// Command Code: both run cmd with Box-built arguments, so only the model id tells them apart.
+	commandCode := func(producer, reviewer string) []string {
+		return append(slices.DeleteFunc(validPipelineArgs(t), func(s string) bool {
+			return strings.Contains(s, "model-binary") || strings.Contains(s, "model-arg") || s == "/bin/producer" || s == "/bin/reviewer" || s == "-p" || s == "--strict"
+		}), "--model-commandcode="+producer, "--review-model-commandcode="+reviewer)
+	}
+	if _, _, err := parsePipelineFlags(commandCode("reflection/beam:free", "stealth/glyph-cluster:free")); err != nil {
+		t.Fatalf("distinct Command Code models rejected: %v", err)
+	}
+	if _, _, err := parsePipelineFlags(commandCode("reflection/beam:free", "reflection/beam:free")); err == nil || !strings.Contains(err.Error(), "review model must differ") {
+		t.Fatalf("same Command Code model: err = %v", err)
+	}
 }
 
 func TestPipelineExitCodeReflectsFailures(t *testing.T) {
