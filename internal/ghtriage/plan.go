@@ -17,8 +17,8 @@ const (
 	KindPlan     = "github.issue.plan"
 	PlanQuestion = "Write a small, actionable implementation plan for this issue. " +
 		"Return exactly one JSON object and nothing else: " +
-		`{"summary": "at most 1000 characters", "steps": [{"objective": "at most 300 characters", ` +
-		`"done_when": "a verifiable condition, at most 1000 characters"}]} with 1 to 8 steps. Do not perform the work.`
+		`{"summary": "at most 500 characters", "steps": [{"objective": "at most 200 characters", ` +
+		`"done_when": "a verifiable condition, at most 500 characters"}]} with 1 to 8 steps. Keep every field short. Do not perform the work.`
 	PlanningAssessmentReason = "planning-started"
 	PlanReviewWorkKind       = "github.issue.plan.review"
 )
@@ -33,6 +33,8 @@ type PlanOutput struct {
 	Steps   []PlanStep `json:"steps"`
 }
 
+// Validate enforces hard limits about twice the ones PlanQuestion asks for,
+// because models overshoot a stated limit.
 func (p PlanOutput) Validate() error {
 	if textLength(p.Summary, 1, 1000) != nil {
 		return errors.New("plan summary must contain 1 to 1000 characters")
