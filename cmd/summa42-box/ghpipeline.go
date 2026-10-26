@@ -119,7 +119,8 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 		return nil, 0, err
 	}
 	// Command Code arguments are built later from the model id, so the id is part of the identity.
-	if producer.Binary == reviewer.Binary && slices.Equal(producer.Args, reviewer.Args) && producer.CommandCodeModel == reviewer.CommandCodeModel {
+	if producer.Binary == reviewer.Binary && slices.Equal(producer.Args, reviewer.Args) && producer.CommandCodeModel == reviewer.CommandCodeModel &&
+		producer.Profile == reviewer.Profile && producer.ProfileModel == reviewer.ProfileModel {
 		return nil, 0, errors.New("review model must differ from producer model")
 	}
 	source := grounding.local
@@ -169,6 +170,9 @@ func modelFlagArgv(cfg climodel.Config) []string {
 	}
 	if cfg.CommandCodeModel != "" {
 		out = append(out, "--model-commandcode="+cfg.CommandCodeModel)
+	}
+	if cfg.Profile != "" {
+		out = append(out, "--model-profile="+cfg.Profile, "--model-name="+cfg.ProfileModel, "--model-profile-dir="+cfg.ProfileDir)
 	}
 	if cfg.AllowPaid {
 		out = append(out, "--model-allow-paid")
