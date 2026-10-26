@@ -694,6 +694,11 @@ func registerModelFlags(flags *flag.FlagSet, prefix, binaryUse string) {
 			"(the model otherwise gets only PATH, LANG and its own HOME and TMPDIR; GitHub and Box credentials are rejected)")
 	flags.String(prefix+"-commandcode", "",
 		"Command Code model id: runs the cmd binary with arguments the Box builds (plan mode, no session; --"+prefix+"-arg is refused)")
+	flags.String(prefix+"-profile", "",
+		"harness profile name (agy, claude, codex, gemini, qwen, copilot, opencode, ollama, or one in --"+prefix+"-profile-dir): the Box builds the "+
+			"whole argv, prompt delivery and answer parsing; --"+prefix+"-arg, --"+prefix+"-commandcode, --"+prefix+"-zdr and --"+prefix+"-allow-paid are refused with it")
+	flags.String(prefix+"-name", "", "model id passed to the --"+prefix+"-profile harness")
+	flags.String(prefix+"-profile-dir", "", "directory of owner-added harness profiles (default: SUMMA42_HOME/model-profiles)")
 	flags.Bool(prefix+"-allow-paid", os.Getenv("SUMMA42_ALLOW_PAID_MODELS") == "1",
 		"allow a Command Code model that is not free (env SUMMA42_ALLOW_PAID_MODELS=1; free models only by default)")
 	flags.Bool(prefix+"-zdr", os.Getenv("SUMMA42_MODEL_ZDR") == "1",
@@ -801,7 +806,23 @@ func prefixedModelConfig(flags *flag.FlagSet, prefix string) (climodel.Config, e
 	if commandCode != "" && !explicitBinary(flags, prefix) {
 		binary = "cmd"
 	}
-	if !explicit && commandCode == "" && filepath.Base(binary) == "codex" {
+	profile := strings.TrimSpace(flags.Lookup(prefix + "-profile").Value.String())
+	profileDir := strings.TrimSpace(flags.Lookup(prefix + "-profile-dir").Value.String())
+	if profileDir == "" {
+		home, err := localconfig.ResolveHome("")
+		if err != nil {
+			return climodel.Config{}, fmt.Errorf("--%s-profile-dir: %w", prefix, err)
+		}
+		profileDir = filepath.Join(home, "model-profiles")
+	}
+	if profile != "" && !explicitBinary(flags, prefix) {
+		defaultBinary, err := climodel.ProfileBinary(profile, profileDir)
+		if err != nil {
+			return climodel.Config{}, fmt.Errorf("--%s-profile: %w", prefix, err)
+		}
+		binary = defaultBinary
+	}
+	if !explicit && commandCode == "" && profile == "" && filepath.Base(binary) == "codex" {
 		args = []string{"exec"}
 	}
 	userFlag := flags.Lookup(prefix + "-user")
@@ -818,7 +839,8 @@ func prefixedModelConfig(flags *flag.FlagSet, prefix string) (climodel.Config, e
 	}
 	allowPaid, _ := flags.Lookup(prefix + "-allow-paid").Value.(flag.Getter).Get().(bool)
 	zdr, _ := flags.Lookup(prefix + "-zdr").Value.(flag.Getter).Get().(bool)
-	return climodel.Config{RunAsUser: runAs, Binary: binary, Args: args, Timeout: duration, EnvAllowlist: envNames, CommandCodeModel: commandCode, AllowPaid: allowPaid, ZDR: zdr}, nil
+	return climodel.Config{RunAsUser: runAs, Binary: binary, Args: args, Timeout: duration, EnvAllowlist: envNames, CommandCodeModel: commandCode, AllowPaid: allowPaid, ZDR: zdr,
+		Profile: profile, ProfileModel: strings.TrimSpace(flags.Lookup(prefix + "-name").Value.String()), ProfileDir: profileDir}, nil
 }
 
 // triageModelAdapter builds the classifier the triage executor needs and reports

@@ -366,3 +366,22 @@ func TestStagesReceiveTheCommandCodeOptIns(t *testing.T) {
 		t.Fatalf("opt-ins forwarded without being set: %v", plain)
 	}
 }
+
+// The configuration the owner chose: agy produces, Command Code reviews.
+func TestPipelineAcceptsAProfileProducerWithACommandCodeReviewer(t *testing.T) {
+	args := func(producerModel, reviewerModel string) []string {
+		return append(slices.DeleteFunc(validPipelineArgs(t), func(s string) bool {
+			return strings.Contains(s, "model-binary") || strings.Contains(s, "model-arg") || s == "/bin/producer" || s == "/bin/reviewer" || s == "-p" || s == "--strict"
+		}), "--model-profile=agy", "--model-name="+producerModel, "--review-model-commandcode="+reviewerModel, "--review-model-allow-paid")
+	}
+	if _, _, err := parsePipelineFlags(args("gemini-3.8-flash-high", "deepseek/deepseek-v4-pro")); err != nil {
+		t.Fatalf("agy producer with a Command Code reviewer rejected: %v", err)
+	}
+	cfg := climodel.Config{Binary: "agy", RunAsUser: "m", Timeout: time.Minute, Profile: "agy", ProfileModel: "gemini-3.8-flash-high", ProfileDir: "/p"}
+	got := modelFlagArgv(cfg)
+	for _, want := range []string{"--model-profile=agy", "--model-name=gemini-3.8-flash-high", "--model-profile-dir=/p"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("stage flags lack %s: %v", want, got)
+		}
+	}
+}

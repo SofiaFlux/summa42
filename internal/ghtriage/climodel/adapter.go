@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os/exec"
 	"os/user"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -37,6 +39,13 @@ type Config struct {
 	CommandCodeModel string
 	AllowPaid        bool
 	ZDR              bool
+	// Profile selects a harness by name (see BuiltinProfiles and
+	// LoadProfileDir); the adapter then builds the whole argv from the profile
+	// and ProfileModel, like the Command Code backend, so Args must be empty.
+	// ProfileDir holds the owner's extra profiles.
+	Profile      string
+	ProfileModel string
+	ProfileDir   string
 }
 
 type Adapter struct {
@@ -49,6 +58,8 @@ type Adapter struct {
 	// commandCode: parse cmd's NDJSON and give it a private scratch cwd, so
 	// one call cannot leave project config for the next (the reviewer's).
 	commandCode bool
+	// profile, when set, drives argv, prompt delivery and answer extraction.
+	profile *Profile
 }
 
 // New validates the model configuration at construction, so an unusable
@@ -70,11 +81,21 @@ func New(config Config) (*Adapter, error) {
 	if config.CommandCodeModel != "" {
 		config.Args = commandCodeArgs(config.CommandCodeModel)
 	}
+	var profile *Profile
+	if config.Profile != "" {
+		p, args, err := resolveProfile(config)
+		if err != nil {
+			return nil, err
+		}
+		profile, config.Args = &p, args
+	} else if config.ProfileModel != "" {
+		return nil, errors.New("--model-name needs --model-profile")
+	}
 	resolved, err := exec.LookPath(config.Binary)
 	if err != nil {
 		return nil, fmt.Errorf("model binary %q is not usable: %w", config.Binary, err)
 	}
-	return &Adapter{runAs: target, binary: resolved, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist, zdr: config.ZDR, commandCode: config.CommandCodeModel != ""}, nil
+	return &Adapter{runAs: target, binary: resolved, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist, zdr: config.ZDR, commandCode: config.CommandCodeModel != "", profile: profile}, nil
 }
 
 // Timeout is the per-call model timeout.
@@ -172,15 +193,24 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 	defer cancel()
 
 	var stdout, stderr cappedBuffer
+	args := a.args
+	if a.commandCode {
+		prompt = append([]byte(commandCodePreamble), prompt...)
+	}
+	if a.profile != nil {
+		var extra []string
+		var err error
+		if prompt, extra, err = a.profile.encodePrompt(append([]byte(profilePreamble), prompt...)); err != nil {
+			return nil, err
+		}
+		args = slices.Concat(a.args, extra)
+	}
 	cmd, err := modelrun.Command(runCtx, modelrun.Spec{
-		RunAs: a.runAs, Binary: a.binary, Args: a.args, Allowlist: a.allowlist, Timeout: a.timeout, Env: a.env(),
-		Scratch: a.commandCode,
+		RunAs: a.runAs, Binary: a.binary, Args: args, Allowlist: a.allowlist, Timeout: a.timeout, Env: a.env(),
+		Scratch: a.commandCode || a.profile != nil,
 	})
 	if err != nil {
 		return nil, err
-	}
-	if a.commandCode {
-		prompt = append([]byte(commandCodePreamble), prompt...)
 	}
 	cmd.Stdin = bytes.NewReader(prompt)
 	cmd.Stdout = &stdout
@@ -207,6 +237,10 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 	}
 	if a.commandCode {
 		answer, err := commandCodeAnswer(stdout.Bytes())
+		return unfence(answer), err
+	}
+	if a.profile != nil {
+		answer, err := a.profile.answer(stdout.Bytes())
 		return unfence(answer), err
 	}
 	return unfence(stdout.Bytes()), nil
@@ -258,10 +292,26 @@ func (a *Adapter) env() map[string]string {
 // extend it when another CLI words its limit differently.
 func providerRefused(output string) bool {
 	lower := strings.ToLower(output)
-	for _, marker := range []string{"reached today's limit", "rate limit", "usage limit", "quota exceeded", "no longer available"} {
+	for _, marker := range []string{"reached today's limit", "rate limit", "usage limit", "quota exceeded", "quota reached", "resource_exhausted", "no longer available"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+// resolveProfile loads and checks the configured profile and renders its argv.
+func resolveProfile(config Config) (Profile, []string, error) {
+	if config.CommandCodeModel != "" || len(config.Args) > 0 || config.ZDR || config.AllowPaid {
+		return Profile{}, nil, errors.New("--model-profile builds its own arguments; --model-arg, --model-commandcode, --model-zdr and --model-allow-paid are not accepted with it")
+	}
+	p, err := FindProfile(config.Profile, config.ProfileDir)
+	if err != nil {
+		return Profile{}, nil, err
+	}
+	if !slices.Contains(p.Binaries, filepath.Base(config.Binary)) {
+		return Profile{}, nil, fmt.Errorf("profile %s runs %v, not %q", p.Name, p.Binaries, config.Binary)
+	}
+	args, err := p.argv(config.ProfileModel)
+	return p, args, err
 }
