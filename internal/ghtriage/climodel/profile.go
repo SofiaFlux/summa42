@@ -62,7 +62,11 @@ type Input struct {
 //
 // Answer, Error, Select, FailIf and OkIf are dot paths into that object. An
 // Error that is set, a FailIf match, a missing OkIf match or an empty Answer
-// fails the stage closed, so a CLI error is never read as an answer.
+// fails the stage closed. A text output has none of these: a CLI that prints an
+// error on stdout and exits 0 yields that text as the answer, and only the
+// strict parsers of the stage (exactly one JSON object with known fields) and
+// the non-zero exit check stand between it and the pipeline. Prefer json or
+// ndjson where the CLI offers it.
 type Output struct {
 	Format string            `json:"format"`
 	Select map[string]string `json:"select,omitempty"`
@@ -80,6 +84,7 @@ var (
 	profileNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	modelIDPattern     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}$`)
 	binaryPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	flagPattern        = regexp.MustCompile(`^--?[A-Za-z][A-Za-z0-9-]{0,40}$`)
 )
 
 // dangerousArgs are substrings (lower case) that mean an argument widens what
@@ -119,10 +124,17 @@ func (p Profile) Validate() error {
 		if strings.Contains(arg, "{") && !strings.Contains(arg, "{model}") && strings.Contains(arg, "}") {
 			return fmt.Errorf("unknown placeholder in argument %q", arg)
 		}
-		lower := strings.ToLower(arg)
-		for _, bad := range dangerousArgs {
-			if strings.Contains(lower, bad) {
-				return fmt.Errorf("argument %q widens what the CLI may do (%s)", arg, bad)
+	}
+	for i, arg := range p.Args {
+		// "--sandbox none" is "--sandbox=none" to most CLIs, so each option is
+		// also checked joined to the argument before it.
+		candidates := []string{arg}
+		if i > 0 && strings.HasPrefix(p.Args[i-1], "-") {
+			candidates = append(candidates, p.Args[i-1]+"="+arg)
+		}
+		for _, c := range candidates {
+			if bad := dangerous(c); bad != "" {
+				return fmt.Errorf("argument %q widens what the CLI may do (%s)", c, bad)
 			}
 		}
 	}
@@ -140,6 +152,13 @@ func (p Profile) Validate() error {
 	case len(p.ReadOnly) > 0 && !containsRun(p.Args, p.ReadOnly):
 		return errors.New("read_only must appear in args as one contiguous run")
 	}
+	// CLIs resolve a repeated option by its last value, so an option that makes
+	// the run read-only may not be given again outside the read_only run.
+	for _, opt := range p.ReadOnly {
+		if strings.HasPrefix(opt, "-") && count(p.Args, opt) != count(p.ReadOnly, opt) {
+			return fmt.Errorf("option %s of read_only is repeated in args", opt)
+		}
+	}
 	return p.validateIO()
 }
 
@@ -148,8 +167,14 @@ func (p Profile) validateIO() error {
 	case "stdin":
 	case "stdin-json":
 		var tmpl any
-		if err := json.Unmarshal(p.Input.Wrap, &tmpl); err != nil || strings.Count(string(p.Input.Wrap), `"{prompt}"`) != 1 {
-			return errors.New(`stdin-json needs a wrap object holding the string "{prompt}" exactly once`)
+		if err := json.Unmarshal(p.Input.Wrap, &tmpl); err != nil {
+			return fmt.Errorf("stdin-json wrap: %w", err)
+		}
+		// Only a string value that is exactly "{prompt}" is replaced, so any
+		// other use of the placeholder would silently drop the prompt.
+		whole, other := countPrompt(tmpl)
+		if whole != 1 || other != 0 {
+			return errors.New(`stdin-json needs a wrap holding the string value "{prompt}" exactly once and the placeholder nowhere else`)
 		}
 	case "argv":
 	default:
@@ -158,8 +183,13 @@ func (p Profile) validateIO() error {
 	if p.Input.Format != "argv" && p.Input.Flag != "" {
 		return errors.New("input flag applies only to argv input")
 	}
-	if strings.HasPrefix(p.Input.Flag, "{") || strings.ContainsAny(p.Input.Flag, " \t\n") {
-		return fmt.Errorf("invalid input flag %q", p.Input.Flag)
+	if p.Input.Flag != "" {
+		if !flagPattern.MatchString(p.Input.Flag) {
+			return fmt.Errorf("invalid input flag %q", p.Input.Flag)
+		}
+		if bad := dangerous(p.Input.Flag); bad != "" {
+			return fmt.Errorf("input flag %q widens what the CLI may do (%s)", p.Input.Flag, bad)
+		}
 	}
 	switch p.Output.Format {
 	case "text":
@@ -180,6 +210,26 @@ func (p Profile) validateIO() error {
 		return fmt.Errorf("unknown output format %q", p.Output.Format)
 	}
 	return nil
+}
+
+func dangerous(arg string) string {
+	lower := strings.ToLower(arg)
+	for _, bad := range dangerousArgs {
+		if strings.Contains(lower, bad) {
+			return bad
+		}
+	}
+	return ""
+}
+
+func count(list []string, want string) int {
+	n := 0
+	for _, item := range list {
+		if item == want {
+			n++
+		}
+	}
+	return n
 }
 
 func containsRun(args, run []string) bool {
@@ -227,6 +277,9 @@ func (p Profile) encodePrompt(prompt []byte) (stdin []byte, extra []string, err 
 		}
 		return append(line, '\n'), nil, nil
 	default:
+		if bytes.IndexByte(prompt, 0) >= 0 {
+			return nil, nil, fmt.Errorf("prompt contains a NUL byte and cannot ride in argv of profile %s", p.Name)
+		}
 		if len(prompt) > maxArgvPrompt {
 			return nil, nil, fmt.Errorf("prompt of %d bytes exceeds the %d byte argv limit of profile %s; use a CLI that reads stdin", len(prompt), maxArgvPrompt, p.Name)
 		}
@@ -235,6 +288,31 @@ func (p Profile) encodePrompt(prompt []byte) (stdin []byte, extra []string, err 
 		}
 		return nil, append(extra, string(prompt)), nil
 	}
+}
+
+func countPrompt(v any) (whole, other int) {
+	switch t := v.(type) {
+	case string:
+		if t == "{prompt}" {
+			return 1, 0
+		} else if strings.Contains(t, "{prompt}") {
+			return 0, 1
+		}
+	case []any:
+		for _, e := range t {
+			w, o := countPrompt(e)
+			whole, other = whole+w, other+o
+		}
+	case map[string]any:
+		for k, e := range t {
+			if strings.Contains(k, "{prompt}") {
+				other++
+			}
+			w, o := countPrompt(e)
+			whole, other = whole+w, other+o
+		}
+	}
+	return whole, other
 }
 
 func substitutePrompt(v any, prompt string) any {
@@ -407,10 +485,13 @@ func BuiltinProfiles() []Profile {
 // user must not be able to define how it is launched. A profile may not reuse a
 // built-in name. A missing directory is no profiles.
 func LoadProfileDir(dir string) ([]Profile, error) {
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+	if err := trustedPath(dir, true); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
 	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -424,26 +505,9 @@ func LoadProfileDir(dir string) ([]Profile, error) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		info, err := os.Lstat(path)
+		p, _, err := ReadProfileFile(path)
 		if err != nil {
 			return nil, err
-		}
-		st, ok := info.Sys().(*syscall.Stat_t)
-		if !info.Mode().IsRegular() || !ok || int(st.Uid) != os.Getuid() || info.Mode().Perm()&0o022 != 0 {
-			return nil, fmt.Errorf("profile %s must be a regular file owned by this user and not writable by others", path)
-		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		var p Profile
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&p); err != nil {
-			return nil, fmt.Errorf("profile %s: %w", path, err)
-		}
-		if err := p.Validate(); err != nil {
-			return nil, fmt.Errorf("profile %s: %w", path, err)
 		}
 		if builtin[p.Name] {
 			return nil, fmt.Errorf("profile %s: name %q is a built-in", path, p.Name)
@@ -451,6 +515,48 @@ func LoadProfileDir(dir string) ([]Profile, error) {
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// trustedPath refuses a path that is a symlink, is not owned by the Box's user
+// or is writable by anyone else: the model user must not be able to define how
+// it is launched.
+func trustedPath(path string, dir bool) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	kind := info.Mode().IsRegular()
+	if dir {
+		kind = info.IsDir()
+	}
+	if !kind || !ok || int(st.Uid) != os.Getuid() || info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("%s must be a real %s owned by this user and not writable by others", path, map[bool]string{true: "directory", false: "file"}[dir])
+	}
+	return nil
+}
+
+// ReadProfileFile reads, checks and validates one profile file and returns the
+// bytes it validated, so a caller that installs the profile installs exactly
+// what was checked.
+func ReadProfileFile(path string) (Profile, []byte, error) {
+	if err := trustedPath(path, false); err != nil {
+		return Profile{}, nil, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return Profile{}, nil, err
+	}
+	var p Profile
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p); err != nil {
+		return Profile{}, nil, fmt.Errorf("profile %s: %w", path, err)
+	}
+	if err := p.Validate(); err != nil {
+		return Profile{}, nil, fmt.Errorf("profile %s: %w", path, err)
+	}
+	return p, raw, nil
 }
 
 // FindProfile resolves name among the built-in and loaded profiles.

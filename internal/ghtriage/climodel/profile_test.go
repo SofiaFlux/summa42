@@ -57,6 +57,22 @@ func TestValidateRefusesUnsafeProfiles(t *testing.T) {
 		"flag on stdin":         func(p *Profile) { p.Input.Flag = "-p" },
 		"text with path":        func(p *Profile) { p.Output.Answer = "x" },
 		"json without answer":   func(p *Profile) { p.Output = Output{Format: "json"} },
+		"dangerous input flag":  func(p *Profile) { p.Input = Input{Format: "argv", Flag: "--dangerously-skip-permissions"} },
+		"odd input flag":        func(p *Profile) { p.Input = Input{Format: "argv", Flag: "-p --yolo"} },
+		"split dangerous flag":  func(p *Profile) { p.Args = append(p.Args, "--sandbox", "none") },
+		"read-only overridden": func(p *Profile) {
+			p.Args = []string{"--mode", "plan", "--mode", "default"}
+			p.ReadOnly = []string{"--mode", "plan"}
+		},
+		"wrap placeholder in a string": func(p *Profile) {
+			p.Input = Input{Format: "stdin-json", Wrap: json.RawMessage(`{"a":"x {prompt}"}`)}
+		},
+		"wrap placeholder as a key": func(p *Profile) {
+			p.Input = Input{Format: "stdin-json", Wrap: json.RawMessage(`{"{prompt}":"x","b":"{prompt}"}`)}
+		},
+		"wrap placeholder twice": func(p *Profile) {
+			p.Input = Input{Format: "stdin-json", Wrap: json.RawMessage(`{"a":"{prompt}","b":"{prompt}"}`)}
+		},
 		"ndjson without select": func(p *Profile) { p.Output = Output{Format: "ndjson", Answer: "a"} },
 	}
 	for name, mutate := range cases {
@@ -357,5 +373,46 @@ func TestAgyKeepsPlanModeEffective(t *testing.T) {
 	p, _ := FindProfile("agy", t.TempDir())
 	if slices.Contains(p.Args, "--disable-slash-commands") {
 		t.Fatal("agy plan mode is silently off with --disable-slash-commands")
+	}
+}
+
+func TestRepeatedValueOptionsInsideReadOnlyAreAllowed(t *testing.T) {
+	p, _ := FindProfile("copilot", t.TempDir())
+	if err := p.Validate(); err != nil {
+		t.Fatalf("copilot repeats --deny-tool inside its read_only run: %v", err)
+	}
+}
+
+func TestArgvPromptWithNULIsRefused(t *testing.T) {
+	p := Profile{Name: "argvtool", Input: Input{Format: "argv"}}
+	if _, _, err := p.encodePrompt([]byte("a\x00b")); err == nil {
+		t.Error("a NUL byte in an argv prompt was accepted")
+	}
+}
+
+func TestProfileDirectoryItselfMustBeTrusted(t *testing.T) {
+	extra := Profile{Name: "newcli", Binaries: []string{"newcli"}, Args: []string{"--print", "--plan"}, ReadOnly: []string{"--plan"},
+		Input: Input{Format: "stdin"}, Output: Output{Format: "text"}}
+	dir := t.TempDir()
+	writeProfile(t, dir, "newcli.json", extra, 0o600)
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadProfileDir(dir); err == nil {
+		t.Error("a world-writable profile directory was trusted")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadProfileDir(link); err == nil {
+		t.Error("a symlinked profile directory was trusted")
+	}
+	p, raw, err := ReadProfileFile(filepath.Join(dir, "newcli.json"))
+	if err != nil || p.Name != "newcli" || len(raw) == 0 {
+		t.Fatalf("%+v %v", p, err)
 	}
 }

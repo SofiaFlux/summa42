@@ -115,16 +115,30 @@ func runModelProfileDraft(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	pending := filepath.Join(home, "model-profiles", "pending")
+	active := filepath.Join(home, "model-profiles")
+	pending := filepath.Join(active, "pending")
 	if err := os.MkdirAll(pending, 0o700); err != nil {
 		return err
+	}
+	for _, dir := range []string{active, pending} {
+		if _, err := climodel.FindProfile(profile.Name, dir); err == nil {
+			return fmt.Errorf("a profile named %q already exists in %s; remove it first", profile.Name, dir)
+		}
 	}
 	raw, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {
 		return err
 	}
 	path := filepath.Join(pending, profile.Name+".json")
-	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(append(raw, '\n')); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
 		return err
 	}
 	fmt.Printf("drafted %s\n%s\n\nRead it, then: summa42-box model-probe --model-profile=%s --model-profile-dir=%s --model-name=<id> --model-user=<user>\nand: summa42-box model-profile-adopt --name=%s\n", path, raw, profile.Name, pending, profile.Name)
@@ -181,14 +195,29 @@ func runModelProfileAdopt(_ context.Context, args []string) error {
 		return err
 	}
 	active := filepath.Join(home, "model-profiles")
-	pending := filepath.Join(active, "pending")
-	if _, err := climodel.FindProfile(*name, pending); err != nil {
+	// The bytes that were validated are the bytes installed: nothing is renamed
+	// from a directory another process could change between check and use.
+	profile, raw, err := climodel.ReadProfileFile(filepath.Join(active, "pending", *name+".json"))
+	if err != nil {
 		return err
 	}
-	if _, err := climodel.FindProfile(*name, active); err == nil {
-		return fmt.Errorf("profile %q is already active", *name)
+	if profile.Name != *name {
+		return fmt.Errorf("pending file %s.json holds profile %q", *name, profile.Name)
 	}
-	if err := os.Rename(filepath.Join(pending, *name+".json"), filepath.Join(active, *name+".json")); err != nil {
+	if _, err := climodel.FindProfile(*name, active); err == nil {
+		return fmt.Errorf("profile %q already exists (built-in or active)", *name)
+	}
+	target := filepath.Join(active, *name+".json")
+	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(raw); err != nil {
+		file.Close()
+		os.Remove(target)
+		return err
+	}
+	if err := file.Close(); err != nil {
 		return err
 	}
 	fmt.Printf("adopted %s\n", *name)
