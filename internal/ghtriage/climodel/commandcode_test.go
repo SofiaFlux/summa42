@@ -131,7 +131,7 @@ func TestCommandCodeArgvIsBuiltByTheAdapter(t *testing.T) {
 	if string(argv) != want {
 		t.Fatalf("argv:\n%s\nwant:\n%s", argv, want)
 	}
-	for _, flag := range []string{"plan", "--no-session", "--safe-mode", "--no-skills"} {
+	for _, flag := range []string{"plan", "--no-session", "--safe-mode", "--no-skills", "--skip-onboarding", "-t"} {
 		if !strings.Contains(want, flag) {
 			t.Fatalf("argv lacks %s", flag)
 		}

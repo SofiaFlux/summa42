@@ -46,9 +46,12 @@ func looksLikeCommandCode(binary string) bool {
 // commandCodeArgs is the whole argv of a Command Code run. The adapter builds
 // it so nothing operator-supplied can drop plan mode, add --yolo or name a
 // second model: cmd resolves repeated options by last value and accepts
-// unknown ones, so filtering operator argv would leak.
+// unknown ones, so filtering operator argv would leak. --skip-onboarding and -t
+// are required headless: a fresh model user and a fresh scratch directory make
+// cmd ask whether to trust the location and whether to run taste analysis, and
+// there is nobody to answer.
 func commandCodeArgs(model string) []string {
-	return []string{"-p", "-m", model, "--output-format", "json",
+	return []string{"--skip-onboarding", "-t", "-p", "-m", model, "--output-format", "json",
 		"--permission-mode", "plan", "--max-turns", fmt.Sprint(commandCodeMaxTurns),
 		"--no-session", "--safe-mode", "--no-skills", "--no-auto-update"}
 }
