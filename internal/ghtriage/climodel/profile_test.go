@@ -416,3 +416,47 @@ func TestProfileDirectoryItselfMustBeTrusted(t *testing.T) {
 		t.Fatalf("%+v %v", p, err)
 	}
 }
+
+// agy ends its turn silent when it tries a forbidden command; the adapter asks
+// once more, with a note, and only once.
+func TestEmptyProfileAnswerIsRetriedOnceWithANote(t *testing.T) {
+	dir := t.TempDir()
+	counter := filepath.Join(dir, "calls")
+	bin := filepath.Join(dir, "agy")
+	script := "#!/bin/sh\necho x >> " + counter + "\ncat > " + dir + "/last\nif grep -q 'previous attempt' " + dir + "/last; then\n" +
+		`echo '{"event":"result","result":{"status":"SUCCESS","response":"{\"verdict\":\"ACCEPT\",\"reason\":\"ok\"}"}}'` + "\nelse\n" +
+		`echo '{"event":"result","result":{"status":"SUCCESS","response":"","denied_actions":[{"action":"command"}]}}'` + "\nfi\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := New(Config{RunAsUser: testUser, Binary: bin, Timeout: 10 * time.Second, Profile: "agy", ProfileModel: "m", ProfileDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := adapter.ReviewPlan(t.Context(), ghtriage.PlanReviewInput{Schema: ghtriage.PlanReviewVersion})
+	if err != nil || out.Verdict != "ACCEPT" {
+		t.Fatalf("%+v %v", out, err)
+	}
+	if calls, _ := os.ReadFile(counter); strings.Count(string(calls), "x") != 2 {
+		t.Fatalf("expected one call and one retry, got %q", calls)
+	}
+	// Silent both times: the error surfaces after exactly one retry.
+	silentDir := t.TempDir()
+	silentCount := filepath.Join(silentDir, "calls")
+	silent := "#!/bin/sh\ncat >/dev/null\necho x >> " + silentCount + "\n" +
+		`echo '{"event":"result","result":{"status":"SUCCESS","response":""}}'` + "\n"
+	silentBin := filepath.Join(silentDir, "agy")
+	if err := os.WriteFile(silentBin, []byte(silent), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err = New(Config{RunAsUser: testUser, Binary: silentBin, Timeout: 10 * time.Second, Profile: "agy", ProfileModel: "m", ProfileDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ReviewPlan(t.Context(), ghtriage.PlanReviewInput{Schema: ghtriage.PlanReviewVersion}); !errors.Is(err, errEmptyAnswer) {
+		t.Fatalf("a silent model should end in the empty-answer error: %v", err)
+	}
+	if calls, _ := os.ReadFile(silentCount); strings.Count(string(calls), "x") != 2 {
+		t.Fatalf("expected exactly one retry, got %q", calls)
+	}
+}

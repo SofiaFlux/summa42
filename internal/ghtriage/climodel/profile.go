@@ -76,6 +76,15 @@ type Output struct {
 	OkIf   map[string]string `json:"ok_if,omitempty"`
 }
 
+// errEmptyAnswer marks a structured result with no answer text. The adapter
+// asks once more after it, because an agent that tried a forbidden command ends
+// its turn silent.
+var errEmptyAnswer = errors.New("empty answer")
+
+// profileRetryNote is appended to the prompt of the one retry.
+const profileRetryNote = "\n\nYour previous attempt ended without an answer because it tried to run a command, which is not permitted. " +
+	"Do not run commands or call tools; everything you need is above. Answer now with the JSON object only.\n"
+
 // maxArgvPrompt keeps argv delivery well under the kernel's single-argument
 // limit (128 KiB on Linux).
 const maxArgvPrompt = 100 << 10
@@ -370,7 +379,7 @@ func (p Profile) answer(stdout []byte) ([]byte, error) {
 		if len(shown) > 400 {
 			shown = shown[:400]
 		}
-		return nil, fmt.Errorf("%s: empty answer in result %s", p.Name, shown)
+		return nil, fmt.Errorf("%s: %w in result %s", p.Name, errEmptyAnswer, shown)
 	}
 	return []byte(text), nil
 }

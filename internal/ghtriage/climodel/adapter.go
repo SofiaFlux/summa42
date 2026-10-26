@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os/exec"
 	"os/user"
 	"path/filepath"
@@ -186,6 +187,15 @@ func (a *Adapter) ReviewCode(ctx context.Context, input ghtriage.CodeReviewInput
 }
 
 func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
+	out, err := a.runOnce(ctx, prompt)
+	if a != nil && a.profile != nil && errors.Is(err, errEmptyAnswer) {
+		log.Printf("model profile %s answered nothing; asking once more: %v", a.profile.Name, err)
+		return a.runOnce(ctx, slices.Concat(prompt, []byte(profileRetryNote)))
+	}
+	return out, err
+}
+
+func (a *Adapter) runOnce(ctx context.Context, prompt []byte) ([]byte, error) {
 	if a == nil {
 		return nil, errors.New("model adapter is not configured")
 	}
