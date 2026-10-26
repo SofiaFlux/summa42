@@ -364,7 +364,13 @@ func (p Profile) answer(stdout []byte) ([]byte, error) {
 	}
 	text := lookup(obj, p.Output.Answer)
 	if strings.TrimSpace(text) == "" || text == "<nil>" {
-		return nil, fmt.Errorf("%s: empty answer", p.Name)
+		// The result object is what a person needs to see why (status, turns,
+		// token counts); the answer itself is empty, so nothing private is lost.
+		shown, _ := json.Marshal(obj)
+		if len(shown) > 400 {
+			shown = shown[:400]
+		}
+		return nil, fmt.Errorf("%s: empty answer in result %s", p.Name, shown)
 	}
 	return []byte(text), nil
 }
