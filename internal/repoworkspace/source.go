@@ -290,10 +290,13 @@ func TrackedFiles(ctx context.Context, localPath, commit string, prefixes []stri
 }
 
 // FitContext returns paths in order without the ones that would push the
-// context past MaxContextBytes, so a model's file selection never fails the
+// context past budget (MaxContextBytes when budget is 0), so a model's file selection never fails the
 // capture on size alone. The first keep paths (owner-pinned) are always kept;
 // if they alone overflow, Capture still refuses.
-func FitContext(ctx context.Context, localPath, commit string, paths []string, keep int) ([]string, error) {
+func FitContext(ctx context.Context, localPath, commit string, paths []string, keep, budget int) ([]string, error) {
+	if budget <= 0 || budget > MaxContextBytes {
+		budget = MaxContextBytes
+	}
 	if !FullCommit(commit) || !filepath.IsAbs(localPath) {
 		return nil, errors.New("explicit absolute local repository and full commit required")
 	}
@@ -317,7 +320,7 @@ func FitContext(ctx context.Context, localPath, commit string, paths []string, k
 	}
 	out, total := []string{}, 0
 	for i, p := range paths {
-		if i < keep || total+sizes[p] <= MaxContextBytes {
+		if i < keep || total+sizes[p] <= budget {
 			out = append(out, p)
 			total += sizes[p]
 		}

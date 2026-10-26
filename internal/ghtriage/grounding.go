@@ -26,9 +26,16 @@ type GroundingConfig struct {
 	AllowedPaths       []string
 	AllowedPrefixes    []string
 	ValidationCommands [][]string
+	// ContextBytes caps the files a model selects for the context, below
+	// repoworkspace.MaxContextBytes (0 keeps that maximum). A producer whose
+	// harness truncates long input (agy keeps about 119 KB) needs it.
+	ContextBytes int
 }
 
 func (cfg GroundingConfig) Validate() error {
+	if cfg.ContextBytes < 0 || cfg.ContextBytes > repoworkspace.MaxContextBytes || (cfg.ContextBytes != 0 && cfg.ContextBytes < 4096) {
+		return errors.New("context byte budget must be 0 or between 4096 and the repository context maximum")
+	}
 	prefixMode := len(cfg.AllowedPrefixes) > 0
 	if !filepath.IsAbs(cfg.Source.LocalPath) || !repoworkspace.FullCommit(cfg.Source.Commit) || strings.Count(cfg.Source.Repository, "/") != 1 || (!prefixMode && len(cfg.Source.Paths) < 1) || len(cfg.Source.Paths) > repoworkspace.MaxFiles {
 		return errors.New("explicit repository, full commit and context selection required")
@@ -156,7 +163,7 @@ func (p *Planner) captureGrounding(ctx context.Context, repository string, issue
 		}
 		// The model sees paths, not sizes: drop the selected files that would
 		// overflow the context instead of failing the case on size alone.
-		if capture.Paths, err = repoworkspace.FitContext(ctx, capture.LocalPath, capture.Commit, contextPaths(cfg.Source.Paths, selection.ContextFiles), len(cfg.Source.Paths)); err != nil {
+		if capture.Paths, err = repoworkspace.FitContext(ctx, capture.LocalPath, capture.Commit, contextPaths(cfg.Source.Paths, selection.ContextFiles), len(cfg.Source.Paths), cfg.ContextBytes); err != nil {
 			return nil, err
 		}
 		allowed = selection.AllowedPaths

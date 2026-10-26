@@ -39,6 +39,10 @@ type Profile struct {
 	NoTools  bool     `json:"no_tools"`
 	Input    Input    `json:"input"`
 	Output   Output   `json:"output"`
+	// MaxPrompt, when positive, is the longest prompt in bytes the harness takes
+	// whole; a longer one is refused before the call. agy silently truncates
+	// long input and then tries commands to fetch the rest.
+	MaxPrompt int `json:"max_prompt,omitempty"`
 }
 
 // Input is how the prompt reaches the CLI.
@@ -172,6 +176,9 @@ func (p Profile) Validate() error {
 }
 
 func (p Profile) validateIO() error {
+	if p.MaxPrompt < 0 {
+		return errors.New("max_prompt must not be negative")
+	}
 	switch p.Input.Format {
 	case "stdin":
 	case "stdin-json":
@@ -272,6 +279,9 @@ func (p Profile) argv(model string) ([]string, error) {
 
 // encodePrompt returns the stdin bytes and any trailing argv for prompt.
 func (p Profile) encodePrompt(prompt []byte) (stdin []byte, extra []string, err error) {
+	if p.MaxPrompt > 0 && len(prompt) > p.MaxPrompt {
+		return nil, nil, fmt.Errorf("prompt of %d bytes exceeds the %d bytes profile %s takes whole; lower --context-max-bytes", len(prompt), p.MaxPrompt, p.Name)
+	}
 	switch p.Input.Format {
 	case "stdin":
 		return prompt, nil, nil
@@ -473,9 +483,9 @@ func BuiltinProfiles() []Profile {
 			// --disable-slash-commands would turn plan mode off ("--mode plan has no
 			// effect while slash command expansion is disabled"), so it is absent.
 			Args:     []string{"--mode", "plan", "--sandbox", "--model", "{model}", "--input-format", "stream-json", "--output-format", "stream-json", "--print="},
-			ReadOnly: []string{"--mode", "plan"},
-			Input:    Input{Format: "stdin-json", Wrap: agyWrap},
-			Output:   Output{Format: "ndjson", Select: map[string]string{"event": "result"}, Answer: "result.response", Error: "result.error", FailIf: map[string]string{"result.status": "ERROR"}}},
+			ReadOnly: []string{"--mode", "plan"}, MaxPrompt: 110000,
+			Input:  Input{Format: "stdin-json", Wrap: agyWrap},
+			Output: Output{Format: "ndjson", Select: map[string]string{"event": "result"}, Answer: "result.response", Error: "result.error", FailIf: map[string]string{"result.status": "ERROR"}}},
 		{Name: "claude", Binaries: []string{"claude"}, ModelRequired: true,
 			Args:     []string{"-p", "--model", "{model}", "--output-format", "json", "--permission-mode", "plan", "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config", "--tools", ""},
 			ReadOnly: []string{"--permission-mode", "plan"},

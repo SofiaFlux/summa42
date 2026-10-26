@@ -460,3 +460,16 @@ func TestEmptyProfileAnswerIsRetriedOnceWithANote(t *testing.T) {
 		t.Fatalf("expected exactly one retry, got %q", calls)
 	}
 }
+
+func TestAgyRefusesAPromptItWouldTruncate(t *testing.T) {
+	p, _ := FindProfile("agy", t.TempDir())
+	if p.MaxPrompt <= 0 {
+		t.Fatal("agy has no prompt cap")
+	}
+	if _, _, err := p.encodePrompt(make([]byte, p.MaxPrompt+1)); err == nil || !strings.Contains(err.Error(), "context-max-bytes") {
+		t.Fatalf("an over-long prompt was not refused with the remedy: %v", err)
+	}
+	if _, _, err := p.encodePrompt(make([]byte, p.MaxPrompt)); err != nil {
+		t.Fatalf("a prompt at the cap was refused: %v", err)
+	}
+}
