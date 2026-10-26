@@ -228,6 +228,11 @@ class ValidationUser(unittest.TestCase):
         self.assertIn("validate fail=1", r.stdout)
         self.assertIn("READABLE by validate", r.stderr)
 
+    def test_model_home_login_files_are_listed_once(self):
+        listed = bash("model_home_login_files").stdout.split()
+        self.assertEqual(len(set(listed)), len(listed))
+        self.assertIn(".claude.json", listed)
+
 
 class Executed(unittest.TestCase):
     def run_script(self, *args, user="summa42-model"):

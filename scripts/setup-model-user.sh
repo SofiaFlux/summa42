@@ -226,6 +226,13 @@ group_files() {
   esac
 }
 
+# Every login file a CLI may have in the model home, each listed once.
+model_home_login_files() {
+  local cli
+  for cli in claude codex commandcode gemini copilot; do group_files "$cli"; done | tr ' ' '\n'
+  echo .claude.json
+}
+
 approve() {
   # approve LABEL DETAIL: --yes approves, otherwise ask on a TTY.
   [ "$ASSUME_YES" -eq 1 ] && return 0
@@ -498,7 +505,6 @@ main() {
   for who in model validate; do
     require_unreadable "$SUMMA_HOME" required "$who"
     require_unreadable "$SUMMA_HOME/keys" required "$who"
-    require_unreadable "$SUMMA_HOME/keys/owner.key" optional "$who"
     local k
     for k in "$SUMMA_HOME"/keys/*; do
       [ -e "$k" ] && require_unreadable "$k" required "$who"
@@ -523,11 +529,9 @@ main() {
   # not read the model home (mode 0700), nor any copied login file in it.
   say "verifying $VALIDATE_USER cannot read the model home $MODEL_HOME"
   require_unreadable "$MODEL_HOME" required validate
-  local cli rel
-  for cli in claude codex commandcode gemini copilot; do
-    for rel in $(group_files "$cli") .claude.json; do
-      require_unreadable "$MODEL_HOME/$rel" optional validate
-    done
+  local rel
+  for rel in $(model_home_login_files); do
+    require_unreadable "$MODEL_HOME/$rel" optional validate
   done
   check_toolchain
   if is_wsl && run_as_model test -r /mnt/c 2>/dev/null; then
