@@ -265,7 +265,7 @@ func TestProfileRunsAgyThroughStreamJSON(t *testing.T) {
 	}
 	stdin, _ := os.ReadFile(record + ".stdin")
 	var msg struct{ Event string }
-	if err := json.Unmarshal(stdin, &msg); err != nil || msg.Event != "user" || !strings.Contains(string(stdin), "Do not use any tools") {
+	if err := json.Unmarshal(stdin, &msg); err != nil || msg.Event != "user" || !strings.Contains(string(stdin), "Do not use any tools") || !strings.Contains(string(stdin), "Reminder: no tools") {
 		t.Fatalf("stdin is not one user event with the preamble: %s %v", stdin, err)
 	}
 }

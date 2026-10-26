@@ -200,7 +200,7 @@ func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
 	if a.profile != nil {
 		var extra []string
 		var err error
-		if prompt, extra, err = a.profile.encodePrompt(append([]byte(profilePreamble), prompt...)); err != nil {
+		if prompt, extra, err = a.profile.encodePrompt(slices.Concat([]byte(profilePreamble), prompt, []byte(profilePostamble))); err != nil {
 			return nil, err
 		}
 		args = slices.Concat(a.args, extra)

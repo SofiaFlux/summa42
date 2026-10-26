@@ -439,6 +439,12 @@ func lookup(obj map[string]any, path string) string {
 
 // profilePreamble goes before every profile prompt, as commandCodePreamble does: the
 // CLI is an agent, and a model that explores its scratch directory burns turns.
+// profilePostamble repeats the rule after the (often very long) prompt: agy,
+// asked to plan, tried to run a command, was denied and ended its turn with an
+// empty answer.
+const profilePostamble = "\n\nReminder: no tools or commands are available, and none are needed. " +
+	"Answer now, in this reply, with the requested JSON object only.\n"
+
 const profilePreamble = "Everything you need is in this message. Do not use any tools. " +
 	"Reply with the requested JSON object only: no Markdown, no code fence, no other text.\n\n"
 
