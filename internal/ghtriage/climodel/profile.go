@@ -360,17 +360,20 @@ const profilePreamble = "Everything you need is in this message. Do not use any 
 
 // BuiltinProfiles are the harnesses installed on the reference host. Flags come
 // from each CLI's --help; ReadOnly is the run that keeps it from editing files.
-// Exercised live on 2026-10-26: claude, copilot (model auto), opencode and
-// ollama answered the probe prompt; agy's stream-json input was accepted but its
-// quota was exhausted, so its success result is unconfirmed; codex reached the
-// API but is over its limit until 2026-11-21. Gemini CLI and Qwen CLI refuse
+// Exercised live on 2026-10-26: claude, copilot (model auto), opencode, ollama
+// and agy (gemini-3.8-flash-high, status SUCCESS) answered the probe prompt;
+// codex reached the API but is over its limit until 2026-11-21. agy's plan mode
+// does not stop run_command from running read-style commands, so it is not a
+// boundary: the dedicated OS user is. Gemini CLI and Qwen CLI refuse
 // this account, so they have no profile (model-profile-draft can add one).
 // Run `summa42-box model-probe` once per harness and model before using it.
 func BuiltinProfiles() []Profile {
 	agyWrap := json.RawMessage(`{"event":"user","message":{"role":"user","content":"{prompt}"}}`)
 	return []Profile{
 		{Name: "agy", Binaries: []string{"agy"}, ModelRequired: true,
-			Args:     []string{"--mode", "plan", "--model", "{model}", "--disable-slash-commands", "--input-format", "stream-json", "--output-format", "stream-json", "--print="},
+			// --disable-slash-commands would turn plan mode off ("--mode plan has no
+			// effect while slash command expansion is disabled"), so it is absent.
+			Args:     []string{"--mode", "plan", "--sandbox", "--model", "{model}", "--input-format", "stream-json", "--output-format", "stream-json", "--print="},
 			ReadOnly: []string{"--mode", "plan"},
 			Input:    Input{Format: "stdin-json", Wrap: agyWrap},
 			Output:   Output{Format: "ndjson", Select: map[string]string{"event": "result"}, Answer: "result.response", Error: "result.error", FailIf: map[string]string{"result.status": "ERROR"}}},

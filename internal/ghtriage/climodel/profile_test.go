@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -348,5 +349,13 @@ func TestOpencodeAnswerIsTheLastTextEvent(t *testing.T) {
 	}
 	if _, err := p.answer([]byte(`{"type":"step_start"}` + "\n")); err == nil {
 		t.Error("an output without a text event was accepted")
+	}
+}
+
+// agy documents that --mode plan has no effect while slash commands are disabled.
+func TestAgyKeepsPlanModeEffective(t *testing.T) {
+	p, _ := FindProfile("agy", t.TempDir())
+	if slices.Contains(p.Args, "--disable-slash-commands") {
+		t.Fatal("agy plan mode is silently off with --disable-slash-commands")
 	}
 }
