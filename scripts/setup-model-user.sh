@@ -72,6 +72,11 @@ To close it, put this in /etc/wsl.conf and run `wsl --shutdown` from Windows:
     appendWindowsPath=false
     [automount]
     options="metadata,umask=077,fmask=077"
+If you need Windows interop in your own shell (browser logins, explorer.exe),
+leave /etc/wsl.conf alone and run the Box in a systemd unit that cannot see
+Windows; the model users it starts inherit that:
+    sudo systemd-run --unit=summa42-loop --uid=$USER -p InaccessiblePaths=/mnt/c \
+      -p InaccessiblePaths=/run/WSL <the Box command>
 This script does not change /etc/wsl.conf and does not refuse to continue.
 WSL
 }
