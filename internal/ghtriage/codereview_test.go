@@ -377,3 +377,20 @@ func TestCodeReviewPromptSaysValidationResultsAreNotProof(t *testing.T) {
 		}
 	}
 }
+
+// A weak reviewer accepted a change that rewrote an unrelated block and edited a
+// test beyond the plan. The prompt must make both grounds for REVISE.
+func TestCodeReviewPromptRejectsUnplannedHunksAndRegressions(t *testing.T) {
+	f, cfg, id, _ := implementedFixture(t)
+	var question string
+	m := &codeReviewModel{verdict: "ACCEPT", onCall: func(in ghtriage.CodeReviewInput) { question = in.Question }}
+	r := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, m)
+	if _, err := r.Review(f.ctx, id, cfg.Source.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"every changed hunk", "heredocs", "regression", "beyond what the new behavior needs", "every hunk is required by the plan"} {
+		if !strings.Contains(question, want) {
+			t.Fatalf("review question lacks %q: %s", want, question)
+		}
+	}
+}
