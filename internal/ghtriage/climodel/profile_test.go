@@ -13,6 +13,18 @@ import (
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 )
 
+// tempDir is t.TempDir() with mode 0700: the profile directory check refuses a
+// group-writable directory, and t.TempDir() honours the umask (the validation
+// user's is 002).
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestBuiltinProfilesValidate(t *testing.T) {
 	seen := map[string]bool{}
 	for _, p := range BuiltinProfiles() {
@@ -85,7 +97,7 @@ func TestValidateRefusesUnsafeProfiles(t *testing.T) {
 }
 
 func TestArgvRendersTheModelOnlyWhenItIsValid(t *testing.T) {
-	p, err := FindProfile("claude", t.TempDir())
+	p, err := FindProfile("claude", tempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,8 +116,8 @@ func TestArgvRendersTheModelOnlyWhenItIsValid(t *testing.T) {
 }
 
 func TestAnswerExtraction(t *testing.T) {
-	agy, _ := FindProfile("agy", t.TempDir())
-	claude, _ := FindProfile("claude", t.TempDir())
+	agy, _ := FindProfile("agy", tempDir(t))
+	claude, _ := FindProfile("claude", tempDir(t))
 	ok := `{"event":"init"}` + "\n" + `{"event":"result","result":{"status":"SUCCESS","response":"{\"a\":1}","error":""}}` + "\n"
 	if got, err := agy.answer([]byte(ok)); err != nil || string(got) != `{"a":1}` {
 		t.Fatalf("%q %v", got, err)
@@ -147,7 +159,7 @@ func TestOkIfRequiresTheNamedValue(t *testing.T) {
 }
 
 func TestEncodePrompt(t *testing.T) {
-	agy, _ := FindProfile("agy", t.TempDir())
+	agy, _ := FindProfile("agy", tempDir(t))
 	stdin, extra, err := agy.encodePrompt([]byte("line1\n\"quoted\" {prompt}"))
 	if err != nil || extra != nil {
 		t.Fatalf("%v %v", extra, err)
@@ -182,7 +194,7 @@ func writeProfile(t *testing.T, dir, name string, p Profile, mode os.FileMode) {
 func TestLoadProfileDir(t *testing.T) {
 	extra := Profile{Name: "newcli", Binaries: []string{"newcli"}, Args: []string{"--print", "--plan"}, ReadOnly: []string{"--plan"},
 		Input: Input{Format: "stdin"}, Output: Output{Format: "text"}}
-	dir := t.TempDir()
+	dir := tempDir(t)
 	writeProfile(t, dir, "newcli.json", extra, 0o600)
 	p, err := FindProfile("newcli", dir)
 	if err != nil || p.Name != "newcli" {
@@ -195,13 +207,13 @@ func TestLoadProfileDir(t *testing.T) {
 		t.Errorf("a missing directory should be no profiles: %v %v", got, err)
 	}
 
-	loose := t.TempDir()
+	loose := tempDir(t)
 	writeProfile(t, loose, "newcli.json", extra, 0o666)
 	if _, err := LoadProfileDir(loose); err == nil {
 		t.Error("a world-writable profile was loaded")
 	}
-	linked := t.TempDir()
-	target := filepath.Join(t.TempDir(), "t.json")
+	linked := tempDir(t)
+	target := filepath.Join(tempDir(t), "t.json")
 	writeProfile(t, filepath.Dir(target), "t.json", extra, 0o600)
 	if err := os.Symlink(target, filepath.Join(linked, "newcli.json")); err != nil {
 		t.Fatal(err)
@@ -211,19 +223,19 @@ func TestLoadProfileDir(t *testing.T) {
 	}
 	shadow := extra
 	shadow.Name = "claude"
-	shadowDir := t.TempDir()
+	shadowDir := tempDir(t)
 	writeProfile(t, shadowDir, "claude.json", shadow, 0o600)
 	if _, err := LoadProfileDir(shadowDir); err == nil {
 		t.Error("a profile replaced a built-in")
 	}
 	unsafe := extra
 	unsafe.Args = []string{"--print", "--plan", "--yolo"}
-	unsafeDir := t.TempDir()
+	unsafeDir := tempDir(t)
 	writeProfile(t, unsafeDir, "newcli.json", unsafe, 0o600)
 	if _, err := LoadProfileDir(unsafeDir); err == nil {
 		t.Error("an unsafe profile was loaded")
 	}
-	unknown := t.TempDir()
+	unknown := tempDir(t)
 	if err := os.WriteFile(filepath.Join(unknown, "x.json"), []byte(`{"name":"x","extra":1}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +248,7 @@ func TestLoadProfileDir(t *testing.T) {
 // and answers with body, so a profile's binary check and delivery can be driven.
 func writeNamed(t *testing.T, name, body string) (path, record string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := tempDir(t)
 	path = filepath.Join(dir, name)
 	record = filepath.Join(dir, "record")
 	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + record + ".args\ncat > " + record + ".stdin\ncat <<'OUT'\n" + body + "\nOUT\n"
@@ -249,7 +261,7 @@ func writeNamed(t *testing.T, name, body string) (path, record string) {
 func TestProfileRunsAgyThroughStreamJSON(t *testing.T) {
 	body := `{"event":"init"}` + "\n" + `{"event":"result","result":{"status":"SUCCESS","response":"{\"verdict\":\"ACCEPT\",\"reason\":\"fine\"}"}}`
 	bin, record := writeNamed(t, "agy", body)
-	adapter, err := New(Config{RunAsUser: testUser, Binary: bin, Timeout: 10 * time.Second, Profile: "agy", ProfileModel: "gemini-3.8-flash-high", ProfileDir: t.TempDir()})
+	adapter, err := New(Config{RunAsUser: testUser, Binary: bin, Timeout: 10 * time.Second, Profile: "agy", ProfileModel: "gemini-3.8-flash-high", ProfileDir: tempDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +284,7 @@ func TestProfileRunsAgyThroughStreamJSON(t *testing.T) {
 
 func TestProfileRunsAnArgvPromptHarness(t *testing.T) {
 	bin, record := writeNamed(t, "argvtool", `{"verdict":"ACCEPT","reason":"ok"}`)
-	dir := t.TempDir()
+	dir := tempDir(t)
 	writeProfile(t, dir, "argvtool.json", Profile{Name: "argvtool", Binaries: []string{"argvtool"}, Args: []string{"--plan"}, ReadOnly: []string{"--plan"},
 		Input: Input{Format: "argv", Flag: "-p"}, Output: Output{Format: "text"}}, 0o600)
 	adapter, err := New(Config{RunAsUser: testUser, Binary: bin, Timeout: 10 * time.Second, Profile: "argvtool", ProfileDir: dir})
@@ -291,7 +303,7 @@ func TestProfileRunsAnArgvPromptHarness(t *testing.T) {
 func TestProfileConfigurationRules(t *testing.T) {
 	bin, _ := writeNamed(t, "agy", "{}")
 	other, _ := writeNamed(t, "other", "{}")
-	dir := t.TempDir()
+	dir := tempDir(t)
 	base := Config{RunAsUser: testUser, Binary: bin, Timeout: time.Second, Profile: "agy", ProfileModel: "m", ProfileDir: dir}
 	if _, err := New(base); err != nil {
 		t.Fatal(err)
@@ -356,7 +368,7 @@ func TestProbeAndDraft(t *testing.T) {
 }
 
 func TestOpencodeAnswerIsTheLastTextEvent(t *testing.T) {
-	p, _ := FindProfile("opencode", t.TempDir())
+	p, _ := FindProfile("opencode", tempDir(t))
 	out := `{"type":"step_start","part":{"type":"step-start"}}` + "\n" +
 		`{"type":"text","part":{"type":"text","text":"{\"ok\":true}"}}` + "\n" +
 		`{"type":"step_finish","part":{"reason":"stop"}}` + "\n"
@@ -370,14 +382,14 @@ func TestOpencodeAnswerIsTheLastTextEvent(t *testing.T) {
 
 // agy documents that --mode plan has no effect while slash commands are disabled.
 func TestAgyKeepsPlanModeEffective(t *testing.T) {
-	p, _ := FindProfile("agy", t.TempDir())
+	p, _ := FindProfile("agy", tempDir(t))
 	if slices.Contains(p.Args, "--disable-slash-commands") {
 		t.Fatal("agy plan mode is silently off with --disable-slash-commands")
 	}
 }
 
 func TestRepeatedValueOptionsInsideReadOnlyAreAllowed(t *testing.T) {
-	p, _ := FindProfile("copilot", t.TempDir())
+	p, _ := FindProfile("copilot", tempDir(t))
 	if err := p.Validate(); err != nil {
 		t.Fatalf("copilot repeats --deny-tool inside its read_only run: %v", err)
 	}
@@ -393,7 +405,7 @@ func TestArgvPromptWithNULIsRefused(t *testing.T) {
 func TestProfileDirectoryItselfMustBeTrusted(t *testing.T) {
 	extra := Profile{Name: "newcli", Binaries: []string{"newcli"}, Args: []string{"--print", "--plan"}, ReadOnly: []string{"--plan"},
 		Input: Input{Format: "stdin"}, Output: Output{Format: "text"}}
-	dir := t.TempDir()
+	dir := tempDir(t)
 	writeProfile(t, dir, "newcli.json", extra, 0o600)
 	if err := os.Chmod(dir, 0o777); err != nil {
 		t.Fatal(err)
@@ -404,7 +416,7 @@ func TestProfileDirectoryItselfMustBeTrusted(t *testing.T) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(t.TempDir(), "link")
+	link := filepath.Join(tempDir(t), "link")
 	if err := os.Symlink(dir, link); err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +432,7 @@ func TestProfileDirectoryItselfMustBeTrusted(t *testing.T) {
 // agy ends its turn silent when it tries a forbidden command; the adapter asks
 // once more, with a note, and only once.
 func TestEmptyProfileAnswerIsRetriedOnceWithANote(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDir(t)
 	counter := filepath.Join(dir, "calls")
 	bin := filepath.Join(dir, "agy")
 	script := "#!/bin/sh\necho x >> " + counter + "\ncat > " + dir + "/last\nif grep -q 'previous attempt' " + dir + "/last; then\n" +
@@ -429,7 +441,7 @@ func TestEmptyProfileAnswerIsRetriedOnceWithANote(t *testing.T) {
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := New(Config{RunAsUser: testUser, Binary: bin, Timeout: 10 * time.Second, Profile: "agy", ProfileModel: "m", ProfileDir: t.TempDir()})
+	adapter, err := New(Config{RunAsUser: testUser, Binary: bin, Timeout: 10 * time.Second, Profile: "agy", ProfileModel: "m", ProfileDir: tempDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +453,7 @@ func TestEmptyProfileAnswerIsRetriedOnceWithANote(t *testing.T) {
 		t.Fatalf("expected one call and one retry, got %q", calls)
 	}
 	// Silent both times: the error surfaces after exactly one retry.
-	silentDir := t.TempDir()
+	silentDir := tempDir(t)
 	silentCount := filepath.Join(silentDir, "calls")
 	silent := "#!/bin/sh\ncat >/dev/null\necho x >> " + silentCount + "\n" +
 		`echo '{"event":"result","result":{"status":"SUCCESS","response":""}}'` + "\n"
@@ -449,7 +461,7 @@ func TestEmptyProfileAnswerIsRetriedOnceWithANote(t *testing.T) {
 	if err := os.WriteFile(silentBin, []byte(silent), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	adapter, err = New(Config{RunAsUser: testUser, Binary: silentBin, Timeout: 10 * time.Second, Profile: "agy", ProfileModel: "m", ProfileDir: t.TempDir()})
+	adapter, err = New(Config{RunAsUser: testUser, Binary: silentBin, Timeout: 10 * time.Second, Profile: "agy", ProfileModel: "m", ProfileDir: tempDir(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +474,7 @@ func TestEmptyProfileAnswerIsRetriedOnceWithANote(t *testing.T) {
 }
 
 func TestAgyRefusesAPromptItWouldTruncate(t *testing.T) {
-	p, _ := FindProfile("agy", t.TempDir())
+	p, _ := FindProfile("agy", tempDir(t))
 	if p.MaxPrompt <= 0 {
 		t.Fatal("agy has no prompt cap")
 	}
