@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -46,6 +48,56 @@ func runModelProbe(ctx context.Context, args []string) error {
 		return fmt.Errorf("probe failed after %s: %w", time.Since(start).Round(time.Millisecond), err)
 	}
 	fmt.Printf("probe ok in %s: %s\n", time.Since(start).Round(time.Millisecond), describeModel(cfg))
+	if cfg.Profile != "" {
+		if err := stampProbe(cfg.ProfileDir, cfg.Profile, cfg.ProfileModel); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// probeStamp records that the exact bytes of a profile file passed model-probe.
+type probeStamp struct {
+	SHA256 string `json:"sha256"`
+	Model  string `json:"model"`
+	At     string `json:"at"`
+}
+
+func stampPath(dir, name string) string { return filepath.Join(dir, name+".probed") }
+
+// stampProbe writes the stamp for a profile file in dir. A built-in profile has
+// no file there and needs none: only adopting a drafted profile asks for it.
+func stampProbe(dir, name, model string) error {
+	path := filepath.Join(dir, name+".json")
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	_, raw, err := climodel.ReadProfileFile(path)
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(raw)
+	stamp, err := json.Marshal(probeStamp{SHA256: hex.EncodeToString(sum[:]), Model: model, At: time.Now().UTC().Format(time.RFC3339)})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(stampPath(dir, name), stamp, 0o600)
+}
+
+// checkProbe refuses to adopt bytes that no model-probe has passed.
+func checkProbe(dir, name string, raw []byte) error {
+	data, err := os.ReadFile(stampPath(dir, name))
+	if err != nil {
+		return fmt.Errorf("profile %q has not passed model-probe: run it with --model-profile-dir=%s first", name, dir)
+	}
+	var stamp probeStamp
+	if err := json.Unmarshal(data, &stamp); err != nil {
+		return fmt.Errorf("probe stamp of %q is unreadable: %w", name, err)
+	}
+	sum := sha256.Sum256(raw)
+	if stamp.SHA256 != hex.EncodeToString(sum[:]) {
+		return fmt.Errorf("profile %q changed since its last probe: run model-probe again", name)
+	}
 	return nil
 }
 
@@ -178,8 +230,9 @@ func helpText(ctx context.Context, runAs, binary string, prefix []string) (strin
 	return out.String(), nil
 }
 
-// runModelProfileAdopt moves a pending profile into the active directory after
-// validating it again. It is the owner's decision, so it needs --yes.
+// runModelProfileAdopt installs a pending profile into the active directory
+// after validating it again and checking that model-probe passed on exactly
+// these bytes. It is the owner's decision, so it needs --yes.
 func runModelProfileAdopt(_ context.Context, args []string) error {
 	flags := flag.NewFlagSet("model-profile-adopt", flag.ContinueOnError)
 	name := flags.String("name", "", "profile name in the pending directory")
@@ -204,6 +257,9 @@ func runModelProfileAdopt(_ context.Context, args []string) error {
 	if profile.Name != *name {
 		return fmt.Errorf("pending file %s.json holds profile %q", *name, profile.Name)
 	}
+	if err := checkProbe(filepath.Join(active, "pending"), *name, raw); err != nil {
+		return err
+	}
 	if _, err := climodel.FindProfile(*name, active); err == nil {
 		return fmt.Errorf("profile %q already exists (built-in or active)", *name)
 	}
@@ -220,6 +276,7 @@ func runModelProfileAdopt(_ context.Context, args []string) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
+	os.Remove(stampPath(filepath.Join(active, "pending"), *name))
 	fmt.Printf("adopted %s\n", *name)
 	return nil
 }

@@ -21,6 +21,7 @@ import (
 // parseGHCodeReviewFlags is run-gh-code-review's flag parsing, without filesystem checks.
 func parseGHCodeReviewFlags(args []string) (caseID, source string, modelConfig climodel.Config, err error) {
 	flags := flag.NewFlagSet("run-gh-code-review", flag.ContinueOnError)
+	fallbackOf := flags.String("model-fallback-of", "", "pool a replacement reviewer stands in for (set by run-gh-pipeline)")
 	flags.StringVar(&caseID, "case", "", "active implementation case ID")
 	flags.StringVar(&source, "source-repo", "", "absolute source repository used for the implementation")
 	registerTriageModelFlags(flags, "independent reviewer wrapper returning ACCEPT, REVISE or BLOCK")
@@ -32,6 +33,7 @@ func parseGHCodeReviewFlags(args []string) (caseID, source string, modelConfig c
 		return
 	}
 	modelConfig, err = triageModelConfig(flags)
+	modelConfig.FallbackOf = *fallbackOf
 	return
 }
 
@@ -67,7 +69,8 @@ func runGHCodeReview(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
-	reviewer := ghtriage.NewCodeReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout())
+	adapter = adapter.WithLedger(box.Store, "code-review", "")
+	reviewer := ghtriage.NewCodeReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout()).WithReviewer(reviewerIdentity(modelConfig))
 	result, err := reviewer.Review(ctx, domain.ID(strings.TrimSpace(caseID)), source)
 	if err != nil {
 		return err

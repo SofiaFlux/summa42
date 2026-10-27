@@ -4,7 +4,7 @@ summa42-query.py - read-only CLI over the canonical Summa42 SQLite database.
 
 Only the Box writes canonical state. This script opens the database with
 mode=ro and a short busy timeout, and offers read subcommands only
-(status, cases, tickets). Paths resolve from SUMMA42_HOME (default ~/.summa42).
+(status, cases, tickets, capacity). Paths resolve from SUMMA42_HOME (default ~/.summa42).
 """
 
 import argparse
@@ -12,6 +12,7 @@ import json
 import os
 import sqlite3
 import sys
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 
@@ -90,11 +91,59 @@ def cmd_tickets():
     print(json.dumps(items[:40]))
 
 
+def cmd_capacity():
+    """Pools from the model-call ledger: exhausted or not, the reset time, and
+    today's calls. Mirrors the Box's PoolState rule so both agree on one ledger."""
+    cur = get_db().cursor()
+    try:
+        cur.execute("SELECT 1 FROM model_calls LIMIT 1")
+    except sqlite3.OperationalError:
+        print(json.dumps({"pools": [], "error": "NO_LEDGER"}))
+        return
+    now = datetime.now(timezone.utc)
+    now_s = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    today_s = now.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+    pools = []
+    for (pool,) in cur.execute("SELECT DISTINCT pool FROM model_calls ORDER BY pool").fetchall():
+        exhausted, reset = False, None
+        last = cur.execute(
+            "SELECT call_id, reset_at FROM model_calls WHERE pool=? AND outcome='refused' ORDER BY call_id DESC LIMIT 1",
+            (pool,)).fetchone()
+        if last and last[1] and last[1] > now_s:
+            ok_after = cur.execute(
+                "SELECT count(*) FROM model_calls WHERE pool=? AND outcome='ok' AND call_id>?",
+                (pool, last[0])).fetchone()[0]
+            if ok_after == 0:
+                exhausted, reset = True, last[1]
+        calls = {}
+        tokens_in = tokens_out = 0
+        for outcome, n, tin, tout in cur.execute("""
+            SELECT outcome, count(*), coalesce(sum(input_tokens), 0), coalesce(sum(output_tokens), 0)
+            FROM model_calls WHERE pool=? AND started_at>=? GROUP BY outcome
+        """, (pool, today_s)).fetchall():
+            calls[outcome] = n
+            tokens_in += tin
+            tokens_out += tout
+        pools.append({
+            "pool": pool,
+            "state": "exhausted" if exhausted else "available",
+            "reset_at": reset,
+            "calls_today": calls,
+            "input_tokens_today": tokens_in,
+            "output_tokens_today": tokens_out,
+        })
+    print(json.dumps({
+        "now": now_s,
+        "pools": pools,
+        "note": "remaining quota is unknown unless the CLI reports it; 'available' means no known refusal",
+    }))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Read-only Summa42 queries")
-    parser.add_argument("command", choices=["status", "cases", "tickets"])
+    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity"])
     args = parser.parse_args(argv)
-    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets}[args.command]()
+    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity}[args.command]()
 
 
 if __name__ == "__main__":

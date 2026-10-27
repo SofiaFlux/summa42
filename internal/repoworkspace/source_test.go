@@ -192,7 +192,7 @@ func TestFitContextKeepsPinnedAndDropsWhatOverflows(t *testing.T) {
 	gitTest(t, cfg.LocalPath, "add", ".")
 	gitTest(t, cfg.LocalPath, "commit", "-qm", "files")
 	cfg.Commit = gitTest(t, cfg.LocalPath, "rev-parse", "HEAD")
-	got, err := FitContext(t.Context(), cfg.LocalPath, cfg.Commit, []string{"code.go", "a", "big", "b", "c"}, 1)
+	got, err := FitContext(t.Context(), cfg.LocalPath, cfg.Commit, []string{"code.go", "a", "big", "b", "c"}, 1, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,25 @@ func TestFitContextKeepsPinnedAndDropsWhatOverflows(t *testing.T) {
 	if _, err := Capture(t.Context(), cfg); err != nil {
 		t.Fatalf("fitted context does not capture: %v", err)
 	}
-	if got, err := FitContext(t.Context(), cfg.LocalPath, cfg.Commit, []string{"big", "a"}, 1); err != nil || strings.Join(got, ",") != "big" {
+	if got, err := FitContext(t.Context(), cfg.LocalPath, cfg.Commit, []string{"big", "a"}, 1, 0); err != nil || strings.Join(got, ",") != "big" {
 		t.Fatalf("pinned file must be kept even when it overflows: %v %v", got, err)
+	}
+}
+
+// A smaller budget drops what a harness that truncates long input could not see.
+func TestFitContextHonoursASmallerBudget(t *testing.T) {
+	cfg := sourceFixture(t)
+	for name, size := range map[string]int{"a": 30000, "b": 30000, "c": 30000} {
+		os.WriteFile(filepath.Join(cfg.LocalPath, name), []byte(strings.Repeat("x", size)), 0600)
+	}
+	gitTest(t, cfg.LocalPath, "add", ".")
+	gitTest(t, cfg.LocalPath, "commit", "-qm", "files")
+	cfg.Commit = gitTest(t, cfg.LocalPath, "rev-parse", "HEAD")
+	got, err := FitContext(t.Context(), cfg.LocalPath, cfg.Commit, []string{"a", "b", "c"}, 0, 70000)
+	if err != nil || strings.Join(got, ",") != "a,b" {
+		t.Fatalf("fit = %v %v, want a,b under a 70000 byte budget", got, err)
+	}
+	if got, _ := FitContext(t.Context(), cfg.LocalPath, cfg.Commit, []string{"a", "b", "c"}, 0, 0); strings.Join(got, ",") != "a,b,c" {
+		t.Fatalf("budget 0 must keep the repository maximum: %v", got)
 	}
 }

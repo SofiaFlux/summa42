@@ -39,6 +39,12 @@ type Profile struct {
 	NoTools  bool     `json:"no_tools"`
 	Input    Input    `json:"input"`
 	Output   Output   `json:"output"`
+	// MaxPrompt, when positive, is the longest prompt in bytes the harness takes
+	// whole; a longer one is refused before the call. agy silently truncates
+	// long input and then tries commands to fetch the rest.
+	MaxPrompt int `json:"max_prompt,omitempty"`
+	// Capacity names the limits the harness's models share (see PoolFor).
+	Capacity Capacity `json:"capacity,omitempty"`
 }
 
 // Input is how the prompt reaches the CLI.
@@ -75,6 +81,15 @@ type Output struct {
 	FailIf map[string]string `json:"fail_if,omitempty"`
 	OkIf   map[string]string `json:"ok_if,omitempty"`
 }
+
+// errEmptyAnswer marks a structured result with no answer text. The adapter
+// asks once more after it, because an agent that tried a forbidden command ends
+// its turn silent.
+var errEmptyAnswer = errors.New("empty answer")
+
+// profileRetryNote is appended to the prompt of the one retry.
+const profileRetryNote = "\n\nYour previous attempt ended without an answer because it tried to run a command, which is not permitted. " +
+	"Do not run commands or call tools; everything you need is above. Answer now with the JSON object only.\n"
 
 // maxArgvPrompt keeps argv delivery well under the kernel's single-argument
 // limit (128 KiB on Linux).
@@ -144,6 +159,9 @@ func (p Profile) Validate() error {
 	if models > 1 {
 		return errors.New("{model} may appear once")
 	}
+	if err := p.Capacity.validate(); err != nil {
+		return err
+	}
 	switch {
 	case p.NoTools && len(p.ReadOnly) > 0:
 		return errors.New("a profile declares read_only or no_tools, not both")
@@ -163,6 +181,9 @@ func (p Profile) Validate() error {
 }
 
 func (p Profile) validateIO() error {
+	if p.MaxPrompt < 0 {
+		return errors.New("max_prompt must not be negative")
+	}
 	switch p.Input.Format {
 	case "stdin":
 	case "stdin-json":
@@ -263,6 +284,9 @@ func (p Profile) argv(model string) ([]string, error) {
 
 // encodePrompt returns the stdin bytes and any trailing argv for prompt.
 func (p Profile) encodePrompt(prompt []byte) (stdin []byte, extra []string, err error) {
+	if p.MaxPrompt > 0 && len(prompt) > p.MaxPrompt {
+		return nil, nil, fmt.Errorf("prompt of %d bytes exceeds the %d bytes profile %s takes whole; lower --context-max-bytes", len(prompt), p.MaxPrompt, p.Name)
+	}
 	switch p.Input.Format {
 	case "stdin":
 		return prompt, nil, nil
@@ -364,7 +388,13 @@ func (p Profile) answer(stdout []byte) ([]byte, error) {
 	}
 	text := lookup(obj, p.Output.Answer)
 	if strings.TrimSpace(text) == "" || text == "<nil>" {
-		return nil, fmt.Errorf("%s: empty answer", p.Name)
+		// The result object is what a person needs to see why (status, turns,
+		// token counts); the answer itself is empty, so nothing private is lost.
+		shown, _ := json.Marshal(obj)
+		if len(shown) > 400 {
+			shown = shown[:400]
+		}
+		return nil, fmt.Errorf("%s: %w in result %s", p.Name, errEmptyAnswer, shown)
 	}
 	return []byte(text), nil
 }
@@ -433,6 +463,12 @@ func lookup(obj map[string]any, path string) string {
 
 // profilePreamble goes before every profile prompt, as commandCodePreamble does: the
 // CLI is an agent, and a model that explores its scratch directory burns turns.
+// profilePostamble repeats the rule after the (often very long) prompt: agy,
+// asked to plan, tried to run a command, was denied and ended its turn with an
+// empty answer.
+const profilePostamble = "\n\nReminder: no tools or commands are available, and none are needed. " +
+	"Answer now, in this reply, with the requested JSON object only.\n"
+
 const profilePreamble = "Everything you need is in this message. Do not use any tools. " +
 	"Reply with the requested JSON object only: no Markdown, no code fence, no other text.\n\n"
 
@@ -452,9 +488,13 @@ func BuiltinProfiles() []Profile {
 			// --disable-slash-commands would turn plan mode off ("--mode plan has no
 			// effect while slash command expansion is disabled"), so it is absent.
 			Args:     []string{"--mode", "plan", "--sandbox", "--model", "{model}", "--input-format", "stream-json", "--output-format", "stream-json", "--print="},
-			ReadOnly: []string{"--mode", "plan"},
-			Input:    Input{Format: "stdin-json", Wrap: agyWrap},
-			Output:   Output{Format: "ndjson", Select: map[string]string{"event": "result"}, Answer: "result.response", Error: "result.error", FailIf: map[string]string{"result.status": "ERROR"}}},
+			ReadOnly: []string{"--mode", "plan"}, MaxPrompt: 110000,
+			Capacity: Capacity{Pools: []Pool{
+				{Name: "gemini", Models: []string{"gemini-*"}},
+				{Name: "additional", Models: []string{"claude-*", "gpt-oss-*"}},
+			}},
+			Input:  Input{Format: "stdin-json", Wrap: agyWrap},
+			Output: Output{Format: "ndjson", Select: map[string]string{"event": "result"}, Answer: "result.response", Error: "result.error", FailIf: map[string]string{"result.status": "ERROR"}}},
 		{Name: "claude", Binaries: []string{"claude"}, ModelRequired: true,
 			Args:     []string{"-p", "--model", "{model}", "--output-format", "json", "--permission-mode", "plan", "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config", "--tools", ""},
 			ReadOnly: []string{"--permission-mode", "plan"},

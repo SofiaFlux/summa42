@@ -89,6 +89,7 @@ func runGHImplement(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	adapter = adapter.WithLedger(box.Store, "implement", "")
 	impl := ghtriage.NewImplementer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).
 		WithModelTimeout(adapter.Timeout()).WithValidator(validator)
 	result, err := impl.Prepare(ctx, domain.ID(strings.TrimSpace(caseID)), source, root)
