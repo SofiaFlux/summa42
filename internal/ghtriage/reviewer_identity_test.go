@@ -66,3 +66,46 @@ func TestPlanReviewRecordFromAnotherReviewerIsRefused(t *testing.T) {
 		t.Fatal("a fallback verdict bound to the primary reviewer's expectation")
 	}
 }
+
+// The task payload must not depend on the reviewer: the task is keyed by work,
+// so a replacement reviewer has to reuse the work's task, not conflict with it.
+func TestTaskPayloadIgnoresTheReviewer(t *testing.T) {
+	plain := PlanReviewRecord{Schema: PlanReviewVersion, CaseID: "case-1", WorkID: "work-1", BaseSHA: "base"}
+	fallback := plain
+	fallback.Reviewer = &ReviewerIdentity{Harness: "opencode", Model: "opencode/big-pickle", FallbackOf: "commandcode:plan"}
+	a, err := planReviewPayload(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := planReviewPayload(fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Fatalf("plan payload changes with the reviewer:\n%s\n%s", a, b)
+	}
+
+	code := CodeReviewRecord{Schema: CodeReviewVersion, CaseID: "case-1", WorkID: "work-1"}
+	codeFallback := code
+	codeFallback.Reviewer = fallback.Reviewer
+	c, err := codeReviewPayload(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := codeReviewPayload(codeFallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(c) != string(d) {
+		t.Fatalf("code payload changes with the reviewer:\n%s\n%s", c, d)
+	}
+}
+
+func TestPrimaryReviewerRecordsNoIdentity(t *testing.T) {
+	if recordedReviewer(&ReviewerIdentity{Harness: "commandcode", Model: "deepseek/deepseek-v4-pro"}) != nil {
+		t.Fatal("the primary reviewer recorded an identity; in-flight records would stop binding")
+	}
+	if recordedReviewer(&ReviewerIdentity{Harness: "opencode", FallbackOf: "x"}) == nil {
+		t.Fatal("a replacement reviewer recorded no identity")
+	}
+}

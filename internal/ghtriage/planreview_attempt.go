@@ -46,7 +46,7 @@ func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, pl
 	if !found {
 		return fail(errors.New("triage task resource envelope unavailable"))
 	}
-	payload, err := json.Marshal(expected)
+	payload, err := planReviewPayload(expected)
 	if err != nil {
 		return fail(err)
 	}
