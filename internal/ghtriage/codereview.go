@@ -167,7 +167,9 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 		if err != nil {
 			return CodeReviewResult{}, err
 		}
-		record, err = validateCodeReview(object, raw, task, expected)
+		bound := expected
+		bound.Reviewer = storedReviewer(raw)
+		record, err = validateCodeReview(object, raw, task, bound)
 		if err != nil {
 			return CodeReviewResult{}, err
 		}

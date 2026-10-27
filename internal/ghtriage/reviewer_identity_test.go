@@ -109,3 +109,17 @@ func TestPrimaryReviewerRecordsNoIdentity(t *testing.T) {
 		t.Fatal("a replacement reviewer recorded no identity")
 	}
 }
+
+// A completed verdict is bound to the reviewer it names, whichever reviewer the
+// stage routes to now.
+func TestStoredReviewerIsTheOneTheVerdictNames(t *testing.T) {
+	fallback := &ReviewerIdentity{Harness: "opencode", Model: "opencode/big-pickle", FallbackOf: "commandcode:plan"}
+	raw, _ := json.Marshal(CodeReviewRecord{Reviewer: fallback})
+	if got := storedReviewer(raw); got == nil || *got != *fallback {
+		t.Fatalf("storedReviewer = %+v, want %+v", got, fallback)
+	}
+	legacy, _ := json.Marshal(CodeReviewRecord{})
+	if storedReviewer(legacy) != nil {
+		t.Fatal("a record without a reviewer named one")
+	}
+}

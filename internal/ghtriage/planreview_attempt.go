@@ -139,7 +139,9 @@ func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, pl
 	if err != nil {
 		return fail(err)
 	}
-	record, err := validateReviewRecord(object, raw, expected, task)
+	bound := expected
+	bound.Reviewer = storedReviewer(raw)
+	record, err := validateReviewRecord(object, raw, bound, task)
 	if err != nil {
 		return fail(err)
 	}

@@ -34,6 +34,19 @@ func codeReviewPayload(expected CodeReviewRecord) ([]byte, error) {
 	return json.Marshal(expected)
 }
 
+// storedReviewer is the reviewer a stored verdict names. A completed review is
+// bound to its own reviewer, not to whichever reviewer the stage routes to now,
+// so an existing verdict is reused instead of being refused for its reviewer.
+func storedReviewer(raw []byte) *ReviewerIdentity {
+	var stored struct {
+		Reviewer *ReviewerIdentity `json:"reviewer"`
+	}
+	if json.Unmarshal(raw, &stored) != nil {
+		return nil
+	}
+	return stored.Reviewer
+}
+
 // isFallbackReview reports whether a replacement reviewer gave the verdict.
 func isFallbackReview(id *ReviewerIdentity) bool {
 	return id != nil && id.FallbackOf != ""
