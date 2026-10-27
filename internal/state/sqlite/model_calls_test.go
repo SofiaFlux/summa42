@@ -2,11 +2,13 @@ package sqlite
 
 import (
 	"context"
+	"io/fs"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/capacity"
+	"github.com/pressly/goose/v3"
 )
 
 func TestModelCallsPoolStateSurvivesRestartAndClearsOnSuccess(t *testing.T) {
@@ -66,5 +68,46 @@ func TestModelCallsPoolStateSurvivesRestartAndClearsOnSuccess(t *testing.T) {
 	}
 	if state.Exhausted {
 		t.Fatalf("after a successful call: pool still exhausted: %+v", state)
+	}
+}
+
+func TestModelCallsMigrationRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "roundtrip.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB().Close()
+	db := store.DB()
+
+	migrations, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations, goose.WithTableName("schema_migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tableCount := func() int {
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='model_calls'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if tableCount() != 1 {
+		t.Fatal("model_calls missing after Open")
+	}
+	if _, err := provider.DownTo(ctx, 23); err != nil {
+		t.Fatalf("down to v23: %v", err)
+	}
+	if tableCount() != 0 {
+		t.Fatal("model_calls survived the down migration")
+	}
+	if _, err := provider.UpTo(ctx, 24); err != nil {
+		t.Fatalf("up to v24: %v", err)
+	}
+	if tableCount() != 1 {
+		t.Fatal("model_calls not recreated by the up migration")
 	}
 }
