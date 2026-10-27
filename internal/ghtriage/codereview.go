@@ -39,17 +39,18 @@ type CodeReviewModel interface {
 	ReviewCode(context.Context, CodeReviewInput) (PlanReviewOutput, error)
 }
 type CodeReviewRecord struct {
-	Schema                   string    `json:"schema"`
-	CaseID                   domain.ID `json:"case_id"`
-	WorkID                   domain.ID `json:"work_id"`
-	ImplementationEvidenceID domain.ID `json:"implementation_evidence_id"`
-	ImplementationHash       string    `json:"implementation_hash"`
-	ImplementationTaskID     domain.ID `json:"implementation_task_id"`
-	ImplementationAttemptID  domain.ID `json:"implementation_attempt_id"`
-	ImplementationFence      int64     `json:"implementation_fence"`
-	TaskID                   domain.ID `json:"task_id"`
-	AttemptID                domain.ID `json:"attempt_id"`
-	Fence                    int64     `json:"fence"`
+	Schema                   string            `json:"schema"`
+	CaseID                   domain.ID         `json:"case_id"`
+	WorkID                   domain.ID         `json:"work_id"`
+	ImplementationEvidenceID domain.ID         `json:"implementation_evidence_id"`
+	ImplementationHash       string            `json:"implementation_hash"`
+	ImplementationTaskID     domain.ID         `json:"implementation_task_id"`
+	ImplementationAttemptID  domain.ID         `json:"implementation_attempt_id"`
+	ImplementationFence      int64             `json:"implementation_fence"`
+	TaskID                   domain.ID         `json:"task_id"`
+	AttemptID                domain.ID         `json:"attempt_id"`
+	Fence                    int64             `json:"fence"`
+	Reviewer                 *ReviewerIdentity `json:"reviewer,omitempty"`
 	repoworkspace.Candidate
 	PlanReviewOutput
 }
@@ -68,6 +69,15 @@ type CodeReviewer struct {
 	model    CodeReviewModel
 	// modelTimeout sizes the attempt lease (zero keeps CodeReviewLeaseDuration).
 	modelTimeout time.Duration
+	// reviewer is recorded with every verdict; nil when the caller set none.
+	reviewer *ReviewerIdentity
+}
+
+// WithReviewer records who gives the verdicts. A replacement reviewer's ACCEPT
+// never accepts the implementation.
+func (r *CodeReviewer) WithReviewer(id ReviewerIdentity) *CodeReviewer {
+	r.reviewer = &id
+	return r
 }
 
 // WithModelTimeout derives the attempt lease from the model call timeout.
@@ -126,7 +136,7 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 	if err != nil {
 		return CodeReviewResult{}, err
 	}
-	expected := CodeReviewRecord{Schema: CodeReviewVersion, CaseID: c.ID, WorkID: c.CurrentWorkID, ImplementationEvidenceID: impl.EvidenceID, ImplementationHash: implObject.ContentHash, ImplementationTaskID: implTask.ID, ImplementationAttemptID: implTask.CurrentAttemptID, ImplementationFence: implTask.CurrentFence, Candidate: impl.Record.Candidate}
+	expected := CodeReviewRecord{Schema: CodeReviewVersion, CaseID: c.ID, WorkID: c.CurrentWorkID, ImplementationEvidenceID: impl.EvidenceID, ImplementationHash: implObject.ContentHash, ImplementationTaskID: implTask.ID, ImplementationAttemptID: implTask.CurrentAttemptID, ImplementationFence: implTask.CurrentFence, Candidate: impl.Record.Candidate, Reviewer: r.reviewer}
 	observe := func() error { return observeReview(ctx, sourceRepo, input, *impl.Record) }
 	if err := observe(); err != nil {
 		return CodeReviewResult{}, err
@@ -251,7 +261,9 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 	if err := r.acceptReview(ctx, task, record, object.ID, guard); err != nil {
 		return CodeReviewResult{}, err
 	}
-	accepted := record.Verdict == "ACCEPT" && impl.Record.AllPassed
+	// A replacement reviewer's verdict is held for the Owner, whatever it says.
+	fallback := isFallbackReview(record.Reviewer)
+	accepted := record.Verdict == "ACCEPT" && impl.Record.AllPassed && !fallback
 	if accepted {
 		acceptGuard := func(ctx context.Context, tx *sql.Tx) error {
 			if err := guard(ctx, tx); err != nil {
@@ -272,11 +284,15 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 		if _, err := r.verify.AcceptTaskWithGuard(ctx, implTask.ID, request, acceptGuard); err != nil {
 			return CodeReviewResult{}, err
 		}
-	} else if implTask.State == domain.TaskSucceeded {
+	} else if implTask.State == domain.TaskSucceeded && !fallback {
 		return CodeReviewResult{}, errors.New("implementation acceptance contradicts saved review")
 	}
-	if record.Verdict != "ACCEPT" {
-		if err := moveCase(ctx, r.cases, c, workflow.Unknown, "code-review:"+record.Verdict+": "+record.Reason, object.ID); err != nil {
+	if record.Verdict != "ACCEPT" || fallback {
+		reason := "code-review:" + record.Verdict + ": " + record.Reason
+		if fallback {
+			reason = "code-review:fallback:" + record.Verdict + ": " + record.Reason
+		}
+		if err := moveCase(ctx, r.cases, c, workflow.Unknown, reason, object.ID); err != nil {
 			return CodeReviewResult{}, err
 		}
 	}

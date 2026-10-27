@@ -906,6 +906,7 @@ func openWorkerBox(ctx context.Context, runtimeCfg summa42runtime.Config, modelC
 	if err != nil {
 		return nil, verdict, fmt.Errorf("open Box runtime: %w", err)
 	}
+	adapter = adapter.WithLedger(box.Store, "worker", "")
 	installTriageExecutor(box.Executors, box.Evidence, adapter)
 	return box, verdict, nil
 }
@@ -1692,6 +1693,7 @@ func runGHPlan(ctx context.Context, args []string) error {
 		return fmt.Errorf("open Box runtime: %w", err)
 	}
 	defer box.Close()
+	adapter = adapter.WithLedger(box.Store, "plan", "")
 	planner := ghtriage.NewPlanner(workflowcase.New(box.Store, box.Clock, box.Purpose),
 		box.Execution, box.Verification, box.Evidence, adapter)
 	planner.SetConfig(plannerConfig(modelConfig))
@@ -1764,6 +1766,7 @@ func runGHTriageReview(ctx context.Context, args []string) error {
 		return fmt.Errorf("open Box runtime: %w", err)
 	}
 	defer box.Close()
+	adapter = adapter.WithLedger(box.Store, "triage-review", "")
 	reviewer := ghtriage.NewReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose),
 		box.Evidence, ghtriage.NewReviewIndex(box.Store, box.Clock), adapter, box.Clock)
 	result, err := reviewer.Tick(ctx, missionID)

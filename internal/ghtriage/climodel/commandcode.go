@@ -43,6 +43,39 @@ func looksLikeCommandCode(binary string) bool {
 		strings.Contains(binary, "command-code")
 }
 
+// commandCodeTokens reads the token counts of cmd's last result line, nil for
+// each count cmd did not report.
+func commandCodeTokens(out []byte) (input, output *int) {
+	var counts map[string]int
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	scanner.Buffer(make([]byte, 0, 64*1024), maxModelOutput)
+	for scanner.Scan() {
+		var r struct {
+			Type  string         `json:"type"`
+			Usage map[string]int `json:"usage"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &r) == nil && r.Type == "result" {
+			counts = r.Usage
+		}
+	}
+	if n, ok := counts["inputTokens"]; ok {
+		input = &n
+	}
+	if n, ok := counts["outputTokens"]; ok {
+		output = &n
+	}
+	return input, output
+}
+
+// commandCodePool names the limit a Command Code model draws on: each free
+// model has its own, and every paid model shares the plan's pool.
+func commandCodePool(model string) string {
+	if slices.Contains(commandCodeFree, model) {
+		return "commandcode:free:" + model
+	}
+	return "commandcode:plan"
+}
+
 // commandCodeArgs is the whole argv of a Command Code run. The adapter builds
 // it so nothing operator-supplied can drop plan mode, add --yolo or name a
 // second model: cmd resolves repeated options by last value and accepts

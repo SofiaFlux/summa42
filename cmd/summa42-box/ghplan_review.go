@@ -19,6 +19,7 @@ import (
 // parseGHPlanReviewFlags is run-gh-plan-review's flag parsing.
 func parseGHPlanReviewFlags(args []string) (mission, baseSHA string, modelConfig climodel.Config, err error) {
 	flags := flag.NewFlagSet("run-gh-plan-review", flag.ContinueOnError)
+	fallbackOf := flags.String("model-fallback-of", "", "pool a replacement reviewer stands in for (set by run-gh-pipeline)")
 	flags.StringVar(&mission, "mission", "", "mission whose grounded plans are independently reviewed")
 	flags.StringVar(&baseSHA, "source-sha", "", "commit plans must be grounded on; a plan on another base is held unreviewed (optional)")
 	registerTriageModelFlags(flags, "model binary reviewing a grounded issue plan")
@@ -30,6 +31,7 @@ func parseGHPlanReviewFlags(args []string) (mission, baseSHA string, modelConfig
 		return
 	}
 	modelConfig, err = triageModelConfig(flags)
+	modelConfig.FallbackOf = *fallbackOf
 	return
 }
 
@@ -63,7 +65,8 @@ func runGHPlanReview(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
-	reviewer := ghtriage.NewPlanReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout()).WithBaseSHA(strings.TrimSpace(baseSHA))
+	adapter = adapter.WithLedger(box.Store, "plan-review", "")
+	reviewer := ghtriage.NewPlanReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout()).WithBaseSHA(strings.TrimSpace(baseSHA)).WithReviewer(reviewerIdentity(modelConfig))
 	result, err := reviewer.Tick(ctx, domain.ID(strings.TrimSpace(mission)))
 	if err != nil {
 		return err

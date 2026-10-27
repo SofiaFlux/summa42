@@ -24,7 +24,7 @@ const planReviewVerifierType = "github.issue.plan.review.binding.v1"
 const PlanReviewLeaseDuration = 5 * time.Minute
 
 func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, plan Plan, planID domain.ID, snap Snapshot, source repoworkspace.Snapshot) (PlanReviewRecord, evidence.EvidenceObject, error) {
-	expected := PlanReviewRecord{Schema: PlanReviewVersion, CaseID: c.ID, WorkID: c.CurrentWorkID, PlanEvidenceID: planID, ContextEvidenceID: plan.Source.ContextEvidenceID, BaseSHA: plan.Source.BaseSHA}
+	expected := PlanReviewRecord{Schema: PlanReviewVersion, CaseID: c.ID, WorkID: c.CurrentWorkID, PlanEvidenceID: planID, ContextEvidenceID: plan.Source.ContextEvidenceID, BaseSHA: plan.Source.BaseSHA, Reviewer: r.reviewer}
 	fail := func(err error) (PlanReviewRecord, evidence.EvidenceObject, error) {
 		return PlanReviewRecord{}, evidence.EvidenceObject{}, err
 	}
@@ -166,7 +166,7 @@ func validateReviewRecord(object evidence.EvidenceObject, raw []byte, expected P
 	if err := decodeExactlyOne(raw, &record); err != nil {
 		return record, err
 	}
-	if object.Kind != KindPlanReview || record.Schema != expected.Schema || record.CaseID != expected.CaseID || record.WorkID != expected.WorkID || record.PlanEvidenceID != expected.PlanEvidenceID || record.ContextEvidenceID != expected.ContextEvidenceID || record.BaseSHA != expected.BaseSHA || record.TaskID != task.ID || record.AttemptID != task.CurrentAttemptID {
+	if object.Kind != KindPlanReview || record.Schema != expected.Schema || record.CaseID != expected.CaseID || record.WorkID != expected.WorkID || record.PlanEvidenceID != expected.PlanEvidenceID || record.ContextEvidenceID != expected.ContextEvidenceID || record.BaseSHA != expected.BaseSHA || !sameReviewer(record.Reviewer, expected.Reviewer) || record.TaskID != task.ID || record.AttemptID != task.CurrentAttemptID {
 		return record, errors.New("review verdict is not bound to this work and attempt")
 	}
 	return record, record.PlanReviewOutput.Validate()

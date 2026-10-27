@@ -69,6 +69,15 @@ type PlanReviewer struct {
 	// baseSHA is the commit the Box now pins; a plan grounded elsewhere is held
 	// unreviewed. Empty skips the check.
 	baseSHA string
+	// reviewer is recorded with every verdict; nil when the caller set none.
+	reviewer *ReviewerIdentity
+}
+
+// WithReviewer records who gives the verdicts, so a replacement reviewer's
+// verdict is marked as one.
+func (r *PlanReviewer) WithReviewer(id ReviewerIdentity) *PlanReviewer {
+	r.reviewer = &id
+	return r
 }
 
 // WithBaseSHA holds plans whose base differs from sha instead of reviewing them.
@@ -88,14 +97,15 @@ func NewPlanReviewer(cases *workflowcase.Service, exec *execution.Service, verif
 }
 
 type PlanReviewRecord struct {
-	Schema            string    `json:"schema"`
-	CaseID            domain.ID `json:"case_id"`
-	WorkID            domain.ID `json:"work_id"`
-	PlanEvidenceID    domain.ID `json:"plan_evidence_id"`
-	ContextEvidenceID domain.ID `json:"context_evidence_id"`
-	BaseSHA           string    `json:"base_sha"`
-	TaskID            domain.ID `json:"task_id"`
-	AttemptID         domain.ID `json:"attempt_id"`
+	Schema            string            `json:"schema"`
+	CaseID            domain.ID         `json:"case_id"`
+	WorkID            domain.ID         `json:"work_id"`
+	PlanEvidenceID    domain.ID         `json:"plan_evidence_id"`
+	ContextEvidenceID domain.ID         `json:"context_evidence_id"`
+	BaseSHA           string            `json:"base_sha"`
+	TaskID            domain.ID         `json:"task_id"`
+	AttemptID         domain.ID         `json:"attempt_id"`
+	Reviewer          *ReviewerIdentity `json:"reviewer,omitempty"`
 	PlanReviewOutput
 }
 
@@ -285,8 +295,13 @@ func (r *PlanReviewer) reviewCase(ctx context.Context, c workflowcase.Case) (boo
 	}
 	output := record.PlanReviewOutput
 	typedVerdict := ""
+	// A replacement reviewer's verdict never opens implementation; the Owner reads it.
+	fallback := isFallbackReview(record.Reviewer)
 	assessment := workflow.Assessment{Verdict: workflow.Unknown, Reason: "plan-review:" + output.Verdict + ": " + output.Reason, EvidenceIDs: []string{string(object.ID)}}
-	if output.Verdict == "ACCEPT" {
+	if fallback {
+		assessment.Reason = "plan-review:fallback:" + output.Verdict + ": " + output.Reason
+	}
+	if output.Verdict == "ACCEPT" && !fallback {
 		caps := []string{"workspace.repo.write", "workspace.test"}
 		authorized := true
 		for _, cap := range caps {

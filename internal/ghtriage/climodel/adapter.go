@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SofiaFlux/summa42/internal/capacity"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/modelrun"
 )
@@ -47,6 +48,9 @@ type Config struct {
 	Profile      string
 	ProfileModel string
 	ProfileDir   string
+	// FallbackOf names the pool this reviewer stands in for when it is a
+	// replacement reviewer; empty for the primary reviewer and for producers.
+	FallbackOf string
 }
 
 type Adapter struct {
@@ -61,6 +65,32 @@ type Adapter struct {
 	commandCode bool
 	// profile, when set, drives argv, prompt delivery and answer extraction.
 	profile *Profile
+	// ledger, when set (see WithLedger), records each call and gates the pool
+	// the model draws on. harness, model and pool name that pool.
+	ledger  capacity.Ledger
+	harness string
+	model   string
+	pool    string
+	stage   string
+	caseID  string
+}
+
+// usage is the token count one call reported; nil when the CLI did not report it.
+type usage struct{ input, output *int }
+
+// unknownReset is how long a refusal blocks its pool when the provider prints
+// no reset time.
+const unknownReset = time.Hour
+
+// WithLedger returns a copy of the adapter that records each call in ledger
+// under stage and caseID, and refuses calls to a pool the ledger shows exhausted.
+func (a *Adapter) WithLedger(ledger capacity.Ledger, stage, caseID string) *Adapter {
+	if a == nil {
+		return nil
+	}
+	c := *a
+	c.ledger, c.stage, c.caseID = ledger, stage, caseID
+	return &c
 }
 
 // New validates the model configuration at construction, so an unusable
@@ -96,7 +126,14 @@ func New(config Config) (*Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("model binary %q is not usable: %w", config.Binary, err)
 	}
-	return &Adapter{runAs: target, binary: resolved, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist, zdr: config.ZDR, commandCode: config.CommandCodeModel != "", profile: profile}, nil
+	adapter := &Adapter{runAs: target, binary: resolved, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist, zdr: config.ZDR, commandCode: config.CommandCodeModel != "", profile: profile}
+	switch {
+	case config.CommandCodeModel != "":
+		adapter.harness, adapter.model, adapter.pool = "commandcode", config.CommandCodeModel, commandCodePool(config.CommandCodeModel)
+	case profile != nil:
+		adapter.harness, adapter.model, adapter.pool = profile.Name, config.ProfileModel, profile.PoolFor(config.ProfileModel)
+	}
+	return adapter, nil
 }
 
 // Timeout is the per-call model timeout.
@@ -187,15 +224,80 @@ func (a *Adapter) ReviewCode(ctx context.Context, input ghtriage.CodeReviewInput
 }
 
 func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {
-	out, err := a.runOnce(ctx, prompt)
+	if err := a.gate(ctx); err != nil {
+		return nil, err
+	}
+	out, err := a.attempt(ctx, prompt)
 	if a != nil && a.profile != nil && errors.Is(err, errEmptyAnswer) {
 		log.Printf("model profile %s answered nothing; asking once more: %v", a.profile.Name, err)
-		return a.runOnce(ctx, slices.Concat(prompt, []byte(profileRetryNote)))
+		return a.attempt(ctx, slices.Concat(prompt, []byte(profileRetryNote)))
 	}
 	return out, err
 }
 
-func (a *Adapter) runOnce(ctx context.Context, prompt []byte) ([]byte, error) {
+// attempt is one model call, recorded in the ledger when one is attached.
+func (a *Adapter) attempt(ctx context.Context, prompt []byte) ([]byte, error) {
+	started := time.Now()
+	var use usage
+	out, err := a.runOnce(ctx, prompt, &use)
+	a.record(ctx, started, use, err)
+	return out, err
+}
+
+// gate refuses a call while the ledger shows its pool exhausted, so the
+// provider is not asked again before the reset.
+func (a *Adapter) gate(ctx context.Context) error {
+	if a == nil || a.ledger == nil || a.pool == "" {
+		return nil
+	}
+	state, err := a.ledger.PoolState(ctx, a.pool, time.Now())
+	if err != nil {
+		return fmt.Errorf("capacity ledger: %w", err)
+	}
+	if state.Exhausted {
+		return fmt.Errorf("pool %s exhausted until %s: %w", a.pool, state.ResetAt.UTC().Format(time.RFC3339), ghtriage.ErrModelUnavailable)
+	}
+	return nil
+}
+
+// record appends one call to the ledger. A refusal also says when its pool
+// resets: the time the provider printed, or unknownReset when it printed none.
+func (a *Adapter) record(ctx context.Context, started time.Time, use usage, err error) {
+	if a == nil || a.ledger == nil || a.pool == "" {
+		return
+	}
+	now := time.Now()
+	call := capacity.Call{Pool: a.pool, Harness: a.harness, Model: a.model, Stage: a.stage, CaseID: a.caseID,
+		StartedAt: started, Duration: now.Sub(started), Outcome: outcomeOf(err), InputTokens: use.input, OutputTokens: use.output}
+	if call.Outcome == capacity.OutcomeRefused {
+		call.Message = err.Error()
+		if reset, ok := capacity.ParseReset(call.Message, now); ok {
+			call.ResetAt, call.ResetSource = reset, "parsed"
+		} else {
+			call.ResetAt, call.ResetSource = now.Add(unknownReset), "default"
+		}
+	}
+	if rerr := a.ledger.RecordCall(context.WithoutCancel(ctx), call); rerr != nil {
+		log.Printf("capacity ledger: %v", rerr)
+	}
+}
+
+func outcomeOf(err error) capacity.Outcome {
+	switch {
+	case err == nil:
+		return capacity.OutcomeOK
+	case errors.Is(err, errEmptyAnswer):
+		return capacity.OutcomeEmpty
+	case errors.Is(err, context.DeadlineExceeded):
+		return capacity.OutcomeTimeout
+	case errors.Is(err, ghtriage.ErrModelUnavailable):
+		return capacity.OutcomeRefused
+	default:
+		return capacity.OutcomeError
+	}
+}
+
+func (a *Adapter) runOnce(ctx context.Context, prompt []byte, use *usage) ([]byte, error) {
 	if a == nil {
 		return nil, errors.New("model adapter is not configured")
 	}
@@ -247,6 +349,7 @@ func (a *Adapter) runOnce(ctx context.Context, prompt []byte) ([]byte, error) {
 	}
 	if a.commandCode {
 		answer, err := commandCodeAnswer(stdout.Bytes())
+		use.input, use.output = commandCodeTokens(stdout.Bytes())
 		return unfence(answer), err
 	}
 	if a.profile != nil {

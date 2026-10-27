@@ -43,6 +43,8 @@ type Profile struct {
 	// whole; a longer one is refused before the call. agy silently truncates
 	// long input and then tries commands to fetch the rest.
 	MaxPrompt int `json:"max_prompt,omitempty"`
+	// Capacity names the limits the harness's models share (see PoolFor).
+	Capacity Capacity `json:"capacity,omitempty"`
 }
 
 // Input is how the prompt reaches the CLI.
@@ -156,6 +158,9 @@ func (p Profile) Validate() error {
 	}
 	if models > 1 {
 		return errors.New("{model} may appear once")
+	}
+	if err := p.Capacity.validate(); err != nil {
+		return err
 	}
 	switch {
 	case p.NoTools && len(p.ReadOnly) > 0:
@@ -484,6 +489,10 @@ func BuiltinProfiles() []Profile {
 			// effect while slash command expansion is disabled"), so it is absent.
 			Args:     []string{"--mode", "plan", "--sandbox", "--model", "{model}", "--input-format", "stream-json", "--output-format", "stream-json", "--print="},
 			ReadOnly: []string{"--mode", "plan"}, MaxPrompt: 110000,
+			Capacity: Capacity{Pools: []Pool{
+				{Name: "gemini", Models: []string{"gemini-*"}},
+				{Name: "additional", Models: []string{"claude-*", "gpt-oss-*"}},
+			}},
 			Input:  Input{Format: "stdin-json", Wrap: agyWrap},
 			Output: Output{Format: "ndjson", Select: map[string]string{"event": "result"}, Answer: "result.response", Error: "result.error", FailIf: map[string]string{"result.status": "ERROR"}}},
 		{Name: "claude", Binaries: []string{"claude"}, ModelRequired: true,
