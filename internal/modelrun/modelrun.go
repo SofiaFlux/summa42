@@ -345,10 +345,15 @@ func (c *Cmd) Run() error {
 // lets the Box act as the model user, which is the only way across the uid
 // boundary (a direct signal to root's sudo is EPERM).
 func (c *Cmd) killModelGroup(pgid int64) {
+	// The seams are read now, while this call still owns them. The KILL goroutine
+	// can outlive the call, and it must not read package state a later test writes.
+	grace := killGrace
+	prefix := launchPrefix(c.runAs, nil)
+	bin := killBinary
 	send := func(sig string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		argv := append(launchPrefix(c.runAs, nil), killBinary, "-"+sig, "--", "-"+strconv.FormatInt(pgid, 10))
+		argv := append(prefix, bin, "-"+sig, "--", "-"+strconv.FormatInt(pgid, 10))
 		kill := exec.CommandContext(ctx, argv[0], argv[1:]...)
 		kill.Env = []string{"PATH=" + defaultPATH}
 		kill.Dir = "/"
@@ -356,7 +361,7 @@ func (c *Cmd) killModelGroup(pgid int64) {
 	}
 	send("TERM")
 	go func() {
-		timer := time.NewTimer(killGrace)
+		timer := time.NewTimer(grace)
 		defer timer.Stop()
 		select {
 		case <-c.done:
