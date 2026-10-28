@@ -103,3 +103,10 @@ func TestReviewStageRoutesToAnApprovedReplacementWhenThePrimaryIsExhausted(t *te
 		t.Fatalf("argv %v still names the exhausted primary reviewer", argv)
 	}
 }
+
+func TestWorkerGateIsTheProducerPoolOnly(t *testing.T) {
+	p, _ := parsedPipeline(t, validPipelineArgs(t))
+	if got := p.gates["worker"]; len(got) != 1 {
+		t.Fatalf("worker gate = %+v, want the producer pool only", got)
+	}
+}

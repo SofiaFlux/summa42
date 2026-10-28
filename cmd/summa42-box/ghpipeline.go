@@ -183,10 +183,11 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 		reviewerPool: reviewerPool,
 		reviewArgv:   review,
 		exhausted:    map[string]bool{},
-		// A producing stage also needs a reviewer for the output it hands on. Triage
-		// review takes no replacement, so its gate is the primary pool alone.
+		// Plans and code wait for a reviewer before they can go on, so their gates include
+		// one. Triage output just queues for triage review, so the worker gate is the
+		// producer pool alone; otherwise an exhausted reviewer halts all new issues.
 		gates: map[string][]gate{
-			"worker":        {{[]string{producerPool}, "worker"}, {[]string{reviewerPool}, "triage-review"}},
+			"worker":        {{[]string{producerPool}, "worker"}},
 			"triage-review": {{[]string{reviewerPool}, "triage-review"}},
 			"plan":          {{[]string{producerPool}, "plan"}, {reviewerPools, "plan-review"}},
 			"plan-review":   {{reviewerPools, "plan-review"}},
