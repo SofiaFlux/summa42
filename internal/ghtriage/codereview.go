@@ -76,7 +76,7 @@ type CodeReviewer struct {
 // WithReviewer records who gives the verdicts. A replacement reviewer's ACCEPT
 // never accepts the implementation.
 func (r *CodeReviewer) WithReviewer(id ReviewerIdentity) *CodeReviewer {
-	r.reviewer = &id
+	r.reviewer = recordedReviewer(&id)
 	return r
 }
 
@@ -146,7 +146,7 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 		return CodeReviewResult{}, err
 	}
 	guard := r.guard(c, implTask, triageTask, planReviewTask)
-	payload, _ := json.Marshal(expected)
+	payload, _ := codeReviewPayload(expected)
 	task, err := r.exec.CreateTaskWithGuard(ctx, execution.TaskRequest{Purpose: implTask.Purpose, TaskClass: KindCodeReview, Objective: "Independently review candidate " + impl.Record.CandidateSHA, PayloadJSON: payload, IdempotencyKey: "code-review:" + string(c.CurrentWorkID), AcceptanceCriteria: []string{"Exact implementation evidence and independently claimed verdict"}, RequiredEnforcement: domain.EnforcementUnenforced, ResourceEnvelopeID: implTask.ResourceEnvelopeID}, guard)
 	if err != nil {
 		return CodeReviewResult{}, err
@@ -167,7 +167,9 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 		if err != nil {
 			return CodeReviewResult{}, err
 		}
-		record, err = validateCodeReview(object, raw, task, expected)
+		bound := expected
+		bound.Reviewer = storedReviewer(raw)
+		record, err = validateCodeReview(object, raw, task, bound)
 		if err != nil {
 			return CodeReviewResult{}, err
 		}

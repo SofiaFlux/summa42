@@ -76,7 +76,7 @@ type PlanReviewer struct {
 // WithReviewer records who gives the verdicts, so a replacement reviewer's
 // verdict is marked as one.
 func (r *PlanReviewer) WithReviewer(id ReviewerIdentity) *PlanReviewer {
-	r.reviewer = &id
+	r.reviewer = recordedReviewer(&id)
 	return r
 }
 
