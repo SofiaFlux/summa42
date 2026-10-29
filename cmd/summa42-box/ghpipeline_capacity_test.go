@@ -15,6 +15,7 @@ import (
 // every call it is given.
 type fakeLedger struct {
 	exhausted map[string]time.Time
+	degraded  map[string]time.Time
 	calls     []capacity.Call
 }
 
@@ -25,7 +26,11 @@ func (l *fakeLedger) RecordCall(_ context.Context, c capacity.Call) error {
 
 func (l *fakeLedger) PoolState(_ context.Context, pool string, now time.Time) (capacity.PoolState, error) {
 	until, ok := l.exhausted[pool]
-	return capacity.PoolState{Pool: pool, Exhausted: ok && until.After(now), ResetAt: until}, nil
+	if ok && until.After(now) {
+		return capacity.PoolState{Pool: pool, Exhausted: true, ResetAt: until}, nil
+	}
+	until, ok = l.degraded[pool]
+	return capacity.PoolState{Pool: pool, Degraded: ok && until.After(now), ResetAt: until}, nil
 }
 
 func TestPipelineHoldsAStageWhoseReviewerPoolIsExhausted(t *testing.T) {
@@ -108,5 +113,25 @@ func TestWorkerGateIsTheProducerPoolOnly(t *testing.T) {
 	p, _ := parsedPipeline(t, validPipelineArgs(t))
 	if got := p.gates["worker"]; len(got) != 1 {
 		t.Fatalf("worker gate = %+v, want the producer pool only", got)
+	}
+}
+
+func TestReviewStageRoutesAwayFromADegradedPrimary(t *testing.T) {
+	p, _ := parsedPipeline(t, validPipelineArgs(t))
+	f := &fakePipeline{}
+	f.install(p)
+	p.ledger = &fakeLedger{degraded: map[string]time.Time{"opencode:default": time.Now().Add(time.Hour)}}
+	p.reviewerPool = "opencode:default"
+	p.fallbacks = []climodel.Config{{Binary: "/bin/fallback", RunAsUser: "summa42-model", Timeout: time.Minute,
+		CommandCodeModel: "reflection/beam:free", FallbackOf: "opencode:default"}}
+	p.gates = map[string][]gate{
+		"plan-review": {{[]string{"opencode:default", "commandcode:free:reflection/beam:free"}, "plan-review"}},
+	}
+	if err := p.pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	reviews := f.argv["plan-review"]
+	if len(reviews) != 1 || !slices.Contains(reviews[0], "--model-binary=/bin/fallback") {
+		t.Fatalf("plan review did not route to the healthy replacement: %v", reviews)
 	}
 }

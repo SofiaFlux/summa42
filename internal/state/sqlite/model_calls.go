@@ -46,7 +46,7 @@ func (s *Store) PoolState(ctx context.Context, pool string, now time.Time) (capa
 		SELECT call_id, reset_at FROM model_calls
 		WHERE pool=? AND outcome='refused' ORDER BY call_id DESC LIMIT 1`, pool).Scan(&refusalID, &reset)
 	if errors.Is(err, sql.ErrNoRows) {
-		return state, nil
+		return s.degradation(ctx, pool, now, state)
 	}
 	if err != nil {
 		return state, err
@@ -67,6 +67,51 @@ func (s *Store) PoolState(ctx context.Context, pool string, now time.Time) (capa
 	if until.After(now) {
 		state.Exhausted = true
 		state.ResetAt = until
+		return state, nil
+	}
+	return s.degradation(ctx, pool, now, state)
+}
+
+// Timeouts this many in degradedWindow, with no success after the first of them,
+// mark a pool as not answering.
+const (
+	degradedTimeouts = 3
+	degradedWindow   = time.Hour
+)
+
+func (s *Store) degradation(ctx context.Context, pool string, now time.Time, state capacity.PoolState) (capacity.PoolState, error) {
+	var lastOK int64
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT coalesce(max(call_id), 0) FROM model_calls WHERE pool=? AND outcome='ok'`, pool).Scan(&lastOK); err != nil {
+		return state, err
+	}
+	since := now.Add(-degradedWindow).UTC().Format(time.RFC3339)
+	rows, err := s.DB().QueryContext(ctx, `
+		SELECT started_at FROM model_calls
+		WHERE pool=? AND outcome='timeout' AND call_id>? AND started_at>=?
+		ORDER BY call_id`, pool, lastOK, since)
+	if err != nil {
+		return state, err
+	}
+	defer rows.Close()
+	var latest string
+	n := 0
+	for rows.Next() {
+		if err := rows.Scan(&latest); err != nil {
+			return state, err
+		}
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		return state, err
+	}
+	if n >= degradedTimeouts {
+		last, err := time.Parse(time.RFC3339, latest)
+		if err != nil {
+			return state, err
+		}
+		state.Degraded = true
+		state.ResetAt = last.Add(degradedWindow)
 	}
 	return state, nil
 }

@@ -314,6 +314,7 @@ func (p *pipeline) capacityGate(ctx context.Context, stage string) error {
 		available := false
 		var blocked string
 		var until time.Time
+		var blockedState capacity.PoolState
 		for _, pool := range g.pools {
 			if pool == "" {
 				available = true
@@ -323,12 +324,12 @@ func (p *pipeline) capacityGate(ctx context.Context, stage string) error {
 			if err != nil {
 				return fmt.Errorf("capacity ledger: %w", err)
 			}
-			if !state.Exhausted {
+			if !state.Unavailable() {
 				available = true
 				break
 			}
 			if blocked == "" {
-				blocked, until = pool, state.ResetAt
+				blocked, until, blockedState = pool, state.ResetAt, state
 			}
 		}
 		if available {
@@ -337,7 +338,7 @@ func (p *pipeline) capacityGate(ctx context.Context, stage string) error {
 		if err := p.ledger.RecordCall(ctx, capacity.Call{Pool: blocked, Stage: stage, StartedAt: now, Outcome: capacity.OutcomeGated}); err != nil {
 			fmt.Fprintf(p.stderr, "capacity ledger: %v\n", err)
 		}
-		return fmt.Errorf("%w: pool %s exhausted until %s (needed by %s)", errCapacityGated, blocked, until.UTC().Format(time.RFC3339), g.by)
+		return fmt.Errorf("%w: pool %s %s until %s (needed by %s)", errCapacityGated, blocked, stateWord(blockedState), until.UTC().Format(time.RFC3339), g.by)
 	}
 	return nil
 }
@@ -354,7 +355,7 @@ func (p *pipeline) routeReviewer(ctx context.Context, stage string, args []strin
 	if err != nil {
 		return nil, fmt.Errorf("capacity ledger: %w", err)
 	}
-	if !state.Exhausted {
+	if !state.Unavailable() {
 		return args, nil
 	}
 	for _, fb := range p.fallbacks {
@@ -367,7 +368,7 @@ func (p *pipeline) routeReviewer(ctx context.Context, stage string, args []strin
 			if err != nil {
 				return nil, fmt.Errorf("capacity ledger: %w", err)
 			}
-			if st.Exhausted {
+			if st.Unavailable() {
 				continue
 			}
 		}
@@ -400,10 +401,10 @@ func (p *pipeline) reportCapacity(ctx context.Context) {
 			continue
 		}
 		switch {
-		case state.Exhausted && !p.exhausted[pool]:
+		case state.Unavailable() && !p.exhausted[pool]:
 			p.exhausted[pool] = true
-			fmt.Fprintf(p.stderr, "capacity: pool=%s exhausted until=%s\n", pool, state.ResetAt.UTC().Format(time.RFC3339))
-		case !state.Exhausted && p.exhausted[pool]:
+			fmt.Fprintf(p.stderr, "capacity: pool=%s %s until=%s\n", pool, stateWord(state), state.ResetAt.UTC().Format(time.RFC3339))
+		case !state.Unavailable() && p.exhausted[pool]:
 			delete(p.exhausted, pool)
 			fmt.Fprintf(p.stderr, "capacity: pool=%s available\n", pool)
 		}
@@ -504,4 +505,12 @@ func openPipelineBox(ctx context.Context) (*summa42runtime.Box, error) {
 		CollectiveID: cfg.CollectiveID, OwnerPrincipalID: cfg.OwnerPrincipalID,
 		PolicyEngine: material.policyEngine,
 	})
+}
+
+// stateWord says why a pool is unavailable: a provider limit, or repeated timeouts.
+func stateWord(state capacity.PoolState) string {
+	if state.Exhausted {
+		return "exhausted"
+	}
+	return "degraded"
 }

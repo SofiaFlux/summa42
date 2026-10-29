@@ -36,10 +36,17 @@ type Call struct {
 
 // PoolState says whether a pool can take calls right now.
 type PoolState struct {
-	Pool      string
+	Pool string
+	// Exhausted: the provider refused until ResetAt (a limit).
 	Exhausted bool
-	ResetAt   time.Time
+	// Degraded: repeated timeouts recently, so the pool is not answering (a health
+	// signal, not a limit). Routing treats it like an exhausted pool.
+	Degraded bool
+	ResetAt  time.Time
 }
+
+// Unavailable reports whether a pool should not be called right now.
+func (s PoolState) Unavailable() bool { return s.Exhausted || s.Degraded }
 
 // Ledger stores calls and answers whether a pool is exhausted.
 type Ledger interface {

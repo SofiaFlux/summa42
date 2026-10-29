@@ -87,7 +87,7 @@ func TestRefusalIsLedgeredAndGatesTheNextCall(t *testing.T) {
 	}
 
 	_, err = adapter.ReviewPlan(context.Background(), review)
-	if !errors.Is(err, ghtriage.ErrModelUnavailable) || !strings.Contains(err.Error(), "exhausted") {
+	if !errors.Is(err, ghtriage.ErrModelUnavailable) || !strings.Contains(err.Error(), "unavailable") {
 		t.Fatalf("second call: %v, want a gated unavailable", err)
 	}
 	if runs, _ := os.ReadFile(counter); strings.Count(string(runs), "run") != 1 {
