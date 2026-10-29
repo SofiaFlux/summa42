@@ -194,7 +194,9 @@ class RegisterGhAppTests(unittest.TestCase):
     def test_correct_state_captures_code(self):
         self.assertEqual(self._get("code=abc&state=expected-state"), 200)
         self.assertEqual(register_mod.captured_code, "abc")
-        self.assertTrue(register_mod.server_done.is_set())
+        # The handler sets server_done after it writes the response, so the client
+        # can return first; wait for the event instead of checking it at once.
+        self.assertTrue(register_mod.server_done.wait(timeout=5))
 
 
 if __name__ == "__main__":
