@@ -407,7 +407,7 @@ func (a *Adapter) env() map[string]string {
 // extend it when another CLI words its limit differently.
 func providerRefused(output string) bool {
 	lower := strings.ToLower(output)
-	for _, marker := range []string{"reached today's limit", "rate limit", "usage limit", "quota exceeded", "quota reached", "resource_exhausted", "no longer available"} {
+	for _, marker := range []string{"reached today's limit", "rate limit", "usage limit", "quota exceeded", "quota reached", "resource_exhausted", "no longer available", "429", "too many requests"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}

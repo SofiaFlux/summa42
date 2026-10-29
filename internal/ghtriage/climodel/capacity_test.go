@@ -56,3 +56,16 @@ func TestCommandCodePoolIsPlanUnlessFree(t *testing.T) {
 		t.Errorf("paid model pool = %q", got)
 	}
 }
+
+// HTTP 429 is a limit: without it a refusal is not recorded and the pool is
+// retried on every pass.
+func TestTooManyRequestsIsALimit(t *testing.T) {
+	for _, msg := range []string{"HTTP 429 Too Many Requests", "error: too many requests, slow down"} {
+		if !providerRefused(msg) {
+			t.Errorf("%q is not recognised as a limit", msg)
+		}
+	}
+	if providerRefused("connection reset by peer") {
+		t.Error("a network error is recognised as a limit")
+	}
+}
