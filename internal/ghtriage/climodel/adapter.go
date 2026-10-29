@@ -254,8 +254,8 @@ func (a *Adapter) gate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("capacity ledger: %w", err)
 	}
-	if state.Exhausted {
-		return fmt.Errorf("pool %s exhausted until %s: %w", a.pool, state.ResetAt.UTC().Format(time.RFC3339), ghtriage.ErrModelUnavailable)
+	if state.Unavailable() {
+		return fmt.Errorf("pool %s unavailable until %s: %w", a.pool, state.ResetAt.UTC().Format(time.RFC3339), ghtriage.ErrModelUnavailable)
 	}
 	return nil
 }

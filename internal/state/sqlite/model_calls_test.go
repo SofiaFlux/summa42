@@ -111,3 +111,45 @@ func TestModelCallsMigrationRoundTrips(t *testing.T) {
 		t.Fatal("model_calls not recreated by the up migration")
 	}
 }
+
+func TestPoolDegradesAfterRepeatedTimeoutsAndRecovers(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "health.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB().Close()
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	record := func(at time.Time, outcome capacity.Outcome) {
+		if err := store.RecordCall(ctx, capacity.Call{Pool: "opencode:default", Harness: "opencode", Model: "big-pickle",
+			Stage: "plan-review", StartedAt: at, Outcome: outcome}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record(now.Add(-2*time.Hour), capacity.OutcomeTimeout) // outside the window: does not count
+	record(now.Add(-30*time.Minute), capacity.OutcomeTimeout)
+	record(now.Add(-20*time.Minute), capacity.OutcomeTimeout)
+	state, err := store.PoolState(ctx, "opencode:default", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Degraded {
+		t.Fatal("two timeouts in the window degraded the pool; the threshold is three")
+	}
+	record(now.Add(-10*time.Minute), capacity.OutcomeTimeout)
+	state, err = store.PoolState(ctx, "opencode:default", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Degraded || state.Exhausted {
+		t.Fatalf("three timeouts: state = %+v, want degraded and not exhausted", state)
+	}
+	record(now.Add(-5*time.Minute), capacity.OutcomeOK)
+	state, err = store.PoolState(ctx, "opencode:default", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Degraded {
+		t.Fatal("a success after the timeouts did not clear the degradation")
+	}
+}
