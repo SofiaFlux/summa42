@@ -26,7 +26,7 @@ import sys
 from urllib.parse import quote
 
 MARKER = "<!-- summa42-requeue-revise -->"
-PREFIX = "plan-review:REVISE:"
+PREFIXES = ("plan-review:REVISE:", "plan-review:fallback:REVISE:")  # a replacement reviewer's REVISE counts too
 DEFAULT_MISSION = "mission_5174c372"
 
 
@@ -58,10 +58,11 @@ def pending(db, mission):
         if state != "BLOCKED":
             continue
         reason = last_reason(db, case_id)
-        if reason and reason.startswith(PREFIX):
+        prefix = next((p for p in PREFIXES if reason and reason.startswith(p)), None)
+        if prefix:
             m = re.search(r"#(\d+)$", object_id)
             if m:
-                out.append((int(m.group(1)), reason[len(PREFIX):].strip()))
+                out.append((int(m.group(1)), reason[len(prefix):].strip()))
     return sorted(out)
 
 
