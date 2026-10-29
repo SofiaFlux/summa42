@@ -81,3 +81,30 @@ func TestSameModelMatchesTheReviewerRule(t *testing.T) {
 		t.Fatal("producer and reviewer were reported as the same model")
 	}
 }
+
+// A replacement can bring its own binary: a free Command Code model runs under
+// cmd wherever the primary reviewer is, and Claude runs through agy's Claude pool.
+func TestFallbackCanBringItsOwnBinary(t *testing.T) {
+	primaryOpencode := climodel.Config{Binary: "/opt/summa42-bin/opencode", RunAsUser: "summa42-model", Timeout: time.Minute,
+		Profile: "opencode", ProfileModel: "opencode/big-pickle"}
+	path := writeFallbackList(t, `{"reviewers":[
+		{"harness":"commandcode","model":"reflection/beam:free","binary":"/opt/summa42-node/bin/cmd","accepts_no_zdr":true},
+		{"harness":"agy","model":"claude-opus-4-6-thinking","binary":"/opt/summa42-bin/agy","accepts_no_zdr":true}]}`, 0o600)
+	got, err := loadFallbackReviewers(path, primaryOpencode, testProducer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Binary != "/opt/summa42-node/bin/cmd" || got[0].CommandCodeModel != "reflection/beam:free" {
+		t.Fatalf("commandcode replacement = %+v", got)
+	}
+	if got[1].Binary != "/opt/summa42-bin/agy" || got[1].Profile != "agy" || got[1].ProfileModel != "claude-opus-4-6-thinking" {
+		t.Fatalf("agy replacement = %+v", got[1])
+	}
+}
+
+func TestAgyReplacementIsClaudeOnly(t *testing.T) {
+	path := writeFallbackList(t, `{"reviewers":[{"harness":"agy","model":"gemini-3.8-flash-high","binary":"/opt/summa42-bin/agy","accepts_no_zdr":true}]}`, 0o600)
+	if _, err := loadFallbackReviewers(path, testReviewer, testProducer); err == nil {
+		t.Fatal("a Gemini model was accepted as an agy replacement")
+	}
+}

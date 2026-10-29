@@ -9,13 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 )
 
 // fallbackEntry is one replacement reviewer the Owner approved in advance.
-// Binary is required for opencode only; commandcode entries use the reviewer's cmd.
+// Binary is required for opencode and agy; a commandcode entry may name its cmd, or use the reviewer's.
 type fallbackEntry struct {
 	Harness      string `json:"harness"`
 	Model        string `json:"model"`
@@ -81,13 +82,26 @@ func fallbackConfig(e fallbackEntry, reviewer climodel.Config) (climodel.Config,
 	cfg.Args, cfg.CommandCodeModel, cfg.Profile, cfg.ProfileModel, cfg.AllowPaid, cfg.ZDR = nil, "", "", "", false, false
 	switch e.Harness {
 	case "commandcode":
-		if reviewer.CommandCodeModel == "" {
-			return climodel.Config{}, errors.New("a commandcode fallback needs a Command Code reviewer")
-		}
 		if !climodel.IsFreeCommandCodeModel(e.Model) {
 			return climodel.Config{}, errors.New("not a free Command Code model")
 		}
+		if e.Binary != "" {
+			if !filepath.IsAbs(e.Binary) {
+				return climodel.Config{}, errors.New("a commandcode binary must be an absolute path")
+			}
+			cfg.Binary = e.Binary
+		} else if reviewer.CommandCodeModel == "" {
+			return climodel.Config{}, errors.New("a commandcode fallback needs a Command Code reviewer or its own binary")
+		}
 		cfg.CommandCodeModel = e.Model
+	case "agy":
+		if !filepath.IsAbs(e.Binary) {
+			return climodel.Config{}, errors.New("agy needs an absolute binary path")
+		}
+		if !strings.HasPrefix(e.Model, "claude-") {
+			return climodel.Config{}, errors.New("only a Claude model may replace a reviewer through agy")
+		}
+		cfg.Binary, cfg.Profile, cfg.ProfileModel = e.Binary, "agy", e.Model
 	case "opencode":
 		if !filepath.IsAbs(e.Binary) {
 			return climodel.Config{}, errors.New("opencode needs an absolute binary path")
