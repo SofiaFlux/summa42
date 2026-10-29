@@ -128,3 +128,27 @@ func TestCommandCodeTokensReachTheRow(t *testing.T) {
 		t.Fatalf("success row = %+v, want ok with tokens 3/1", row)
 	}
 }
+
+// Every failed call keeps its message, not only refusals, so a timeout and a
+// crash can be told apart from the ledger.
+func TestFailedCallKeepsItsMessage(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "cmd")
+	script := "#!/bin/sh\ncat > /dev/null\necho 'segmentation fault in model host' >&2\nexit 1\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ledger := &memLedger{}
+	adapter, err := New(Config{RunAsUser: testUser, Binary: binary, CommandCodeModel: "reflection/beam:free", Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter = adapter.WithLedger(ledger, "plan-review", "case_1")
+	_, _ = adapter.ReviewPlan(context.Background(), ghtriage.PlanReviewInput{Schema: ghtriage.PlanReviewVersion})
+	if len(ledger.calls) != 1 {
+		t.Fatalf("ledger rows = %d, want 1", len(ledger.calls))
+	}
+	if row := ledger.calls[0]; row.Outcome != capacity.OutcomeError || !strings.Contains(row.Message, "segmentation fault") {
+		t.Fatalf("error row = %+v, want the error text", row)
+	}
+}

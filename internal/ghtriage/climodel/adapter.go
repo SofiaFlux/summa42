@@ -269,8 +269,10 @@ func (a *Adapter) record(ctx context.Context, started time.Time, use usage, err 
 	now := time.Now()
 	call := capacity.Call{Pool: a.pool, Harness: a.harness, Model: a.model, Stage: a.stage, CaseID: a.caseID,
 		StartedAt: started, Duration: now.Sub(started), Outcome: outcomeOf(err), InputTokens: use.input, OutputTokens: use.output}
-	if call.Outcome == capacity.OutcomeRefused {
+	if err != nil {
 		call.Message = err.Error()
+	}
+	if call.Outcome == capacity.OutcomeRefused {
 		if reset, ok := capacity.ParseReset(call.Message, now); ok {
 			call.ResetAt, call.ResetSource = reset, "parsed"
 		} else {
