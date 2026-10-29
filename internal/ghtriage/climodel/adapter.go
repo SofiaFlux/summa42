@@ -356,9 +356,27 @@ func (a *Adapter) runOnce(ctx context.Context, prompt []byte, use *usage) ([]byt
 	}
 	if a.profile != nil {
 		answer, err := a.profile.answer(stdout.Bytes())
-		return unfence(answer), err
+		return extractJSONObject(unfence(answer)), err
 	}
 	return unfence(stdout.Bytes()), nil
+}
+
+// extractJSONObject returns the one JSON object in an answer that a sentence
+// precedes. Anything that is not exactly one object is returned unchanged, so
+// the strict parser still refuses it.
+func extractJSONObject(answer []byte) []byte {
+	trimmed := bytes.TrimSpace(answer)
+	start := bytes.IndexByte(trimmed, '{')
+	end := bytes.LastIndexByte(trimmed, '}')
+	if start <= 0 || end <= start {
+		return answer
+	}
+	candidate := trimmed[start : end+1]
+	var obj map[string]any
+	if json.Unmarshal(candidate, &obj) != nil {
+		return answer
+	}
+	return candidate
 }
 
 // unfence returns the body of an answer that is exactly one Markdown code
