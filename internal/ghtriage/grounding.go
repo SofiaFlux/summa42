@@ -245,7 +245,8 @@ func checkSelection(s FileSelection, cfg *GroundingConfig, tracked map[string]bo
 		}
 	}
 	if n := len(contextPaths(cfg.Source.Paths, s.ContextFiles)); n < 1 || n > repoworkspace.MaxFiles {
-		return errors.New("context selection must hold 1 to 32 files including pinned files")
+		return fmt.Errorf("context selection must hold 1 to 32 files including pinned files: got %d (pinned %d, selected %d)",
+			n, len(cfg.Source.Paths), len(s.ContextFiles))
 	}
 	for _, p := range s.AllowedPaths {
 		if !under(p) {
