@@ -216,6 +216,7 @@ func (p *Planner) selectFiles(ctx context.Context, cfg *GroundingConfig, issue S
 	if err != nil {
 		return FileSelection{}, &planFailure{"model-exit", fmt.Errorf("file selection model: %w", err)}
 	}
+	selection = contextFallback(selection, cfg.Source.Paths, tracked)
 	if err := checkSelection(selection, cfg, tracked); err != nil {
 		return FileSelection{}, &planFailure{"validation", fmt.Errorf("file selection: %w", err)}
 	}
@@ -266,6 +267,21 @@ func checkSelection(s FileSelection, cfg *GroundingConfig, tracked map[string]bo
 		}
 	}
 	return nil
+}
+
+// contextFallback reads the write boundary as context when nothing else is
+// context: no pinned files and no context files chosen. Only tracked files
+// qualify; a new file has nothing to read yet.
+func contextFallback(s FileSelection, pinned []string, tracked map[string]bool) FileSelection {
+	if len(pinned) > 0 || len(s.ContextFiles) > 0 {
+		return s
+	}
+	for _, p := range s.AllowedPaths {
+		if tracked[p] {
+			s.ContextFiles = append(s.ContextFiles, p)
+		}
+	}
+	return s
 }
 
 // contextPaths is the owner-pinned files followed by the selected ones not already pinned.
