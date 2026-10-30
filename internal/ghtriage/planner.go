@@ -267,6 +267,15 @@ func (p *Planner) planCase(ctx context.Context, candidate PlanningCandidate) err
 	if err != nil {
 		return &planFailure{"validation", fmt.Errorf("validate plan: %w", err)}
 	}
+	if grounding != nil {
+		allowed := append([]string(nil), grounding.Contract.AllowedPaths...)
+		for _, file := range grounding.Context.Files {
+			allowed = append(allowed, file.Path)
+		}
+		if named, outside := output.pathOutside(allowed); outside {
+			return &planFailure{"validation", fmt.Errorf("plan names %q outside the pinned contract", named)}
+		}
+	}
 	object, err := p.evidence.Put(ctx, bytes.NewReader(raw), evidence.Metadata{MediaType: DecisionMediaType, Kind: KindPlan})
 	if err != nil {
 		return fmt.Errorf("store plan: %w", err)

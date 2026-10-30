@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -48,6 +50,33 @@ func (p PlanOutput) Validate() error {
 		}
 	}
 	return nil
+}
+
+var (
+	planURL       = regexp.MustCompile(`https?://\S+`)
+	planPathToken = regexp.MustCompile(`[A-Za-z0-9_./-]+/[A-Za-z0-9_./-]*\.[A-Za-z0-9]+`)
+)
+
+// pathOutside returns the first repository path the plan text names that is
+// not in allowed. ponytail: a text match, so a bare root file such as go.mod
+// goes unchecked; add a paths field to PlanStep (schema v3) when that bites.
+func (p PlanOutput) pathOutside(allowed []string) (string, bool) {
+	text := p.Summary
+	for _, step := range p.Steps {
+		text += "\n" + step.Objective + "\n" + step.DoneWhen
+	}
+	text = planURL.ReplaceAllString(text, " ")
+	for _, token := range planPathToken.FindAllString(text, -1) {
+		token = strings.TrimPrefix(token, "./")
+		// ponytail: "a.go/b.go" is a list of files, not one path; skip it.
+		if parts := strings.Split(token, "/"); slices.ContainsFunc(parts[:len(parts)-1], func(part string) bool { return strings.Contains(part, ".") }) {
+			continue
+		}
+		if !slices.Contains(allowed, token) {
+			return token, true
+		}
+	}
+	return "", false
 }
 
 func textLength(value string, min, max int) error {
