@@ -340,10 +340,15 @@ print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' "$SUMMA_HOME/config.js
 }
 
 fail=0
+declare -A PROBED_PATHS=()
 # require_unreadable PATH KIND [WHO]: KIND is "required" (must exist) or
 # "optional"; WHO is model (default) or validate.
 require_unreadable() {
   local path="$1" kind="$2" who="${3:-model}"
+  if [ -n "${PROBED_PATHS["$who:$path"]:-}" ]; then
+    return 0
+  fi
+  PROBED_PATHS["$who:$path"]=1
   if [ ! -e "$path" ]; then
     if [ "$kind" = required ]; then
       printf '  MISSING (cannot evaluate): %s\n' "$path" >&2; fail=1
@@ -428,6 +433,7 @@ check_toolchain() {
 
 main() {
   ASSUME_YES=0
+  PROBED_PATHS=()
   local arg_home="" arg_db="" arg_evidence=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -510,6 +516,7 @@ main() {
   for who in model validate; do
     require_unreadable "$SUMMA_HOME" required "$who"
     require_unreadable "$SUMMA_HOME/keys" required "$who"
+    require_unreadable "$SUMMA_HOME/keys/owner.key" optional "$who"
     local k
     for k in "$SUMMA_HOME"/keys/*; do
       [ -e "$k" ] && require_unreadable "$k" required "$who"
