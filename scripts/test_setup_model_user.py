@@ -228,6 +228,25 @@ class ValidationUser(unittest.TestCase):
         self.assertIn("validate fail=1", r.stdout)
         self.assertIn("READABLE by validate", r.stderr)
 
+    def test_require_unreadable_deduplicates_paths_per_user(self):
+        owner_key = os.path.join(self.tmp.name, "owner.key")
+        claude_json = os.path.join(self.tmp.name, ".claude.json")
+        Path(owner_key).write_text("key")
+        Path(claude_json).write_text("{}")
+        r = bash(f"""
+            fail=0
+            run_as_model() {{ return 1; }}
+            run_as_validate() {{ return 1; }}
+            require_unreadable {owner_key} optional model
+            require_unreadable {owner_key} required model
+            require_unreadable {claude_json} optional validate
+            require_unreadable {claude_json} optional validate
+        """)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout
+        self.assertEqual(out.count(f"ok, not readable by model: {owner_key}"), 1)
+        self.assertEqual(out.count(f"ok, not readable by validate: {claude_json}"), 1)
+
     def test_model_home_login_files_are_listed_once(self):
         listed = bash("model_home_login_files").stdout.split()
         self.assertEqual(len(set(listed)), len(listed))
