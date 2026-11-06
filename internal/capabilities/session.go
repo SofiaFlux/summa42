@@ -43,6 +43,11 @@ func (r *Registry) OpenSession(ctx context.Context, collectiveID, attemptID doma
 	if err := r.configured(); err != nil {
 		return nil, err
 	}
+	if r.emergency != nil {
+		if err := r.emergency.CheckExecutionAllowed(ctx, "capability_session"); err != nil {
+			return nil, err
+		}
+	}
 	collectiveID = domain.ID(strings.TrimSpace(string(collectiveID)))
 	visibleCapabilities = normalizeStrings(visibleCapabilities)
 	if collectiveID == "" || attemptID == "" || len(visibleCapabilities) == 0 {
@@ -139,6 +144,11 @@ func (s *Session) Call(ctx context.Context, name string, request any) (any, erro
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errors.New("capability name is required")
+	}
+	if s.registry.emergency != nil {
+		if err := s.registry.emergency.CheckExecutionAllowed(ctx, "capability_call"); err != nil {
+			return nil, err
+		}
 	}
 	if s.registry.quarantine != nil && s.registry.cubeID != "" {
 		if err := s.registry.quarantine.CheckCapabilityPermitted(ctx, s.registry.cubeID, name); err != nil {

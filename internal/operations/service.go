@@ -50,6 +50,10 @@ type QuarantineChecker interface {
 	CheckOperationPermitted(ctx context.Context, cubeID domain.ID, category string) error
 }
 
+type EmergencyChecker interface {
+	CheckExecutionAllowed(ctx context.Context, actionCategory string) error
+}
+
 type Service struct {
 	store        *state.Store
 	clock        clock.Clock
@@ -60,12 +64,17 @@ type Service struct {
 	collectiveID domain.ID
 	providers    map[string]Provider
 	quarantine   QuarantineChecker
+	emergency    EmergencyChecker
 	cubeID       domain.ID
 }
 
 func (s *Service) SetQuarantine(q QuarantineChecker, cubeID domain.ID) {
 	s.quarantine = q
 	s.cubeID = cubeID
+}
+
+func (s *Service) SetEmergency(e EmergencyChecker) {
+	s.emergency = e
 }
 
 func New(store *state.Store, clk clock.Clock, executionSvc *execution.Service, policyEngine policy.PolicyEngine, resourceSvc *resources.Service, approvalSvc *approvals.Service, collectiveID domain.ID, providers ...Provider) *Service {
@@ -89,6 +98,11 @@ func (s *Service) Prepare(ctx context.Context, request PrepareRequest) (domain.E
 func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, guard execution.TaskGuard) (domain.ExternalOperation, error) {
 	if err := s.configured(); err != nil {
 		return domain.ExternalOperation{}, err
+	}
+	if s.emergency != nil {
+		if err := s.emergency.CheckExecutionAllowed(ctx, "external_operation"); err != nil {
+			return domain.ExternalOperation{}, err
+		}
 	}
 	if s.quarantine != nil && s.cubeID != "" {
 		if err := s.quarantine.CheckOperationPermitted(ctx, s.cubeID, "external_operation"); err != nil {
@@ -328,6 +342,11 @@ func (s *Service) Dispatch(ctx context.Context, operationID, attemptID domain.ID
 func (s *Service) DispatchWithGuard(ctx context.Context, operationID, attemptID domain.ID, guard execution.TaskGuard) (domain.ExternalOperation, error) {
 	if err := s.configured(); err != nil {
 		return domain.ExternalOperation{}, err
+	}
+	if s.emergency != nil {
+		if err := s.emergency.CheckExecutionAllowed(ctx, "external_operation"); err != nil {
+			return domain.ExternalOperation{}, err
+		}
 	}
 	if s.quarantine != nil && s.cubeID != "" {
 		if err := s.quarantine.CheckOperationPermitted(ctx, s.cubeID, "external_operation"); err != nil {

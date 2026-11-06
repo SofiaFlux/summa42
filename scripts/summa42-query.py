@@ -236,11 +236,56 @@ def cmd_cubes():
         print(json.dumps({"error": "NO_CUBES_TABLE"}))
 
 
+def cmd_emergency():
+    cur = get_db().cursor()
+    try:
+        cur.execute("""
+            SELECT break_glass_state, frozen_at, frozen_by_principal_id, freeze_reason, restored_at, restored_by_principal_id, updated_at
+            FROM emergency_controls
+            WHERE singleton = 1
+        """)
+        bg_row = cur.fetchone()
+        bg = {}
+        if bg_row:
+            bg = {
+                "break_glass_state": bg_row[0],
+                "frozen_at": bg_row[1],
+                "frozen_by_principal_id": bg_row[2],
+                "freeze_reason": bg_row[3],
+                "restored_at": bg_row[4],
+                "restored_by_principal_id": bg_row[5],
+                "updated_at": bg_row[6],
+            }
+
+        cur.execute("""
+            SELECT state, last_heartbeat_at, heartbeat_timeout_seconds, safe_mode_triggered_at, updated_at
+            FROM dead_man_switch
+            WHERE singleton = 1
+        """)
+        dm_row = cur.fetchone()
+        dm = {}
+        if dm_row:
+            dm = {
+                "dead_man_state": dm_row[0],
+                "last_heartbeat_at": dm_row[1],
+                "heartbeat_timeout_seconds": dm_row[2],
+                "safe_mode_triggered_at": dm_row[3],
+                "updated_at": dm_row[4],
+            }
+
+        print(json.dumps({
+            "break_glass": bg,
+            "dead_man_switch": dm,
+        }))
+    except sqlite3.OperationalError:
+        print(json.dumps({"error": "NO_EMERGENCY_TABLES"}))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Read-only Summa42 queries")
-    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes"])
+    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes", "emergency"])
     args = parser.parse_args(argv)
-    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes}[args.command]()
+    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes, "emergency": cmd_emergency}[args.command]()
 
 
 if __name__ == "__main__":

@@ -212,5 +212,43 @@ class CubeTests(unittest.TestCase):
             self.assertEqual(c["quarantine_reason"], "Rogue activity")
 
 
+class EmergencyTests(unittest.TestCase):
+    MIGRATION_BOOTSTRAP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                       "internal", "state", "sqlite", "migrations", "00001_bootstrap.sql")
+    MIGRATION_EMERGENCY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                       "internal", "state", "sqlite", "migrations", "00028_emergency_controls.sql")
+
+    def test_emergency_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "state"), exist_ok=True)
+            conn = sqlite3.connect(os.path.join(tmp, "state", "summa42.db"))
+            with open(self.MIGRATION_BOOTSTRAP) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+            with open(self.MIGRATION_EMERGENCY) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+
+            conn.execute("INSERT INTO principals(principal_id, principal_kind, public_key, custody_profile, created_at) VALUES ('p_owner', 'HUMAN', X'00', 'LOCAL', '2026-11-06T12:00:00Z')")
+            conn.execute("""
+                INSERT INTO emergency_controls(singleton, break_glass_state, frozen_at, frozen_by_principal_id, freeze_reason, updated_at)
+                VALUES (1, 'FROZEN', '2026-11-06T12:10:00Z', 'p_owner', 'Critical safety trigger', '2026-11-06T12:10:00Z')
+            """)
+            conn.execute("""
+                INSERT INTO dead_man_switch(singleton, state, last_heartbeat_at, heartbeat_timeout_seconds, safe_mode_triggered_at, updated_at)
+                VALUES (1, 'SAFE_MODE', '2026-11-06T10:00:00Z', 3600, '2026-11-06T11:00:00Z', '2026-11-06T11:00:00Z')
+            """)
+            conn.commit()
+            conn.close()
+
+            res = _run(tmp, "emergency")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            data = json.loads(res.stdout)
+            bg = data["break_glass"]
+            dm = data["dead_man_switch"]
+            self.assertEqual(bg["break_glass_state"], "FROZEN")
+            self.assertEqual(bg["freeze_reason"], "Critical safety trigger")
+            self.assertEqual(dm["dead_man_state"], "SAFE_MODE")
+            self.assertEqual(dm["heartbeat_timeout_seconds"], 3600)
+
+
 if __name__ == "__main__":
     unittest.main()

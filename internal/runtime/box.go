@@ -14,6 +14,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/capabilities"
 	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/domain"
+	"github.com/SofiaFlux/summa42/internal/emergency"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/execution"
 	"github.com/SofiaFlux/summa42/internal/executors"
@@ -77,6 +78,7 @@ type Box struct {
 	Wake          *wake.Service
 	Audit         *audit.Service
 	Quarantine    *quarantine.Service
+	Emergency     *emergency.Service
 	Policy        policy.PolicyEngine
 	Executors     map[string]executors.Executor
 	TEBProfile    teb.Profile
@@ -200,6 +202,12 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	}
 	experienceSvc := experience.New(store, cfg.Clock, approvalSvc, auditSvc, cfg.OwnerPrincipalID)
 	quarantineSvc := quarantine.NewService(store, cfg.Clock)
+	emergencySvc := emergency.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
+	if err := emergencySvc.EnsureDefaults(ctx, int(cfg.LeaseDuration.Seconds()*10)); err != nil {
+		return nil, fmt.Errorf("ensure emergency defaults: %w", err)
+	}
+	operationsSvc.SetEmergency(emergencySvc)
+	capabilityRegistry.SetEmergency(emergencySvc)
 
 	cubeID := cfg.CubeID
 	cubePrincipalID := cfg.CubePrincipalID
@@ -274,6 +282,7 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		Wake:          wakeSvc,
 		Audit:         auditSvc,
 		Quarantine:    quarantineSvc,
+		Emergency:     emergencySvc,
 		Policy:        cfg.PolicyEngine,
 		Executors:     executorSet,
 		TEBProfile:    cfg.TEBProfile,
