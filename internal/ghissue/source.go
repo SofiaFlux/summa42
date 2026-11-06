@@ -228,6 +228,14 @@ func FilterIssues(issues []Issue, maintainers []string) ([]Issue, []ExcludedIssu
 			kept = append(kept, issue)
 		}
 	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		si := ExtractSeverity(kept[i].Labels)
+		sj := ExtractSeverity(kept[j].Labels)
+		if si != sj {
+			return si > sj
+		}
+		return kept[i].Number > kept[j].Number
+	})
 	return kept, excluded, skipped
 }
 
@@ -421,4 +429,23 @@ func hasLabel(labels []string, wanted ...string) bool {
 		}
 	}
 	return false
+}
+
+// ExtractSeverity returns the highest severity (1-9) found in labels, or 0 if none.
+// Labels may be formatted as severity_N, severity-N, or severity:N.
+func ExtractSeverity(labels []string) int {
+	maxSev := 0
+	for _, label := range labels {
+		normalized := strings.ToLower(strings.TrimSpace(label))
+		for _, prefix := range []string{"severity_", "severity-", "severity:"} {
+			if strings.HasPrefix(normalized, prefix) {
+				if n, err := strconv.Atoi(strings.TrimPrefix(normalized, prefix)); err == nil && n >= 1 && n <= 9 {
+					if n > maxSev {
+						maxSev = n
+					}
+				}
+			}
+		}
+	}
+	return maxSev
 }

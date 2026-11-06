@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Summa42 — Architektura Konstruktorów i Kolektywu</title>
+  <style>
+    :root {
+      --bg: #0f141c;
+      --panel-bg: #161f2e;
+      --panel-border: #24344d;
+      --text-main: #e2e8f0;
+      --text-muted: #94a3b8;
+      --accent-blue: #38bdf8;
+      --accent-emerald: #34d399;
+      --accent-amber: #fbbf24;
+      --accent-purple: #c084fc;
+      --accent-rose: #f43f5e;
+      --grid-line: #1e293b;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body, html {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: var(--text-main);
+    }
+
+    #canvas-container {
+      width: 100vw;
+      height: 100vh;
+      cursor: grab;
+      position: absolute;
+      top: 0;
+      left: 0;
+      background-image: 
+        radial-gradient(circle, #253349 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+
+    #canvas-container:active {
+      cursor: grabbing;
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    /* Toolbar controls */
+    .toolbar {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      display: flex;
+      gap: 8px;
+      background: rgba(22, 31, 46, 0.85);
+      backdrop-filter: blur(10px);
+      padding: 8px;
+      border-radius: 12px;
+      border: 1px solid var(--panel-border);
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+      z-index: 100;
+    }
+
+    .btn {
+      background: #1e293b;
+      color: var(--text-main);
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+    }
+
+    .btn:hover {
+      background: #334155;
+      border-color: var(--accent-blue);
+      color: #fff;
+    }
+
+    .btn:active {
+      transform: scale(0.95);
+    }
+
+    /* Header overlay */
+    .header-card {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      background: rgba(22, 31, 46, 0.9);
+      backdrop-filter: blur(12px);
+      padding: 18px 24px;
+      border-radius: 14px;
+      border: 1px solid var(--panel-border);
+      box-shadow: 0 12px 30px -10px rgba(0,0,0,0.6);
+      max-width: 480px;
+      z-index: 100;
+      pointer-events: auto;
+    }
+
+    .header-card h1 {
+      font-size: 19px;
+      font-weight: 700;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .header-card h1 .badge {
+      font-size: 11px;
+      padding: 3px 8px;
+      background: rgba(56, 189, 248, 0.15);
+      border: 1px solid var(--accent-blue);
+      color: var(--accent-blue);
+      border-radius: 20px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .header-card p {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 8px;
+      line-height: 1.5;
+    }
+
+    .legend-row {
+      display: flex;
+      gap: 12px;
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid #233147;
+      font-size: 12px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+    }
+
+    /* Details Drawer */
+    .details-drawer {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      width: 380px;
+      background: rgba(22, 31, 46, 0.95);
+      backdrop-filter: blur(14px);
+      padding: 22px;
+      border-radius: 14px;
+      border: 1px solid var(--panel-border);
+      box-shadow: 0 15px 35px -5px rgba(0,0,0,0.6);
+      z-index: 100;
+      display: none;
+      pointer-events: auto;
+      max-height: calc(100vh - 40px);
+      overflow-y: auto;
+    }
+
+    .details-drawer h2 {
+      font-size: 16px;
+      color: #fff;
+      margin-bottom: 8px;
+    }
+
+    .details-drawer .sub {
+      font-size: 12px;
+      color: var(--accent-blue);
+      font-family: monospace;
+      margin-bottom: 12px;
+    }
+
+    .details-drawer p {
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    .details-drawer .attr {
+      background: #0f172a;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 12px;
+      margin-bottom: 8px;
+      border: 1px solid #1e293b;
+    }
+
+    .details-drawer .attr strong {
+      color: var(--text-main);
+    }
+
+    .close-btn {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 18px;
+      cursor: pointer;
+      padding: 4px;
+    }
+    .close-btn:hover { color: #fff; }
+
+    /* SVG node styles */
+    .node-group {
+      cursor: pointer;
+      transition: filter 0.2s ease;
+    }
+
+    .node-group:hover {
+      filter: brightness(1.2);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header-card">
+    <h1>Summa42 Architecture <span class="badge">Decoupled</span></h1>
+    <p>
+      <strong>Konstruktorzy należą do KOLEKTYWU, nie do Cube'a.</strong><br>
+      Kolektyw utrzymuje tożsamość, stan, uprawnienia i zadania. Cube to tylko wymienne węzły obliczeniowe pobierające pracę w leasing.
+    </p>
+    <div class="legend-row">
+      <div class="legend-item"><div class="legend-dot" style="background:#38bdf8;"></div>Kolektyw / Stan</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#c084fc;"></div>Konstruktorzy</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#34d399;"></div>Zadania / Kolejka</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#fbbf24;"></div>Cube Nodes (Flota)</div>
+    </div>
+  </div>
+
+  <div id="canvas-container">
+    <svg id="svg-canvas" viewBox="0 0 1600 1200" preserveAspectRatio="xMidYMid meet">
+      <defs>
+        <!-- Arrowhead markers -->
+        <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 1 L 9 5 L 0 9 z" fill="#38bdf8" />
+        </marker>
+        <marker id="arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 1 L 9 5 L 0 9 z" fill="#c084fc" />
+        </marker>
+        <marker id="arrow-emerald" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 1 L 9 5 L 0 9 z" fill="#34d399" />
+        </marker>
+        <marker id="arrow-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 1 L 9 5 L 0 9 z" fill="#fbbf24" />
+        </marker>
+        <marker id="arrow-dashed" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 1 L 9 5 L 0 9 z" fill="#94a3b8" />
+        </marker>
+
+        <!-- Filters -->
+        <filter id="glow-blue" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#38bdf8" flood-opacity="0.25"/>
+        </filter>
+        <filter id="glow-purple" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#c084fc" flood-opacity="0.25"/>
+        </filter>
+        <filter id="glow-emerald" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#34d399" flood-opacity="0.25"/>
+        </filter>
+        <filter id="glow-amber" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#fbbf24" flood-opacity="0.25"/>
+        </filter>
+      </defs>
+
+      <g id="viewport">
+
+        <!-- ============================================================ -->
+        <!-- LAYER 0: EXTERNAL TRIGGERS & GATEWAYS (Top)                 -->
+        <!-- ============================================================ -->
+        <rect x="100" y="50" width="1400" height="130" rx="16" fill="#131b28" stroke="#1e293b" stroke-width="2" />
+        <text x="130" y="85" fill="#94a3b8" font-size="13" font-weight="700" letter-spacing="1">WARSTWA WEJŚCIA I ZDARZEŃ (EXTERNAL GATEWAYS & TRIGGERS)</text>
+
+        <!-- Gateway 1: GitHub -->
+        <g class="node-group" onclick="showDetails('gateway-gh')">
+          <rect x="130" y="105" width="280" height="55" rx="10" fill="#1c283d" stroke="#38bdf8" stroke-width="1.5" />
+          <text x="150" y="130" fill="#fff" font-size="14" font-weight="600">GitHub Webhooks / Poller</text>
+          <text x="150" y="147" fill="#94a3b8" font-size="11">Issues, Pull Requests, Commits</text>
+        </g>
+
+        <!-- Gateway 2: Enterprise Slack / Discord -->
+        <g class="node-group" onclick="showDetails('gateway-chat')">
+          <rect x="440" y="105" width="280" height="55" rx="10" fill="#1c283d" stroke="#38bdf8" stroke-width="1.5" />
+          <text x="460" y="130" fill="#fff" font-size="14" font-weight="600">Enterprise Chat / Slack Bot</text>
+          <text x="460" y="147" fill="#94a3b8" font-size="11">Komendy, alerty, zatwierdzenia Ownera</text>
+        </g>
+
+        <!-- Gateway 3: Cron & Scheduler Wakeups -->
+        <g class="node-group" onclick="showDetails('gateway-cron')">
+          <rect x="750" y="105" width="280" height="55" rx="10" fill="#1c283d" stroke="#38bdf8" stroke-width="1.5" />
+          <text x="770" y="130" fill="#fff" font-size="14" font-weight="600">Scheduled Wakeups (Cron)</text>
+          <text x="770" y="147" fill="#94a3b8" font-size="11">Cykliczne impulsy badawcze, maintenance</text>
+        </g>
+
+        <!-- Gateway 4: CLI & Admin Directives -->
+        <g class="node-group" onclick="showDetails('gateway-cli')">
+          <rect x="1060" y="105" width="410" height="55" rx="10" fill="#1c283d" stroke="#38bdf8" stroke-width="1.5" />
+          <text x="1080" y="130" fill="#fff" font-size="14" font-weight="600">CLI & Directives (summa42-box)</text>
+          <text x="1080" y="147" fill="#94a3b8" font-size="11">Ręczne polecenia, polityki, zarządzanie misją</text>
+        </g>
+
+        <!-- Connectors: Gateways to Wake Service -->
+        <path d="M 270 160 L 270 230" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-blue)" />
+        <path d="M 580 160 L 580 230" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-blue)" />
+        <path d="M 890 160 L 890 230" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-blue)" />
+        <path d="M 1260 160 L 1260 230" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow-blue)" />
+
+        <!-- ============================================================ -->
+        <!-- LAYER 1: COLLECTIVE GOVERNANCE & CORE TRUTH (Middle Top)    -->
+        <!-- ============================================================ -->
+        <rect x="100" y="230" width="1400" height="150" rx="18" fill="#141e2e" stroke="#25354f" stroke-width="2.5" />
+        <text x="130" y="260" fill="#38bdf8" font-size="14" font-weight="700" letter-spacing="1">POZIOM KOLEKTYWU (COLLECTIVE TRUTH & GOVERNANCE)</text>
+
+        <!-- Node: Wake Service -->
+        <g class="node-group" onclick="showDetails('core-wake')">
+          <rect x="130" y="280" width="280" height="75" rx="12" fill="#1a273b" stroke="#38bdf8" stroke-width="1.5" filter="url(#glow-blue)"/>
+          <text x="150" y="310" fill="#fff" font-size="15" font-weight="700">Wake & Assessment</text>
+          <text x="150" y="330" fill="#94a3b8" font-size="11">internal/wake · Budzenie Konstruktorów</text>
+          <text x="150" y="344" fill="#38bdf8" font-size="10" font-family="monospace">Dormancy / Evaluate state</text>
+        </g>
+
+        <!-- Node: Constitution & Principals -->
+        <g class="node-group" onclick="showDetails('core-gov')">
+          <rect x="440" y="280" width="310" height="75" rx="12" fill="#1a273b" stroke="#38bdf8" stroke-width="1.5" />
+          <text x="460" y="310" fill="#fff" font-size="15" font-weight="700">Constitution & Principals</text>
+          <text x="460" y="330" fill="#94a3b8" font-size="11">Właściciele, SSO, Delegacje, Uprawnienia</text>
+          <text x="460" y="344" fill="#38bdf8" font-size="10" font-family="monospace">Authority Ceilings / Policy Sets</text>
+        </g>
+
+        <!-- Node: Canonical State & Evidence Graph -->
+        <g class="node-group" onclick="showDetails('core-evidence')">
+          <rect x="780" y="280" width="360" height="75" rx="12" fill="#1a273b" stroke="#38bdf8" stroke-width="1.5" />
+          <text x="800" y="310" fill="#fff" font-size="15" font-weight="700">Evidence Graph & State Store</text>
+          <text x="800" y="330" fill="#94a3b8" font-size="11">Zweryfikowana wiedza, claims, memory events</text>
+          <text x="800" y="344" fill="#38bdf8" font-size="10" font-family="monospace">SQLite / Postgres · Hash-addressed</text>
+        </g>
+
+        <!-- Node: Resource Envelopes -->
+        <g class="node-group" onclick="showDetails('core-budget')">
+          <rect x="1170" y="280" width="300" height="75" rx="12" fill="#1a273b" stroke="#38bdf8" stroke-width="1.5" />
+          <text x="1190" y="310" fill="#fff" font-size="15" font-weight="700">Resource Envelopes</text>
+          <text x="1190" y="330" fill="#94a3b8" font-size="11">Budżety tokenów, koszty, limity CPU/RAM</text>
+          <text x="1190" y="344" fill="#38bdf8" font-size="10" font-family="monospace">Hard limits & reservations</text>
+        </g>
+
+        <!-- Connector Wake to Constructors -->
+        <path d="M 270 355 L 270 430" stroke="#c084fc" stroke-width="2.5" marker-end="url(#arrow-purple)" />
+        <text x="280" y="395" fill="#c084fc" font-size="12" font-weight="600">Aktywacja profilu (Trigger)</text>
+
+        <!-- ============================================================ -->
+        <!-- LAYER 2: CONSTRUCTORS (Persistent Entities of Collective)   -->
+        <!-- ============================================================ -->
+        <rect x="100" y="430" width="1400" height="230" rx="18" fill="#17172b" stroke="#3b2d54" stroke-width="2.5" />
+        <text x="130" y="460" fill="#c084fc" font-size="14" font-weight="700" letter-spacing="1">ENCJE ODPOWIEDZIALNOŚCI KOLEKTYWU (PERSISTENT CONSTRUCTORS)</text>
+        <text x="750" y="460" fill="#94a3b8" font-size="12">«Byty trwają niezależnie od Cube'ów, modeli czy maszyn»</text>
+
+        <!-- Constructor 1: Dev Core -->
+        <g class="node-group" onclick="showDetails('c-dev')">
+          <rect x="130" y="480" width="240" height="150" rx="14" fill="#221b38" stroke="#c084fc" stroke-width="1.5" filter="url(#glow-purple)"/>
+          <circle cx="160" cy="510" r="14" fill="#3b2d54" stroke="#c084fc" stroke-width="1.5"/>
+          <text x="155" y="515" fill="#c084fc" font-size="14" font-weight="bold">⚙</text>
+          <text x="185" y="515" fill="#fff" font-size="14" font-weight="700">Engineer Core</text>
+          <text x="145" y="540" fill="#c084fc" font-size="11" font-family="monospace">scope: internal/...</text>
+          <text x="145" y="560" fill="#cbd5e1" font-size="11">Odpowiedzialny za kod, bugfixy,</text>
+          <text x="145" y="575" fill="#cbd5e1" font-size="11">implementację przyjętych planów.</text>
+          <rect x="145" y="595" width="80" height="20" rx="6" fill="#130e22"/>
+          <text x="153" y="609" fill="#34d399" font-size="10" font-weight="bold">● DORMANT</text>
+        </g>
+
+        <!-- Constructor 2: QA & Automation -->
+        <g class="node-group" onclick="showDetails('c-qa')">
+          <rect x="390" y="480" width="240" height="150" rx="14" fill="#221b38" stroke="#c084fc" stroke-width="1.5" />
+          <circle cx="420" cy="510" r="14" fill="#3b2d54" stroke="#c084fc" stroke-width="1.5"/>
+          <text x="415" y="515" fill="#c084fc" font-size="14" font-weight="bold">✓</text>
+          <text x="445" y="515" fill="#fff" font-size="14" font-weight="700">QA & Test Gate</text>
+          <text x="405" y="540" fill="#c084fc" font-size="11" font-family="monospace">scope: tests, CI flakes</text>
+          <text x="405" y="560" fill="#cbd5e1" font-size="11">Pilnuje pokrycia testami,</text>
+          <text x="405" y="575" fill="#cbd5e1" font-size="11">bada concurrency-flake gate.</text>
+          <rect x="405" y="595" width="75" height="20" rx="6" fill="#130e22"/>
+          <text x="413" y="609" fill="#fbbf24" font-size="10" font-weight="bold">⚡ ACTIVE</text>
+        </g>
+
+        <!-- Constructor 3: Marketing & Research -->
+        <g class="node-group" onclick="showDetails('c-mkt')">
+          <rect x="650" y="480" width="240" height="150" rx="14" fill="#221b38" stroke="#c084fc" stroke-width="1.5" />
+          <circle cx="680" cy="510" r="14" fill="#3b2d54" stroke="#c084fc" stroke-width="1.5"/>
+          <text x="675" y="515" fill="#c084fc" font-size="14" font-weight="bold">🔍</text>
+          <text x="705" y="515" fill="#fff" font-size="14" font-weight="700">Radar & Research</text>
+          <text x="665" y="540" fill="#c084fc" font-size="11" font-family="monospace">scope: docs/research/...</text>
+          <text x="665" y="560" fill="#cbd5e1" font-size="11">Analizuje trendy, nowinki AI,</text>
+          <text x="665" y="575" fill="#cbd5e1" font-size="11">generuje notatki badawcze.</text>
+          <rect x="665" y="595" width="80" height="20" rx="6" fill="#130e22"/>
+          <text x="673" y="609" fill="#34d399" font-size="10" font-weight="bold">● DORMANT</text>
+        </g>
+
+        <!-- Constructor 4: Security Watchdog -->
+        <g class="node-group" onclick="showDetails('c-sec')">
+          <rect x="910" y="480" width="240" height="150" rx="14" fill="#221b38" stroke="#c084fc" stroke-width="1.5" />
+          <circle cx="940" cy="510" r="14" fill="#3b2d54" stroke="#c084fc" stroke-width="1.5"/>
+          <text x="935" y="515" fill="#c084fc" font-size="14" font-weight="bold">🛡</text>
+          <text x="965" y="515" fill="#fff" font-size="14" font-weight="700">Security Watch</text>
+          <text x="925" y="540" fill="#c084fc" font-size="11" font-family="monospace">scope: deps, keys, secrets</text>
+          <text x="925" y="560" fill="#cbd5e1" font-size="11">Audyt wycieków, wrażliwych ścieżek</text>
+          <text x="925" y="575" fill="#cbd5e1" font-size="11">i uprawnień (PR path-gate).</text>
+          <rect x="925" y="595" width="80" height="20" rx="6" fill="#130e22"/>
+          <text x="933" y="609" fill="#34d399" font-size="10" font-weight="bold">● DORMANT</text>
+        </g>
+
+        <!-- Constructor 5: Infrastructure & Auto-scaler -->
+        <g class="node-group" onclick="showDetails('c-infra')">
+          <rect x="1170" y="480" width="300" height="150" rx="14" fill="#221b38" stroke="#fbbf24" stroke-width="2" />
+          <circle cx="1200" cy="510" r="14" fill="#3b2d54" stroke="#fbbf24" stroke-width="1.5"/>
+          <text x="1195" y="515" fill="#fbbf24" font-size="14" font-weight="bold">⚡</text>
+          <text x="1225" y="515" fill="#fff" font-size="14" font-weight="700">Infra Auto-scaler</text>
+          <text x="1185" y="540" fill="#fbbf24" font-size="11" font-family="monospace">scope: k8s pods, VM, Cubes</text>
+          <text x="1185" y="560" fill="#cbd5e1" font-size="11">Monitoruje zatory kolejki i budżet.</text>
+          <text x="1185" y="575" fill="#cbd5e1" font-size="11">Samodzielnie stawia nowe Cuby!</text>
+          <rect x="1185" y="595" width="95" height="20" rx="6" fill="#130e22"/>
+          <text x="1193" y="609" fill="#38bdf8" font-size="10" font-weight="bold">⚙ SCALING READY</text>
+        </g>
+
+        <!-- Delegation arrow between constructors -->
+        <path d="M 770 630 C 770 660, 250 660, 250 635" stroke="#c084fc" stroke-dasharray="4 4" stroke-width="2" fill="none" marker-end="url(#arrow-purple)" />
+        <text x="470" y="655" fill="#c084fc" font-size="11" font-weight="600">Delegacja: CreateChildTask (zawężenie uprawnień)</text>
+
+        <!-- Connectors: Constructors to Task Queue -->
+        <path d="M 250 630 L 250 710" stroke="#34d399" stroke-width="2" marker-end="url(#arrow-emerald)" />
+        <path d="M 510 630 L 510 710" stroke="#34d399" stroke-width="2" marker-end="url(#arrow-emerald)" />
+        <path d="M 1030 630 L 1030 710" stroke="#34d399" stroke-width="2" marker-end="url(#arrow-emerald)" />
+
+        <!-- ============================================================ -->
+        <!-- LAYER 3: TASK & SCHEDULER QUEUE (Deterministic Boundary)     -->
+        <!-- ============================================================ -->
+        <rect x="100" y="710" width="1400" height="110" rx="16" fill="#122521" stroke="#1f4b3f" stroke-width="2.5" />
+        <text x="130" y="735" fill="#34d399" font-size="14" font-weight="700" letter-spacing="1">DETERMINISTYCZNA GRANICA ZADAŃ (TASK QUEUE & LEASING)</text>
+        <text x="800" y="735" fill="#94a3b8" font-size="12">«Zadania niosą constructor_id, ale są pobierane przez dowolny uprawniony Cube»</text>
+
+        <g class="node-group" onclick="showDetails('task-queue')">
+          <rect x="130" y="750" width="1340" height="55" rx="10" fill="#17342b" stroke="#34d399" stroke-width="1.5" filter="url(#glow-emerald)"/>
+          <text x="160" y="782" fill="#fff" font-size="14" font-weight="700">Eligible Tasks Pool:</text>
+          <text x="320" y="782" fill="#34d399" font-family="monospace" font-size="13">[Task #114/132: ReadFile (Ready)]</text>
+          <text x="640" y="782" fill="#34d399" font-family="monospace" font-size="13">[Task #133: Planner ReadLoop (Leased)]</text>
+          <text x="1000" y="782" fill="#94a3b8" font-family="monospace" font-size="13">[Task #135: Flag Verify (Pending)]</text>
+        </g>
+
+        <!-- Connectors: Queue to Cubes via Leasing -->
+        <path d="M 270 805 L 270 890" stroke="#fbbf24" stroke-width="2.5" marker-end="url(#arrow-amber)" />
+        <text x="280" y="850" fill="#fbbf24" font-size="12" font-weight="600">Lease & Fence Token</text>
+
+        <path d="M 700 805 L 700 890" stroke="#fbbf24" stroke-width="2.5" marker-end="url(#arrow-amber)" />
+        <text x="710" y="850" fill="#fbbf24" font-size="12" font-weight="600">Lease & Fence Token</text>
+
+        <path d="M 1150 805 L 1150 890" stroke="#fbbf24" stroke-width="2.5" marker-end="url(#arrow-amber)" />
+        <text x="1160" y="850" fill="#fbbf24" font-size="12" font-weight="600">Lease & Fence Token</text>
+
+        <!-- Infra autoscaling signal to cloud -->
+        <path d="M 1320 630 L 1320 890" stroke="#fbbf24" stroke-dasharray="6 4" stroke-width="2" marker-end="url(#arrow-amber)" />
+        <text x="1330" y="770" fill="#fbbf24" font-size="11" font-weight="600">Provisioning request (k8s/cloud)</text>
+
+        <!-- ============================================================ -->
+        <!-- LAYER 4: PHYSICAL CUBE FLEET (Execution Nodes / Infrastructure) -->
+        <!-- ============================================================ -->
+        <rect x="100" y="890" width="1400" height="260" rx="18" fill="#1f1b13" stroke="#4a3e21" stroke-width="2.5" />
+        <text x="130" y="920" fill="#fbbf24" font-size="14" font-weight="700" letter-spacing="1">FIZYCZNA FLOTA CUBE'ÓW (REPLACEABLE WORKER ENGINES)</text>
+        <text x="750" y="920" fill="#94a3b8" font-size="12">«Węzły wykonawcze: mogą się skalować od 1 procesu na laptopie do setek w k8s»</text>
+
+        <!-- Cube 1: Local Laptop -->
+        <g class="node-group" onclick="showDetails('cube-local')">
+          <rect x="130" y="945" width="380" height="180" rx="14" fill="#292215" stroke="#fbbf24" stroke-width="1.5" />
+          <text x="155" y="975" fill="#fff" font-size="16" font-weight="700">Cube #1 — Local Developer Machine</text>
+          <text x="155" y="995" fill="#fbbf24" font-size="11" font-family="monospace">env: linux/host · mode: One-Man Army</text>
+          
+          <rect x="155" y="1010" width="330" height="40" rx="8" fill="#19150b" stroke="#3d3319"/>
+          <text x="170" y="1035" fill="#e2e8f0" font-size="12">Scheduler Worker (internal/scheduler)</text>
+
+          <rect x="155" y="1060" width="330" height="50" rx="8" fill="#19150b" stroke="#3d3319"/>
+          <text x="170" y="1080" fill="#94a3b8" font-size="11">Modele lokalne / adapter CLI:</text>
+          <text x="170" y="1098" fill="#38bdf8" font-size="11" font-family="monospace">agy gemini-3.8-flash · claude -p</text>
+        </g>
+
+        <!-- Cube 2: Kubernetes Worker Node -->
+        <g class="node-group" onclick="showDetails('cube-k8s')">
+          <rect x="540" y="945" width="380" height="180" rx="14" fill="#292215" stroke="#fbbf24" stroke-width="1.5" filter="url(#glow-amber)"/>
+          <text x="565" y="975" fill="#fff" font-size="16" font-weight="700">Cube #2 — Kubernetes Worker Pod</text>
+          <text x="565" y="995" fill="#fbbf24" font-size="11" font-family="monospace">image: summa42-cube:latest · replica 1/N</text>
+          
+          <rect x="565" y="1010" width="330" height="40" rx="8" fill="#19150b" stroke="#3d3319"/>
+          <text x="580" y="1035" fill="#e2e8f0" font-size="12">Scheduler Worker (Sandboxed execution)</text>
+
+          <rect x="565" y="1060" width="330" height="50" rx="8" fill="#19150b" stroke="#3d3319"/>
+          <text x="580" y="1080" fill="#94a3b8" font-size="11">Heavy validation & Concurrency gates:</text>
+          <text x="580" y="1098" fill="#34d399" font-size="11" font-family="monospace">go test -count=600 -timeout 30m</text>
+        </g>
+
+        <!-- Cube 3: Dynamic Autoscaled Cloud Node -->
+        <g class="node-group" onclick="showDetails('cube-auto')">
+          <rect x="950" y="945" width="520" height="180" rx="14" fill="#292215" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6 4" />
+          <text x="975" y="975" fill="#fff" font-size="16" font-weight="700">Cube #N — Dynamic Cloud Auto-scaled Node</text>
+          <text x="975" y="995" fill="#fbbf24" font-size="11" font-family="monospace">triggered by Infra Constructor · Ephemeral VM</text>
+          
+          <rect x="975" y="1010" width="470" height="40" rx="8" fill="#19150b" stroke="#3d3319"/>
+          <text x="990" y="1035" fill="#e2e8f0" font-size="12">Uruchamiany na żądanie przy przeciążeniu kolejki zadań</text>
+
+          <rect x="975" y="1060" width="470" height="50" rx="8" fill="#19150b" stroke="#3d3319"/>
+          <text x="990" y="1080" fill="#94a3b8" font-size="11">Status:</text>
+          <text x="990" y="1098" fill="#fbbf24" font-size="11" font-family="monospace">Auto-terminates after 15m idle · Cost protected</text>
+        </g>
+
+      </g>
+    </svg>
+  </div>
+
+  <!-- UI Controls toolbar -->
+  <div class="toolbar">
+    <button class="btn" onclick="zoomIn()">➕ Przybliż</button>
+    <button class="btn" onclick="zoomOut()">➖ Oddal</button>
+    <button class="btn" onclick="resetView()">↺ Zresetuj widok</button>
+    <button class="btn" onclick="fitView()">⛶ Całość</button>
+  </div>
+
+  <!-- Details Drawer -->
+  <div class="details-drawer" id="details-drawer">
+    <button class="close-btn" onclick="closeDetails()">✕</button>
+    <h2 id="drawer-title">Tytuł komponentu</h2>
+    <div class="sub" id="drawer-sub">Ścieżka / Identyfikator</div>
+    <p id="drawer-desc">Opis działania komponentu w architekturze Summa42.</p>
+    <div id="drawer-attrs"></div>
+  </div>
+
+  <script>
+    // Component knowledge base
+    const detailsData = {
+      'c-dev': {
+        title: 'Konstruktor: Engineer Core',
+        sub: 'summa42.constructor.engineer',
+        desc: 'Trwała encja w Kolektywie odpowiedzialna za ewolucję i stan kodu bazowego. Nie działa w nieustannej pętli — większość czasu spędza w stanie uśpienia (DORMANT). Wybudza się na nowe zadania z GitHuba lub polecenia.',
+        attrs: [
+          { k: 'Właściciel', v: 'Team Lead / Senior Engineer Principal' },
+          { k: 'Authority Ceiling', v: 'workspace.repo.write, branch.create, pr.propose' },
+          { k: 'Allowed Prefixes', v: 'internal/..., cmd/..., pkg/...' },
+          { k: 'Odpowiedzialność', v: 'Tworzenie i weryfikacja planów implementacji' }
+        ]
+      },
+      'c-qa': {
+        title: 'Konstruktor: QA & Test Gate',
+        sub: 'summa42.constructor.qa',
+        desc: 'Konstruktor odpowiedzialny za jakość i testy integracyjne. Bada niezawodność, uruchamia bramki concurrency flake i dba o to, by żaden kandydat ze statusem flaky nie trafił do głównej gałęzi.',
+        attrs: [
+          { k: 'Właściciel', v: 'QA Lead Principal' },
+          { k: 'Authority Ceiling', v: 'test.execute, coverage.audit' },
+          { k: 'Domenowe bramki', v: 'go test -count=600 -timeout 30m' },
+          { k: 'Zachowanie', v: 'Odrzuca kandydata, gdy testy nie dostarczą twardego dowodu' }
+        ]
+      },
+      'c-mkt': {
+        title: 'Konstruktor: Radar & Research',
+        sub: 'summa42.constructor.radar',
+        desc: 'Obserwuje repozytoria open source, trendy w modelach AI i dokumentację. Generuje uporządkowane raporty i propozycje architektoniczne do dyskusji zespołu.',
+        attrs: [
+          { k: 'Właściciel', v: 'Product / Research Principal' },
+          { k: 'Authority Ceiling', v: 'web.search, docs.write, discussion.propose' },
+          { k: 'Kluczowa cecha', v: 'Brak uprawnień do kodu produkcyjnego (zasada najmniejszych uprawnień)' }
+        ]
+      },
+      'c-sec': {
+        title: 'Konstruktor: Security Watchdog',
+        sub: 'summa42.constructor.security',
+        desc: 'Dba o przestrzeganie polityki bezpieczeństwa: audytuje wrażliwe pliki (.env, klucze .pem, id_rsa), weryfikuje PR pod kątem wycieków i sprawdza integralność podpisów.',
+        attrs: [
+          { k: 'Właściciel', v: 'Security Principal / Root' },
+          { k: 'Narzędzia', v: 'Jailed ReadFile, checkSelection, sensitivePattern matcher' },
+          { k: 'Uprawnienia', v: 'Możliwość zablokowania PR (Hold/Block)' }
+        ]
+      },
+      'c-infra': {
+        title: 'Konstruktor: Infrastructure Auto-scaler',
+        sub: 'summa42.constructor.infra_scaler',
+        desc: 'Kluczowy element skalowania: monitoruje stan kolejki zadań (Task Queue). Gdy pojawia się zator i rośnie liczba zadań Deferred, a budżet chmurowy na to pozwala, tworzy nowe instancje Cube w k8s lub chmurze.',
+        attrs: [
+          { k: 'Właściciel', v: 'DevOps / Cloud Ops Principal' },
+          { k: 'Triggery', v: 'Wzrost liczby zadań oczekujących powyżej progu' },
+          { k: 'Akcja', v: 'Deployment gotowego obrazu summa42-cube:latest' }
+        ]
+      },
+      'cube-local': {
+        title: 'Cube #1 — Local Developer Node',
+        sub: 'binary: ./bin/summa42-box',
+        desc: 'Fizyczny proces roboczy na maszynie programisty (One-Man Army). Łączy się ze stanem Kolektywu, pobiera zadanie w leasing, wykonuje Attempt przez lokalne adaptery (agy, claude) i rejestruje dowody.',
+        attrs: [
+          { k: 'Rola', v: 'Jednostka wykonawcza (brak trwałych stanów konstruktora w Cube)' },
+          { k: 'Izolacja', v: 'Dedykowany użytkownik systemowy (summa42-model)' }
+        ]
+      },
+      'cube-k8s': {
+        title: 'Cube #2 — Kubernetes Worker Pod',
+        sub: 'pod: summa42-worker-7d9b4',
+        desc: 'Węzeł w chmurze lub klastrze firmowym. Działa bezstanowo, pobiera zadania o wysokim zapotrzebowaniu na CPU/GPU. Gdy Pod ulegnie awarii, leasing wygasa, a inny Cube bezpiecznie wznawia zadanie.',
+        attrs: [
+          { k: 'Obraz', v: 'summa42-cube:latest' },
+          { k: 'Wymienność', v: 'Może zostać zniszczony w dowolnym momencie bez utraty danych' }
+        ]
+      },
+      'cube-auto': {
+        title: 'Cube #N — Dynamic Cloud Node',
+        sub: 'cloud-vm / ephemeral-pod',
+        desc: 'Dynamicznie powołana maszyna wirtualna lub pod. Startuje w kilka sekund, pobiera spiętrzone zadania i po zakończeniu pracy ulega samozniszczeniu (ochrona kosztów).',
+        attrs: [
+          { k: 'Zarządca', v: 'Powoływany przez Infra Auto-scaler Constructor' },
+          { k: 'Auto-termination', v: '15 minut bezczynności' }
+        ]
+      },
+      'task-queue': {
+        title: 'Deterministyczna Granica Zadań (Task Queue)',
+        sub: 'internal/scheduler/worker.go',
+        desc: 'Serce determinizmu Summa42: Zadania wygenerowane przez Konstruktorów trafiają do kolejki. Cube pobiera zadanie z Fencing Tokenem i Lease Timeoutem. Weryfikacja akceptuje wynik wyłącznie na podstawie dowodów.',
+        attrs: [
+          { k: 'Leasing & Fencing', v: 'Zapobiega wyścigom i konfliktom między wieloma Cubami' },
+          { k: 'Pochodzenie', v: 'Zadanie niesie constructor_id, ale Cube nie zna logiki Konstruktora' }
+        ]
+      },
+      'core-wake': {
+        title: 'Wake & Assessment Service',
+        sub: 'internal/wake/service.go',
+        desc: 'Budzi uśpionych Konstruktorów na podstawie zaplanowanych terminów (Cron), zewnętrznych zdarzeń (webhooks) lub poleceń Ownera. Konstruktor dokonuje szybkiej ewaluacji, a brak akcji (powrót do snu) jest pożądanym wynikiem.',
+        attrs: [
+          { k: 'Filozofia', v: 'Dormancy is a first-class success outcome' }
+        ]
+      },
+      'core-evidence': {
+        title: 'Evidence Graph & State Store',
+        sub: 'internal/evidence · internal/state',
+        desc: 'Współdzielona prawda Kolektywu. Baza dowodów jest adresowana kryptograficznymi hashami (ContentHash). Konstruktorzy wymieniają się dowodami, a nie halucynacjami.',
+        attrs: [
+          { k: 'Niezmienność', v: 'Dowody są niezmienne (append-only)' }
+        ]
+      }
+    };
+
+    function showDetails(key) {
+      const data = detailsData[key];
+      if (!data) return;
+      document.getElementById('drawer-title').innerText = data.title;
+      document.getElementById('drawer-sub').innerText = data.sub;
+      document.getElementById('drawer-desc').innerText = data.desc;
+
+      const attrsContainer = document.getElementById('drawer-attrs');
+      attrsContainer.innerHTML = '';
+      if (data.attrs) {
+        data.attrs.forEach(a => {
+          const div = document.createElement('div');
+          div.className = 'attr';
+          div.innerHTML = `<strong>${a.k}:</strong> ${a.v}`;
+          attrsContainer.appendChild(div);
+        });
+      }
+      document.getElementById('details-drawer').style.display = 'block';
+    }
+
+    function closeDetails() {
+      document.getElementById('details-drawer').style.display = 'none';
+    }
+
+    // Pan & Zoom Implementation
+    const container = document.getElementById('canvas-container');
+    const viewport = document.getElementById('viewport');
+
+    let scale = 0.95;
+    let pointX = 40;
+    let pointY = 20;
+    let isPanning = false;
+    let startX = 0;
+    let startY = 0;
+
+    function updateTransform() {
+      viewport.setAttribute('transform', `translate(${pointX}, ${pointY}) scale(${scale})`);
+    }
+
+    container.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.node-group')) return;
+      isPanning = true;
+      startX = e.clientX - pointX;
+      startY = e.clientY - pointY;
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isPanning) return;
+      pointX = e.clientX - startX;
+      pointY = e.clientY - startY;
+      updateTransform();
+    });
+
+    window.addEventListener('mouseup', () => {
+      isPanning = false;
+    });
+
+    container.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const xs = (e.clientX - pointX) / scale;
+      const ys = (e.clientY - pointY) / scale;
+      const delta = -e.deltaY;
+      
+      const factor = delta > 0 ? 1.12 : 0.89;
+      const newScale = Math.min(Math.max(scale * factor, 0.25), 4.0);
+
+      pointX = e.clientX - xs * newScale;
+      pointY = e.clientY - ys * newScale;
+      scale = newScale;
+      updateTransform();
+    }, { passive: false });
+
+    function zoomIn() {
+      scale = Math.min(scale * 1.25, 4.0);
+      updateTransform();
+    }
+
+    function zoomOut() {
+      scale = Math.max(scale * 0.8, 0.25);
+      updateTransform();
+    }
+
+    function resetView() {
+      scale = 0.95;
+      pointX = 40;
+      pointY = 20;
+      updateTransform();
+    }
+
+    function fitView() {
+      const containerWidth = container.clientWidth;
+      const containerHeight = container.clientHeight;
+      const svgWidth = 1600;
+      const svgHeight = 1200;
+
+      scale = Math.min(containerWidth / svgWidth, containerHeight / svgHeight) * 0.9;
+      pointX = (containerWidth - svgWidth * scale) / 2;
+      pointY = (containerHeight - svgHeight * scale) / 2;
+      updateTransform();
+    }
+
+    // Initialize
+    updateTransform();
+  </script>
+</body>
+</html>

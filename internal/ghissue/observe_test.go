@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -942,5 +943,38 @@ func TestObserveOnceLeavesWorkPastTriageToItsStage(t *testing.T) {
 	}
 	if _, found, err := f.execSvc.FindByIdempotencyKey(f.ctx, "work_plan_review"); err != nil || found {
 		t.Fatalf("intake materialized the plan-review work (found=%v, err=%v)", found, err)
+	}
+}
+
+func TestObserveOnceAutoGrantLabel(t *testing.T) {
+	f := setupObserve(t)
+	f.cfg.AutoGrantLabel = "summa-auto"
+	lister := &stubLister{name: "o/r", pages: []stubPage{{
+		items: []any{
+			wireIssue(func(m map[string]any) {
+				m["number"] = float64(42)
+				m["labels"] = []any{map[string]any{"name": "summa-auto"}}
+			}),
+		},
+	}}}
+	result, err := ObserveOnce(f.ctx, lister, f.cases, f.execSvc, f.evidenceStore, f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Ensured) != 1 {
+		t.Fatalf("expected 1 ensured, got %d", len(result.Ensured))
+	}
+	c, found, err := f.cases.Find(f.ctx, f.cfg.MissionID, "github", "github:o/r#42", "2026-09-24T10:00:00Z")
+	if err != nil || !found {
+		t.Fatalf("case not found: %v", err)
+	}
+	if !slices.Contains(c.Grant.Capabilities, "workspace.repo.write") || !slices.Contains(c.Grant.Capabilities, "workspace.test") {
+		t.Fatalf("expected auto-granted capabilities, got %+v", c.Grant.Capabilities)
+	}
+	if !slices.Contains(c.Grant.Actions, "workspace.repo.write") || !slices.Contains(c.Grant.Actions, "workspace.test") {
+		t.Fatalf("expected auto-granted actions, got %+v", c.Grant.Actions)
+	}
+	if c.MaxSteps < 8 {
+		t.Fatalf("expected max steps >= 8, got %d", c.MaxSteps)
 	}
 }

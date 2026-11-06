@@ -23,7 +23,22 @@ const (
 		`"done_when": "a verifiable condition, at most 500 characters"}]} with 1 to 8 steps. Keep every field short. Do not perform the work.`
 	PlanningAssessmentReason = "planning-started"
 	PlanReviewWorkKind       = "github.issue.plan.review"
+	KindPlanTurnLog          = "github.issue.plan.turnlog"
 )
+
+type TurnLogEntry struct {
+	Turn           int      `json:"turn"`
+	PathsRequested []string `json:"paths_requested"`
+	PathsServed    []string `json:"paths_served"`
+	PathsDenied    []string `json:"paths_denied"`
+	Bytes          int      `json:"bytes"`
+}
+
+type PlanTurnLog struct {
+	CaseID string         `json:"case_id"`
+	WorkID string         `json:"work_id"`
+	Turns  []TurnLogEntry `json:"turns"`
+}
 
 type PlanStep struct {
 	Objective string `json:"objective"`
@@ -31,13 +46,46 @@ type PlanStep struct {
 }
 
 type PlanOutput struct {
-	Summary string     `json:"summary"`
-	Steps   []PlanStep `json:"steps"`
+	Summary      string     `json:"summary,omitempty"`
+	Steps        []PlanStep `json:"steps,omitempty"`
+	AllowedPaths []string   `json:"allowed_paths,omitempty"`
+	ReadRepoFile []string   `json:"read_repo_file,omitempty"`
+}
+
+func (p PlanOutput) IsReadRequest() bool {
+	return len(p.ReadRepoFile) > 0
 }
 
 // Validate enforces hard limits about twice the ones PlanQuestion asks for,
 // because models overshoot a stated limit.
 func (p PlanOutput) Validate() error {
+	isRead := len(p.ReadRepoFile) > 0
+	hasPlan := p.Summary != "" || len(p.Steps) > 0 || len(p.AllowedPaths) > 0
+
+	if isRead && hasPlan {
+		return errors.New("read_repo_file and plan summary/steps are mutually exclusive")
+	}
+	if !isRead && !hasPlan {
+		return errors.New("plan output must contain either read_repo_file or summary and steps")
+	}
+
+	if isRead {
+		if len(p.ReadRepoFile) > 8 {
+			return errors.New("at most 8 files can be requested per read turn")
+		}
+		seen := map[string]bool{}
+		for i, pth := range p.ReadRepoFile {
+			if strings.TrimSpace(pth) == "" || len(pth) > 240 {
+				return fmt.Errorf("read_repo_file[%d] must be a non-empty path under 240 characters", i)
+			}
+			if seen[pth] {
+				return fmt.Errorf("duplicate path %q in read_repo_file", pth)
+			}
+			seen[pth] = true
+		}
+		return nil
+	}
+
 	if textLength(p.Summary, 1, 1000) != nil {
 		return errors.New("plan summary must contain 1 to 1000 characters")
 	}
@@ -47,6 +95,14 @@ func (p PlanOutput) Validate() error {
 	for i, step := range p.Steps {
 		if textLength(step.Objective, 1, 300) != nil || textLength(step.DoneWhen, 1, 1000) != nil {
 			return fmt.Errorf("plan step %d needs a bounded objective and done_when", i+1)
+		}
+	}
+	if len(p.AllowedPaths) > 64 {
+		return errors.New("plan allowed_paths exceeds limit of 64")
+	}
+	for _, ap := range p.AllowedPaths {
+		if !repoworkspace.SafePath(ap) {
+			return fmt.Errorf("invalid allowed_path %q", ap)
 		}
 	}
 	return nil
@@ -98,6 +154,11 @@ func ParsePlanOutput(raw []byte) (PlanOutput, error) {
 	return output, nil
 }
 
+type ReadResult struct {
+	Path  string `json:"path"`
+	Error string `json:"error,omitempty"`
+}
+
 type PlanInput struct {
 	Grounding          *GroundedInput `json:"grounding,omitempty"`
 	Schema             string         `json:"schema"`
@@ -105,6 +166,9 @@ type PlanInput struct {
 	Snapshot           Snapshot       `json:"snapshot"`
 	Decision           Decision       `json:"decision"`
 	DecisionEvidenceID domain.ID      `json:"decision_evidence_id"`
+	TrackedFiles       []string       `json:"tracked_files,omitempty"`
+	Turn               int            `json:"turn,omitempty"`
+	ReadResults        []ReadResult   `json:"read_results,omitempty"`
 }
 
 type PlanModel interface {
@@ -183,6 +247,7 @@ type Plan struct {
 	CaseID             domain.ID   `json:"case_id"`
 	DecisionEvidenceID domain.ID   `json:"decision_evidence_id"`
 	SnapshotEvidenceID domain.ID   `json:"snapshot_evidence_id"`
+	TurnLogEvidenceID  domain.ID   `json:"turn_log_evidence_id,omitempty"`
 	Repository         string      `json:"repository"`
 	Issue              int64       `json:"issue"`
 	Revision           string      `json:"revision"`

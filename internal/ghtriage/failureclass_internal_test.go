@@ -20,7 +20,7 @@ func TestFailureSignatureClasses(t *testing.T) {
 		{"wrapped deadline", fmt.Errorf("model invocation timed out: %w", context.DeadlineExceeded), "timeout"},
 		{"exit", fmt.Errorf("model invocation failed: %w", exitErr), "model-exit"},
 		{"parse", parseErr, "parse"},
-		{"validation", &planFailure{"validation", errors.New("bad")}, "validation"},
+		{"validation", &planFailure{class: "validation", err: errors.New("bad")}, "validation"},
 		{"internal", errors.New("disk"), "internal"},
 	}
 	for _, c := range cases {

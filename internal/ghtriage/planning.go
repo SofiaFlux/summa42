@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/execution"
+	"github.com/SofiaFlux/summa42/internal/ghissue"
 	"github.com/SofiaFlux/summa42/internal/verification"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
@@ -19,6 +21,7 @@ type PlanningCandidate struct {
 	Case               workflowcase.Case
 	Decision           Decision
 	DecisionEvidenceID domain.ID
+	Severity           int
 }
 
 // PlanningGate supplies candidates for a planner. A planner must recheck these
@@ -72,6 +75,12 @@ func (g *PlanningGate) List(ctx context.Context, missionID domain.ID) ([]Plannin
 			result = append(result, candidate)
 		}
 	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Severity != result[j].Severity {
+			return result[i].Severity > result[j].Severity
+		}
+		return result[i].Case.ID < result[j].Case.ID
+	})
 	return result, caseErrs, nil
 }
 
@@ -144,5 +153,20 @@ func (g *PlanningGate) candidate(ctx context.Context, missionID domain.ID, c wor
 	if decision.FinalDisposition() != DispositionReadyToPlan {
 		return none, false, nil
 	}
-	return PlanningCandidate{Case: c, Decision: decision, DecisionEvidenceID: object.ID}, true, nil
+	sev := 0
+	snapID := decision.SnapshotEvidenceID
+	if snapID == "" {
+		snapID = c.ObservationEvidenceID
+	}
+	if snapID != "" {
+		if _, snapRaw, err := g.evidence.Get(ctx, domain.ID(snapID)); err == nil {
+			var snap struct {
+				Labels []string `json:"labels"`
+			}
+			if err := json.Unmarshal(snapRaw, &snap); err == nil {
+				sev = ghissue.ExtractSeverity(snap.Labels)
+			}
+		}
+	}
+	return PlanningCandidate{Case: c, Decision: decision, DecisionEvidenceID: object.ID, Severity: sev}, true, nil
 }

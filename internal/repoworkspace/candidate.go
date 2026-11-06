@@ -226,3 +226,20 @@ func inspectCandidate(ctx context.Context, dir, base, head string) (Candidate, e
 func VerifyCandidate(ctx context.Context, dir string, c Candidate) error {
 	return sameCandidate(ctx, dir, c)
 }
+
+// ResetCheckout restores an existing checkout directory to the pinned commit,
+// discarding any previous candidate commit and untracked files so a repair turn
+// starts from a pristine baseline.
+func ResetCheckout(ctx context.Context, dir, commit string) error {
+	if !filepath.IsAbs(dir) || !FullCommit(commit) {
+		return errors.New("absolute checkout and full commit required")
+	}
+	if _, err := git(ctx, dir, "reset", "--hard", commit); err != nil {
+		return err
+	}
+	if _, err := git(ctx, dir, "clean", "-fdx"); err != nil {
+		return err
+	}
+	return cleanCheckout(ctx, dir, commit)
+}
+

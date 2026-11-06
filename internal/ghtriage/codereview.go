@@ -218,7 +218,7 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 			cancel()
 			if err == nil {
 				if verr := output.Validate(); verr != nil {
-					err = &planFailure{"validation", verr}
+					err = &planFailure{class: "validation", err: verr}
 				}
 			}
 			if err != nil {

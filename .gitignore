@@ -14,6 +14,8 @@ docs/publication-readiness-private.md
 *.sqlite-wal
 
 # OS/editor noise
+.claude/
+.commandcode/
 .DS_Store
 .idea/
 .vscode/

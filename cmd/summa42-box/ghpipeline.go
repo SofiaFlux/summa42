@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,11 +11,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/capacity"
 	"github.com/SofiaFlux/summa42/internal/domain"
+	"github.com/SofiaFlux/summa42/internal/evidence"
+	"github.com/SofiaFlux/summa42/internal/ghissue"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
@@ -218,7 +222,7 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 			return nil, err
 		}
 		defer box.Close()
-		return implementationCases(ctx, workflowcase.New(box.Store, box.Clock, box.Purpose), domain.ID(mission))
+		return implementationCases(ctx, workflowcase.New(box.Store, box.Clock, box.Purpose), box.Evidence, domain.ID(mission))
 	}
 	return p, interval, nil
 }
@@ -456,17 +460,43 @@ func runGHPipeline(ctx context.Context, args []string) error {
 	}
 }
 
-// implementationCases is every ACTIVE case of the mission at implementation work.
-func implementationCases(ctx context.Context, cases *workflowcase.Service, mission domain.ID) ([]domain.ID, error) {
+// implementationCases is every ACTIVE case of the mission at implementation work,
+// sorted by issue severity descending.
+func implementationCases(ctx context.Context, cases *workflowcase.Service, store *evidence.Store, mission domain.ID) ([]domain.ID, error) {
 	active, err := cases.ListActive(ctx, mission)
 	if err != nil {
 		return nil, err
 	}
-	var ids []domain.ID
+	type candidate struct {
+		id       domain.ID
+		severity int
+	}
+	var candidates []candidate
 	for _, c := range active {
 		if c.NextWork.Kind == ghtriage.ImplementationWorkKind {
-			ids = append(ids, c.ID)
+			sev := 0
+			if store != nil && c.ObservationEvidenceID != "" {
+				if _, raw, err := store.Get(ctx, domain.ID(c.ObservationEvidenceID)); err == nil {
+					var snap struct {
+						Labels []string `json:"labels"`
+					}
+					if err := json.Unmarshal(raw, &snap); err == nil {
+						sev = ghissue.ExtractSeverity(snap.Labels)
+					}
+				}
+			}
+			candidates = append(candidates, candidate{id: c.ID, severity: sev})
 		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].severity != candidates[j].severity {
+			return candidates[i].severity > candidates[j].severity
+		}
+		return candidates[i].id < candidates[j].id
+	})
+	ids := make([]domain.ID, len(candidates))
+	for i, c := range candidates {
+		ids[i] = c.id
 	}
 	return ids, nil
 }

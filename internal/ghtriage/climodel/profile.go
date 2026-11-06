@@ -469,7 +469,7 @@ func lookup(obj map[string]any, path string) string {
 const profilePostamble = "\n\nReminder: no tools or commands are available, and none are needed. " +
 	"Answer now, in this reply, with the requested JSON object only.\n"
 
-const profilePreamble = "Everything you need is in this message. Do not use any tools. " +
+const profilePreamble = "Everything you need is in this message. Do not use any tools; the only capability is the JSON read request. " +
 	"Reply with the requested JSON object only: no Markdown, no code fence, no other text.\n\n"
 
 // BuiltinProfiles are the harnesses installed on the reference host. Flags come
@@ -488,7 +488,7 @@ func BuiltinProfiles() []Profile {
 			// --disable-slash-commands would turn plan mode off ("--mode plan has no
 			// effect while slash command expansion is disabled"), so it is absent.
 			Args:     []string{"--mode", "plan", "--sandbox", "--model", "{model}", "--input-format", "stream-json", "--output-format", "stream-json", "--print="},
-			ReadOnly: []string{"--mode", "plan"}, MaxPrompt: 110000,
+			ReadOnly: []string{"--mode", "plan"}, MaxPrompt: 500000,
 			Capacity: Capacity{Pools: []Pool{
 				{Name: "gemini", Models: []string{"gemini-*"}},
 				{Name: "additional", Models: []string{"claude-*", "gpt-oss-*"}},

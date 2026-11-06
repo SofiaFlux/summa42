@@ -41,6 +41,9 @@ type ObserveConfig struct {
 	// BotLogin is the GitHub App bot login whose comments must not create new revisions.
 	// Empty disables the filter.
 	BotLogin string
+	// AutoGrantLabel, if non-empty, automatically grants workspace.repo.write and
+	// workspace.test capabilities and actions to issues bearing this label.
+	AutoGrantLabel string
 	// Once makes RunReporting run a single observe pass and return its result.
 	Once bool
 	// CredentialFile is the CLI's --credential-file, carried to the client
@@ -62,6 +65,8 @@ func (c ObserveConfig) normalized() ObserveConfig {
 		RemainingBudget:    c.RemainingBudget,
 		Once:               c.Once,
 		BotLogin:           strings.TrimSpace(c.BotLogin),
+		AutoGrantLabel:     strings.TrimSpace(c.AutoGrantLabel),
+		CredentialFile:     strings.TrimSpace(c.CredentialFile),
 	}
 	return normalized
 }
@@ -214,14 +219,26 @@ func observeIssue(ctx context.Context, cases *workflowcase.Service, execSvc *exe
 	if err != nil {
 		return err
 	}
+	grant := cfg.Grant
+	maxSteps := cfg.MaxSteps
+	if cfg.AutoGrantLabel != "" && hasLabel(issue.Labels, cfg.AutoGrantLabel) {
+		autoCaps := []string{"workspace.repo.write", "workspace.test"}
+		grant = workflow.Grant{
+			Capabilities: normalizeTokens(append(append([]string(nil), grant.Capabilities...), autoCaps...)),
+			Actions:      normalizeTokens(append(append([]string(nil), grant.Actions...), autoCaps...)),
+		}
+		if maxSteps < 8 {
+			maxSteps = 8
+		}
+	}
 	created, task, err := cases.EnsureAndMaterialize(ctx, execSvc, workflowcase.Observation{
 		MissionID: cfg.MissionID, Source: "github", ObjectID: issue.ObjectID(), RevisionID: issue.RevisionID(),
 		EvidenceID: string(object.ID),
 		FirstWork: workflow.WorkProposal{
 			Kind: triageWorkKind, RequiredCapabilities: cfg.effectiveCapabilities(),
-			AuthorityCeiling: append([]string(nil), cfg.Grant.Capabilities...),
+			AuthorityCeiling: append([]string(nil), grant.Capabilities...),
 		},
-		Grant: cfg.Grant, MaxSteps: cfg.MaxSteps, RemainingBudget: cfg.RemainingBudget,
+		Grant: grant, MaxSteps: maxSteps, RemainingBudget: cfg.RemainingBudget,
 	}, template)
 	if err != nil {
 		result.Excluded = append(result.Excluded, ExcludedIssue{Issue: issue, Reason: ReasonEnsureFailed, Detail: err.Error()})

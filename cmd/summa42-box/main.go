@@ -1183,6 +1183,7 @@ func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, er
 	var pollInterval time.Duration
 	var once bool
 	var botLogin string
+	var autoGrantLabel string
 	var credentialFile string
 
 	flags := flag.NewFlagSet("run-gh-intake", flag.ContinueOnError)
@@ -1193,6 +1194,7 @@ func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, er
 	flags.Var(&grantActions, "grant-action", "action granted to issue cases (repeatable; must also be a --grant-capability)")
 	flags.Var(&workCaps, "work-capability", "additional work capability (repeatable)")
 	flags.StringVar(&botLogin, "bot-login", "", "GitHub App bot login whose comments must not create new issue revisions (optional)")
+	flags.StringVar(&autoGrantLabel, "auto-grant-label", "", "GitHub issue label that automatically grants workspace.repo.write and workspace.test (optional)")
 	flags.StringVar(&credentialFile, "credential-file", "", "private GitHub token file (preferred over SUMMA42_GITHUB_TOKEN_FILE)")
 	flags.BoolVar(&once, "once", false, "run one observe pass and exit")
 	flags.StringVar(&envelope, "envelope", "", "resource envelope ID for triage tasks")
@@ -1276,6 +1278,7 @@ func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, er
 	cfg.Grant = workflow.Grant{Capabilities: capabilities, Actions: actions}
 	cfg.Once = once
 	cfg.BotLogin = strings.TrimSpace(botLogin)
+	cfg.AutoGrantLabel = strings.TrimSpace(autoGrantLabel)
 	cfg.CredentialFile = strings.TrimSpace(credentialFile)
 	cfg.WorkCapabilities = work
 	cfg.ResourceEnvelopeID = domain.ID(strings.TrimSpace(envelope))

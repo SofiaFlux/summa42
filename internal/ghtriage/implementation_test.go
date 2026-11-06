@@ -338,3 +338,50 @@ func TestImplementationValidationGoesThroughTheValidationUserLauncher(t *testing
 		t.Fatalf("validation ran without the validation-user launcher: %q", logged)
 	}
 }
+
+type repairModel struct {
+	implement func(context.Context, ghtriage.ImplementationInput) (ghtriage.ImplementationOutput, error)
+}
+
+func (r *repairModel) Implement(ctx context.Context, in ghtriage.ImplementationInput) (ghtriage.ImplementationOutput, error) {
+	return r.implement(ctx, in)
+}
+
+func TestImplementationRepairLoopRecoversFromInitialFailure(t *testing.T) {
+	f, cfg, id := readyImplementation(t, []string{"grep", "-q", "working", "code.go"})
+	var turnsSeen []int
+	var errorStrings []string
+	turnCount := 0
+	model := &repairModel{
+		implement: func(ctx context.Context, in ghtriage.ImplementationInput) (ghtriage.ImplementationOutput, error) {
+			turnsSeen = append(turnsSeen, in.Turn)
+			errorStrings = append(errorStrings, in.ValidationErrors)
+			turnCount++
+			if turnCount == 1 {
+				// Turn 0: does not contain "working" -> validation grep fails
+				return ghtriage.ImplementationOutput{
+					Summary: "First attempt broken",
+					Edits:   []repoworkspace.Edit{{Path: "code.go", Content: "package test\n// broken\n"}},
+				}, nil
+			}
+			// Turn 1: fixes it by writing "working" -> validation passes
+			return ghtriage.ImplementationOutput{
+				Summary: "Fixed attempt",
+				Edits:   []repoworkspace.Edit{{Path: "code.go", Content: "package test\n// working\n"}},
+			}, nil
+		},
+	}
+	got, err := newImplementer(t, f, model).Prepare(f.ctx, id, cfg.Source.LocalPath, t.TempDir())
+	if err != nil || got.Record == nil || !got.Record.AllPassed {
+		t.Fatalf("expected repair loop to recover and pass: got=%+v err=%v", got, err)
+	}
+	if turnCount != 2 {
+		t.Fatalf("expected 2 turns (turn 0 + turn 1), got %d", turnCount)
+	}
+	if len(turnsSeen) != 2 || turnsSeen[0] != 0 || turnsSeen[1] != 1 {
+		t.Fatalf("turns seen mismatch: %v", turnsSeen)
+	}
+	if !strings.Contains(errorStrings[1], "grep -q working code.go") {
+		t.Fatalf("repair turn 1 did not receive the validation failure output: %q", errorStrings[1])
+	}
+}
