@@ -82,6 +82,10 @@ func dialAllowedTarget(ctx context.Context, policy EgressPolicy, target string, 
 	return dial(ctx, "tcp", net.JoinHostPort(ips[0].Unmap().String(), port))
 }
 
+func DialAllowedTargetForTest(ctx context.Context, policy EgressPolicy, target string, lookup lookupIPs, dial dialTarget) (net.Conn, error) {
+	return dialAllowedTarget(ctx, policy, target, lookup, dial)
+}
+
 func (p EgressPolicy) AllowConnect(hostport string) bool {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(hostport))
 	if err != nil || host == "" || port == "" {
