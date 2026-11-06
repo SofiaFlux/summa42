@@ -22,6 +22,7 @@ type AssessmentRequest struct {
 	// implementation. Rows written before this field existed carry only the reason
 	// prefix, which readers still accept when the field is absent.
 	PlanReviewVerdict string `json:"PlanReviewVerdict,omitempty"`
+	Phase             Phase  `json:"Phase,omitempty"`
 }
 
 type AssessmentResult struct {
@@ -54,10 +55,7 @@ func (s *Service) Assess(ctx context.Context, request AssessmentRequest) (Assess
 			return err
 		}
 
-		row := tx.QueryRowContext(ctx, `SELECT case_id, mission_id, source, object_id, revision_id,
-			observation_evidence_id, state, current_work_id, next_work_json, grant_json,
-			completed_steps, max_steps, remaining_budget, progress_signature, initial_request_json
-			FROM workflow_cases WHERE case_id = ?`, request.CaseID)
+		row := tx.QueryRowContext(ctx, `SELECT `+caseColumns+` FROM workflow_cases WHERE case_id = ?`, request.CaseID)
 		current, _, err := scanCase(row)
 		if err != nil {
 			return err
@@ -104,6 +102,16 @@ func (s *Service) Assess(ctx context.Context, request AssessmentRequest) (Assess
 			current.State = Active
 			current.CurrentWorkID = domain.NewID("work")
 			current.NextWork = *decision.Next
+			if request.Phase != "" {
+				if !isValidPhase(request.Phase) || !isPhaseCompatibleWithState(request.Phase, Active) {
+					return fmt.Errorf("phase %q is invalid or incompatible with active case", request.Phase)
+				}
+				current.Phase = request.Phase
+			} else if isImplementationKind(current.NextWork.Kind) {
+				current.Phase = PhaseImplementationPending
+			} else {
+				current.Phase = PhasePlanningPending
+			}
 			encoded, err := json.Marshal(current.NextWork)
 			if err != nil {
 				return err
@@ -113,8 +121,25 @@ func (s *Service) Assess(ctx context.Context, request AssessmentRequest) (Assess
 			current.State = Blocked
 			current.CurrentWorkID = ""
 			current.NextWork = workflow.WorkProposal{}
+			blockedReason := decision.Reason
+			if blockedReason == "" {
+				blockedReason = request.Assessment.Reason
+			}
+			if request.Phase != "" {
+				if !isValidPhase(request.Phase) || !isPhaseCompatibleWithState(request.Phase, Blocked) {
+					return fmt.Errorf("phase %q is invalid or incompatible with blocked case", request.Phase)
+				}
+				current.Phase = request.Phase
+			} else if isDirectiveReason(blockedReason) {
+				current.Phase = PhaseBlockedWaitingDirective
+			} else if isContextReason(blockedReason) {
+				current.Phase = PhaseBlockedWaitingContext
+			} else {
+				current.Phase = PhaseBlocked
+			}
 		case workflow.OutcomeReady:
 			current.State = ReadyForVerification
+			current.Phase = PhaseReadyForVerification
 			current.CurrentWorkID = ""
 			current.NextWork = workflow.WorkProposal{}
 		default:
@@ -126,8 +151,8 @@ func (s *Service) Assess(ctx context.Context, request AssessmentRequest) (Assess
 			return err
 		}
 		now := domain.FormatTime(s.clock.Now())
-		_, err = tx.ExecContext(ctx, `UPDATE workflow_cases SET state=?, current_work_id=?, next_work_json=?, completed_steps=?, remaining_budget=?, progress_signature=?, updated_at=? WHERE case_id=?`,
-			current.State, current.CurrentWorkID, workJSON, current.CompletedSteps, current.RemainingBudget, current.ProgressSignature, now, current.ID)
+		_, err = tx.ExecContext(ctx, `UPDATE workflow_cases SET state=?, phase=?, current_work_id=?, next_work_json=?, completed_steps=?, remaining_budget=?, progress_signature=?, updated_at=? WHERE case_id=?`,
+			current.State, current.Phase, current.CurrentWorkID, workJSON, current.CompletedSteps, current.RemainingBudget, current.ProgressSignature, now, current.ID)
 		if err != nil {
 			return err
 		}

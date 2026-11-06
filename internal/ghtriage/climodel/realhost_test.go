@@ -65,7 +65,7 @@ func TestRealHostAgyReadTurnFollowedByPlan(t *testing.T) {
 
 	// Turn 0: Ask agy to read a file
 	out1, err := adapter.Plan(context.Background(), ghtriage.PlanInput{
-		Schema: ghtriage.PlanSchemaV2,
+		Schema:   ghtriage.PlanSchemaV2,
 		Question: ghtriage.PlanQuestion + "\n\nYou need to inspect the code before planning. Start by requesting to read the repository file 'pkg/example.go' using {\"read_repo_file\": [\"pkg/example.go\"]}.",
 		Snapshot: ghtriage.Snapshot{
 			Repo:  "SofiaFlux/summa42",

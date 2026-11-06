@@ -312,6 +312,7 @@ function chatWithCollective(userText, requestorId) {
       `Aktualny stan systemu Summa42:`,
       `- Aktywna misja: "${ctxData.mission || 'Brak'}"`,
       `- Liczba spraw w workflow_cases: ${ctxData.cases || 0}`,
+      ctxData.cases_by_phase ? `- Podział spraw wg faz: ${JSON.stringify(ctxData.cases_by_phase)}` : ``,
       ``,
       `Wiadomość / pytanie od użytkownika: "${userText}"`,
       ``,
