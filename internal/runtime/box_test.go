@@ -412,4 +412,38 @@ func TestBoxAttemptContainmentLadderRejectsOperations(t *testing.T) {
 	if rec.InvestigationTaskID == "" {
 		t.Fatal("expected InvestigationTaskID to be present")
 	}
+
+	// 6. Test deterministic detection wiring: attempting ungranted operations automatically emits signal
+	task2ID := domain.NewID("task2")
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO tasks(task_id, purpose_kind, purpose_id, state, current_fence, acceptance_criteria_json,
+		  required_capabilities_json, required_enforcement, authority_ceiling_json, resource_envelope_id, priority, created_at, updated_at)
+		VALUES (?, 'OWNER_DIRECTIVE', 'owner-test', 'ELIGIBLE', 0, '[]', '[]', 'ENFORCED', '["external:other"]', ?, 0, ?, ?)`,
+		task2ID, envelopeID, now, now,
+	)
+	if err != nil {
+		t.Fatalf("create task2: %v", err)
+	}
+	attempt2, err := box.Execution.StartAttempt(ctx, task2ID, "test-executor", time.Hour)
+	if err != nil {
+		t.Fatalf("start attempt2: %v", err)
+	}
+
+	// Try operation requesting capability outside authority ceiling ("external:lostack" not in ["external:other"])
+	// We expect ErrPolicyDenied and detector to report ungranted capability
+	_, err = box.Operations.Prepare(ctx, operations.PrepareRequest{
+		AttemptID: attempt2.ID, Provider: "lostack", TrustedSlotKey: "slot-cont-ungranted", Intent: testutil.PurchaseIntent{SKU: "s3", Quantity: 1}, Risk: "LOW",
+	})
+	if !errors.Is(err, domain.ErrPolicyDenied) {
+		t.Fatalf("expected ErrPolicyDenied, got %v", err)
+	}
+
+	// Verify record was created in attempt_containments via detector
+	rec2, err := box.Containment.GetRecord(ctx, attempt2.ID)
+	if err != nil {
+		t.Fatalf("get record2: %v", err)
+	}
+	if rec2.LadderState != containment.StateWarning {
+		t.Fatalf("expected StateWarning for attempt2, got: %v", rec2.LadderState)
+	}
 }

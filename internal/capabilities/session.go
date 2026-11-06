@@ -163,6 +163,13 @@ func (s *Session) Call(ctx context.Context, name string, request any) (any, erro
 	tokenHash := hashToken(s.token)
 	initial, err := loadSession(ctx, s.registry.store.DB(), tokenHash)
 	if err != nil {
+		if errors.Is(err, domain.ErrLeaseInactive) && s.registry.detector != nil {
+			var rec sessionRecord
+			var revoked sql.NullString
+			if scanErr := s.registry.store.DB().QueryRowContext(ctx, `SELECT session_id, attempt_id, task_id, revoked_at FROM capability_sessions WHERE token_hash = ?`, tokenHash).Scan(&rec.ID, &rec.AttemptID, &rec.TaskID, &revoked); scanErr == nil && revoked.Valid {
+				_ = s.registry.detector.ReportRevokedSessionAccess(ctx, rec.AttemptID, rec.TaskID, string(rec.ID))
+			}
+		}
 		return nil, err
 	}
 	if !initial.LeaseExpiresAt.After(s.registry.clock.Now().UTC()) {
@@ -184,6 +191,9 @@ func (s *Session) Call(ctx context.Context, name string, request any) (any, erro
 		}
 		definitionID, ok := current.VisibleCapabilities[name]
 		if !ok {
+			if s.registry.detector != nil {
+				_ = s.registry.detector.ReportUngrantedCapability(ctx, guarded.AttemptID, guarded.TaskID, name)
+			}
 			return fmt.Errorf("%w: capability %q is not visible in this session", domain.ErrPolicyDenied, name)
 		}
 		definition, err := s.registry.definitionByIDTx(ctx, tx, definitionID)

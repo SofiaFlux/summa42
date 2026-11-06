@@ -94,6 +94,11 @@ type ContainmentChecker interface {
 	CheckAttemptAllowed(ctx context.Context, attemptID domain.ID, actionCategory string) error
 }
 
+type RogueDetector interface {
+	ReportRevokedSessionAccess(ctx context.Context, attemptID, taskID domain.ID, sessionID string) error
+	ReportUngrantedCapability(ctx context.Context, attemptID, taskID domain.ID, capability string) error
+}
+
 type Registry struct {
 	store       *state.Store
 	clock       clock.Clock
@@ -103,6 +108,7 @@ type Registry struct {
 	quarantine  QuarantineChecker
 	emergency   EmergencyChecker
 	containment ContainmentChecker
+	detector    RogueDetector
 	cubeID      domain.ID
 }
 
@@ -123,6 +129,12 @@ func (r *Registry) SetContainment(c ContainmentChecker) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.containment = c
+}
+
+func (r *Registry) SetDetector(d RogueDetector) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.detector = d
 }
 
 func NewRegistry(store *state.Store, clk clock.Clock, executionSvc *execution.Service, providers ...Provider) *Registry {

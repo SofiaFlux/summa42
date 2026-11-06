@@ -58,6 +58,11 @@ type AttemptContainmentChecker interface {
 	CheckAttemptAllowed(ctx context.Context, attemptID domain.ID, actionCategory string) error
 }
 
+type RogueDetector interface {
+	ReportUngrantedCapability(ctx context.Context, attemptID, taskID domain.ID, capability string) error
+	ReportDeniedActionLoop(ctx context.Context, attemptID, taskID domain.ID, action string) error
+}
+
 type Service struct {
 	store              *state.Store
 	clock              clock.Clock
@@ -70,6 +75,7 @@ type Service struct {
 	quarantine         QuarantineChecker
 	emergency          EmergencyChecker
 	attemptContainment AttemptContainmentChecker
+	detector           RogueDetector
 	cubeID             domain.ID
 }
 
@@ -84,6 +90,10 @@ func (s *Service) SetEmergency(e EmergencyChecker) {
 
 func (s *Service) SetAttemptContainment(c AttemptContainmentChecker) {
 	s.attemptContainment = c
+}
+
+func (s *Service) SetDetector(d RogueDetector) {
+	s.detector = d
 }
 
 func New(store *state.Store, clk clock.Clock, executionSvc *execution.Service, policyEngine policy.PolicyEngine, resourceSvc *resources.Service, approvalSvc *approvals.Service, collectiveID domain.ID, providers ...Provider) *Service {
@@ -174,6 +184,10 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 	}
 
 	var result domain.ExternalOperation
+	var ungrantedCapability bool
+	var ungrantedAttemptID, ungrantedTaskID domain.ID
+	var ungrantedName string
+
 	err = s.store.WithTx(ctx, func(tx *sql.Tx) error {
 		if guard != nil {
 			if err := guard(ctx, tx); err != nil {
@@ -192,6 +206,10 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 			return err
 		}
 		if !hasString(current.AuthorityCeiling, provider.Capability()) || !enforcementSatisfies(provider.EnforcementLevel(), current.RequiredEnforcement) {
+			ungrantedCapability = true
+			ungrantedAttemptID = request.AttemptID
+			ungrantedTaskID = guarded.TaskID
+			ungrantedName = provider.Capability()
 			return domain.ErrPolicyDenied
 		}
 		if err := validateDecisionProvenance(decision); err != nil {
@@ -292,6 +310,9 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 		}
 		return appendOperationEvent(ctx, tx, result.TaskID, result.AttemptID, "OPERATION_PREPARED", result.ID, now)
 	})
+	if ungrantedCapability && s.detector != nil {
+		_ = s.detector.ReportUngrantedCapability(ctx, ungrantedAttemptID, ungrantedTaskID, ungrantedName)
+	}
 	return result, mapPolicyProfileError(err)
 }
 
@@ -447,6 +468,9 @@ func (s *Service) DispatchWithGuard(ctx context.Context, operationID, attemptID 
 		return op, evalErr
 	}
 	if err := validateDecisionProvenance(decision); err != nil || validateDispatchOutcome(decision) != nil || !authorityValid {
+		if s.detector != nil {
+			_ = s.detector.ReportDeniedActionLoop(ctx, attemptID, op.TaskID, string(op.Provider))
+		}
 		if cancelErr := s.cancelPrepared(ctx, op, attemptID); cancelErr != nil {
 			return op, cancelErr
 		}
