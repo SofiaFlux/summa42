@@ -25,6 +25,7 @@ type TaskSemantics struct {
 	Objective            string   `json:"objective"`
 	TaskClass            string   `json:"task_class"`
 	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
+	AuthorityCeiling     []string `json:"authority_ceiling,omitempty"`
 	AcceptanceCriteria   []string `json:"acceptance_criteria,omitempty"`
 	TaskPayloadHash      string   `json:"task_payload_hash,omitempty"`
 }
@@ -173,8 +174,8 @@ func normalizeStrings(vals []string) []string {
 	return res
 }
 
-// ScrubManifest scrubs an Attempt Run Manifest and criteria into a durable, verified Fixture.
-func (s *Scrubber) ScrubManifest(manifest runmanifest.Manifest, taskClass string, criteria []string) (Fixture, error) {
+// ScrubManifest scrubs an Attempt Run Manifest, task class, and criteria into a durable, verified Fixture.
+func (s *Scrubber) ScrubManifest(manifest runmanifest.Manifest, taskClass string, authorityCeiling, criteria []string) (Fixture, error) {
 	taskClass = strings.TrimSpace(taskClass)
 	if taskClass == "" {
 		taskClass = "default"
@@ -205,6 +206,10 @@ func (s *Scrubber) ScrubManifest(manifest runmanifest.Manifest, taskClass string
 		}
 	}
 	cleanCaps := normalizeStrings(rawCaps)
+	cleanCeiling := normalizeStrings(authorityCeiling)
+	if len(cleanCeiling) == 0 {
+		cleanCeiling = append([]string(nil), cleanCaps...)
+	}
 
 	// 4. Derive deterministic FixtureID from stable task semantics & context
 	h := sha256.New()
@@ -223,6 +228,7 @@ func (s *Scrubber) ScrubManifest(manifest runmanifest.Manifest, taskClass string
 			Objective:            cleanObjective,
 			TaskClass:            taskClass,
 			RequiredCapabilities: cleanCaps,
+			AuthorityCeiling:     cleanCeiling,
 			AcceptanceCriteria:   cleanCriteria,
 			TaskPayloadHash:      manifest.TaskPayloadHash,
 		},

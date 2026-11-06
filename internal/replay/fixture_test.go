@@ -141,7 +141,7 @@ func TestScrubber_StripsSecretsAndEnforcesProvenance(t *testing.T) {
 	manifest := sampleRawManifest()
 	scrubber := replay.NewScrubber()
 
-	fixture, err := scrubber.ScrubManifest(manifest, "payment", []string{"Criteria: execute with auth_sec=auth_sec_123"})
+	fixture, err := scrubber.ScrubManifest(manifest, "payment", []string{"payment.process"}, []string{"Criteria: execute with auth_sec=auth_sec_123"})
 	if err != nil {
 		t.Fatalf("scrub manifest: %v", err)
 	}
@@ -186,13 +186,13 @@ func TestScrubber_DeterminismAcrossRuns(t *testing.T) {
 	scrubber := replay.NewScrubber()
 
 	criteria := []string{"Criteria B", "Criteria A"}
-	fixture1, err := scrubber.ScrubManifest(manifest, "task_class_1", criteria)
+	fixture1, err := scrubber.ScrubManifest(manifest, "task_class_1", nil, criteria)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Pass unsorted criteria and ensure deterministic output
-	fixture2, err := scrubber.ScrubManifest(manifest, "task_class_1", []string{"Criteria A", "Criteria B"})
+	fixture2, err := scrubber.ScrubManifest(manifest, "task_class_1", nil, []string{"Criteria A", "Criteria B"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestScrubber_RejectsUnredactableSecretsAndKeyMaterial(t *testing.T) {
 	manifest.TaskObjective = "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIB..."
 	scrubber := replay.NewScrubber()
 
-	_, err := scrubber.ScrubManifest(manifest, "default", nil)
+	_, err := scrubber.ScrubManifest(manifest, "default", nil, nil)
 	if err == nil {
 		t.Fatal("expected rejection of private key material")
 	}
@@ -218,7 +218,7 @@ func TestScrubber_RejectsUnredactableSecretsAndKeyMaterial(t *testing.T) {
 	// Also test private key in criteria
 	manifest2 := sampleRawManifest()
 	manifest2.TaskObjective = "Clean objective"
-	_, err = scrubber.ScrubManifest(manifest2, "default", []string{"-----BEGIN RSA PRIVATE KEY-----..."})
+	_, err = scrubber.ScrubManifest(manifest2, "default", nil, []string{"-----BEGIN RSA PRIVATE KEY-----..."})
 	if err == nil {
 		t.Fatal("expected rejection of private key in criteria")
 	}
@@ -228,7 +228,7 @@ func TestReplayFixture_SaveLoadAndStrictDecoding(t *testing.T) {
 	manifest := sampleRawManifest()
 	scrubber := replay.NewScrubber()
 
-	fixture, err := scrubber.ScrubManifest(manifest, "default", []string{"Criteria 1"})
+	fixture, err := scrubber.ScrubManifest(manifest, "default", nil, []string{"Criteria 1"})
 	if err != nil {
 		t.Fatalf("scrub manifest: %v", err)
 	}
