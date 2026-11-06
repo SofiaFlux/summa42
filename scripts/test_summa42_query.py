@@ -177,5 +177,40 @@ class CapacityTests(unittest.TestCase):
             self.assertEqual(json.loads(res.stdout), {"pools": [], "error": "NO_LEDGER"})
 
 
+class CubeTests(unittest.TestCase):
+    MIGRATION_BOOTSTRAP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                       "internal", "state", "sqlite", "migrations", "00001_bootstrap.sql")
+    MIGRATION_QUARANTINE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                        "internal", "state", "sqlite", "migrations", "00027_cube_quarantine.sql")
+
+    def test_cubes_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "state"), exist_ok=True)
+            conn = sqlite3.connect(os.path.join(tmp, "state", "summa42.db"))
+            with open(self.MIGRATION_BOOTSTRAP) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+            with open(self.MIGRATION_QUARANTINE) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+
+            conn.execute("INSERT INTO principals(principal_id, principal_kind, public_key, custody_profile, created_at) VALUES ('p1', 'HUMAN', X'00', 'LOCAL', '2026-11-06T12:00:00Z')")
+            conn.execute("INSERT INTO principals(principal_id, principal_kind, public_key, custody_profile, created_at) VALUES ('p2', 'HUMAN', X'00', 'LOCAL', '2026-11-06T12:00:00Z')")
+            conn.execute("""
+                INSERT INTO cubes(cube_id, principal_id, state, quarantine_reason, quarantined_at, quarantined_by, quarantine_mode, created_at, updated_at)
+                VALUES ('cube_1', 'p1', 'QUARANTINED', 'Rogue activity', '2026-11-06T12:05:00Z', 'p2', 'ACTIVE_RECON', '2026-11-06T12:00:00Z', '2026-11-06T12:05:00Z')
+            """)
+            conn.commit()
+            conn.close()
+
+            res = _run(tmp, "cubes")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            data = json.loads(res.stdout)
+            self.assertEqual(len(data["cubes"]), 1)
+            c = data["cubes"][0]
+            self.assertEqual(c["cube_id"], "cube_1")
+            self.assertEqual(c["state"], "QUARANTINED")
+            self.assertEqual(c["quarantine_mode"], "ACTIVE_RECON")
+            self.assertEqual(c["quarantine_reason"], "Rogue activity")
+
+
 if __name__ == "__main__":
     unittest.main()

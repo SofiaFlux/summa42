@@ -82,12 +82,25 @@ type Assessment struct {
 	Available     bool
 }
 
+type QuarantineChecker interface {
+	CheckCapabilityPermitted(ctx context.Context, cubeID domain.ID, capability string) error
+}
+
 type Registry struct {
-	store     *state.Store
-	clock     clock.Clock
-	execution *execution.Service
-	mu        sync.RWMutex
-	providers map[string]Provider
+	store      *state.Store
+	clock      clock.Clock
+	execution  *execution.Service
+	mu         sync.RWMutex
+	providers  map[string]Provider
+	quarantine QuarantineChecker
+	cubeID     domain.ID
+}
+
+func (r *Registry) SetQuarantine(q QuarantineChecker, cubeID domain.ID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.quarantine = q
+	r.cubeID = cubeID
 }
 
 func NewRegistry(store *state.Store, clk clock.Clock, executionSvc *execution.Service, providers ...Provider) *Registry {

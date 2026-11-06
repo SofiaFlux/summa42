@@ -63,6 +63,11 @@ func (r *Registry) OpenSession(ctx context.Context, collectiveID, attemptID doma
 		}
 		visible := make(map[string]domain.ID, len(visibleCapabilities))
 		for _, name := range visibleCapabilities {
+			if r.quarantine != nil && r.cubeID != "" {
+				if err := r.quarantine.CheckCapabilityPermitted(ctx, r.cubeID, name); err != nil {
+					return err
+				}
+			}
 			definition, err := r.definitionByNameTx(ctx, tx, name)
 			if err != nil {
 				return err
@@ -134,6 +139,11 @@ func (s *Session) Call(ctx context.Context, name string, request any) (any, erro
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errors.New("capability name is required")
+	}
+	if s.registry.quarantine != nil && s.registry.cubeID != "" {
+		if err := s.registry.quarantine.CheckCapabilityPermitted(ctx, s.registry.cubeID, name); err != nil {
+			return nil, err
+		}
 	}
 	tokenHash := hashToken(s.token)
 	initial, err := loadSession(ctx, s.registry.store.DB(), tokenHash)

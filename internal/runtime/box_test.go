@@ -10,6 +10,7 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/operations"
+	"github.com/SofiaFlux/summa42/internal/quarantine"
 	"github.com/SofiaFlux/summa42/internal/resources"
 	"github.com/SofiaFlux/summa42/internal/testutil"
 )
@@ -102,5 +103,114 @@ func TestBoxStartupReconcilesDispatchedOperation(t *testing.T) {
 	}
 	if stored != domain.OperationConfirmedEffect {
 		t.Fatalf("state = %s, want CONFIRMED_EFFECT", stored)
+	}
+}
+
+func TestBoxQuarantineEnforcementRejectsOperations(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ownerID := domain.ID("owner-quarantine-test")
+	cubeID := domain.ID("cube-quarantine-test")
+	cubePrincipalID := domain.ID("princ-cube-test")
+
+	box, err := Open(ctx, Config{
+		StatePath: filepath.Join(root, "state.db"), EvidencePath: filepath.Join(root, "evidence"),
+		CollectiveID: "collective-1", OwnerPrincipalID: ownerID, PolicyEngine: compositionPolicy{},
+		CubeID: cubeID, CubePrincipalID: cubePrincipalID,
+		OperationProviders: []operations.Provider{lostAckProvider{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer box.Close()
+
+	now := box.Clock.Now().UTC().Format(time.RFC3339Nano)
+	db := box.Store.DB()
+	envelopeID, taskID := domain.NewID("envelope"), domain.NewID("task")
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO principals(principal_id, principal_kind, public_key, custody_profile, created_at)
+		  VALUES (?, 'HUMAN', X'00', 'LOCAL', ?) ON CONFLICT DO NOTHING`, []any{ownerID, now}},
+		{`INSERT INTO principals(principal_id, principal_kind, public_key, custody_profile, created_at)
+		  VALUES (?, 'CUBE', X'00', 'LOCAL', ?) ON CONFLICT DO NOTHING`, []any{cubePrincipalID, now}},
+		{`INSERT INTO constitutions(version, content, content_hash, signature, signer_principal_id, active, created_at)
+		  VALUES (1, X'00', 'hash-const', X'00', ?, 1, ?)`, []any{ownerID, now}},
+		{`INSERT INTO collective_metadata(singleton, collective_id, owner_principal_id, cube_principal_id, constitutional_root_principal_id, active_constitution_version, created_at)
+		  VALUES (1, 'collective-1', ?, ?, ?, 1, ?)`, []any{ownerID, cubePrincipalID, ownerID, now}},
+		{`INSERT INTO policy_sets(policy_set_id, version, module_name, module, policy_hash, capabilities_hash, active, created_at)
+		  VALUES ('policy-test', 1, 'test.rego', 'package test', 'hash', 'caps', 1, ?)`, []any{now}},
+		{`INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at) VALUES (?, 1000, ?)`, []any{envelopeID, now}},
+		{`INSERT INTO tasks(task_id, purpose_kind, purpose_id, state, current_fence, acceptance_criteria_json,
+		  required_capabilities_json, required_enforcement, authority_ceiling_json, resource_envelope_id, priority, created_at, updated_at)
+		  VALUES (?, 'OWNER_DIRECTIVE', 'owner-test', 'ELIGIBLE', 0, '[]', '[]', 'ENFORCED', '["external:lostack"]', ?, 0, ?, ?)`,
+			[]any{taskID, envelopeID, now, now}},
+	} {
+		if _, err := db.ExecContext(ctx, q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := box.Quarantine.RegisterCube(ctx, box.CubeID, cubePrincipalID); err != nil {
+		t.Fatal(err)
+	}
+
+	attempt, err := box.Execution.StartAttempt(ctx, taskID, "test-executor", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. In ACTIVE state, Prepare succeeds
+	op, err := box.Operations.Prepare(ctx, operations.PrepareRequest{
+		AttemptID: attempt.ID, Provider: "lostack", TrustedSlotKey: "slot-1", Intent: testutil.PurchaseIntent{SKU: "s", Quantity: 1}, Risk: "LOW",
+	})
+	if err != nil {
+		t.Fatalf("prepare in active state: %v", err)
+	}
+	if op.State != domain.OperationPrepared {
+		t.Fatalf("op state = %s, want PREPARED", op.State)
+	}
+
+	// 2. Quarantine the Cube
+	err = box.Quarantine.QuarantineCube(ctx, box.CubeID, "Systemic containment", ownerID, quarantine.ActiveRecon)
+	if err != nil {
+		t.Fatalf("quarantine cube: %v", err)
+	}
+
+	// 3. In QUARANTINED state, Prepare and Dispatch are deterministically rejected
+	_, err = box.Operations.Prepare(ctx, operations.PrepareRequest{
+		AttemptID: attempt.ID, Provider: "lostack", TrustedSlotKey: "slot-2", Intent: testutil.PurchaseIntent{SKU: "s2", Quantity: 2}, Risk: "LOW",
+	})
+	if !errors.Is(err, quarantine.ErrProhibitedInQuarantine) {
+		t.Fatalf("expected ErrProhibitedInQuarantine on Prepare under quarantine, got: %v", err)
+	}
+
+	_, err = box.Operations.Dispatch(ctx, op.ID, attempt.ID)
+	if !errors.Is(err, quarantine.ErrProhibitedInQuarantine) {
+		t.Fatalf("expected ErrProhibitedInQuarantine on Dispatch under quarantine, got: %v", err)
+	}
+
+	// 4. Cube attempts self-unquarantine - must be rejected
+	err = box.Quarantine.UnquarantineCube(ctx, box.CubeID, cubePrincipalID, "Escape attempt")
+	if !errors.Is(err, quarantine.ErrSelfUnquarantineDenied) {
+		t.Fatalf("expected ErrSelfUnquarantineDenied, got: %v", err)
+	}
+
+	// 5. Owner lifts quarantine
+	err = box.Quarantine.UnquarantineCube(ctx, box.CubeID, ownerID, "Verification passed")
+	if err != nil {
+		t.Fatalf("unquarantine by owner: %v", err)
+	}
+
+	// 6. After unquarantine, operations resume
+	op2, err := box.Operations.Prepare(ctx, operations.PrepareRequest{
+		AttemptID: attempt.ID, Provider: "lostack", TrustedSlotKey: "slot-2", Intent: testutil.PurchaseIntent{SKU: "s2", Quantity: 2}, Risk: "LOW",
+	})
+	if err != nil {
+		t.Fatalf("prepare after unquarantine: %v", err)
+	}
+	if op2.State != domain.OperationPrepared {
+		t.Fatalf("op2 state = %s, want PREPARED", op2.State)
 	}
 }
