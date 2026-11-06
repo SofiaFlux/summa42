@@ -16,10 +16,10 @@ import (
 )
 
 type multiTurnModel struct {
-	turns      []ghtriage.PlanOutput
-	callCount  int
-	inputs     []ghtriage.PlanInput
-	planErr    error
+	turns     []ghtriage.PlanOutput
+	callCount int
+	inputs    []ghtriage.PlanInput
+	planErr   error
 }
 
 func (m *multiTurnModel) Plan(_ context.Context, input ghtriage.PlanInput) (ghtriage.PlanOutput, error) {

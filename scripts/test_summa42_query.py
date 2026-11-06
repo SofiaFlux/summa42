@@ -35,7 +35,7 @@ def _make_home(tmp, snapshot=None):
     conn.executescript("""
         CREATE TABLE missions(mission_id TEXT, statement TEXT, active INTEGER, created_at TEXT);
         CREATE TABLE workflow_cases(case_id TEXT, source TEXT, object_id TEXT, state TEXT,
-            current_work_id TEXT, completed_steps INTEGER, max_steps INTEGER, created_at TEXT);
+            current_work_id TEXT, completed_steps INTEGER, max_steps INTEGER, created_at TEXT, phase TEXT);
         CREATE TABLE experience_rules(state TEXT);
         CREATE TABLE evidence_objects(kind TEXT, content_hash TEXT, created_at TEXT);
         INSERT INTO missions VALUES('m1', 'Ship it', 1, '2026-01-01');

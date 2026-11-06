@@ -242,4 +242,3 @@ func ResetCheckout(ctx context.Context, dir, commit string) error {
 	}
 	return cleanCheckout(ctx, dir, commit)
 }
-

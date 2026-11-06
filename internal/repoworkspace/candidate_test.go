@@ -131,4 +131,3 @@ func TestResetCheckoutRestoresPristineBase(t *testing.T) {
 		t.Fatalf("PrepareCandidate after ResetCheckout failed: %v", err)
 	}
 }
-

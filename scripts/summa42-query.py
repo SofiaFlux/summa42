@@ -34,28 +34,59 @@ def cmd_status():
     m = cur.fetchone()
     cur.execute("SELECT count(*) FROM workflow_cases")
     cases = cur.fetchone()[0]
+    cases_by_phase = {}
+    try:
+        cur.execute("SELECT phase, count(*) FROM workflow_cases GROUP BY phase")
+        cases_by_phase = {r[0]: r[1] for r in cur.fetchall()}
+    except sqlite3.OperationalError:
+        pass
     cur.execute("SELECT count(*) FROM experience_rules WHERE state = 'ACTIVE'")
     rules = cur.fetchone()[0]
-    print(json.dumps({"mission": m[1] if m else "No active mission", "cases": cases, "rules": rules}))
+    res = {
+        "mission": m[1] if m else "No active mission",
+        "cases": cases,
+        "rules": rules,
+    }
+    if cases_by_phase:
+        res["cases_by_phase"] = cases_by_phase
+    print(json.dumps(res))
 
 
 def cmd_cases():
     cur = get_db().cursor()
-    cur.execute("""
-        SELECT case_id, source, object_id, state, current_work_id, completed_steps, max_steps
-        FROM workflow_cases
-        WHERE state = 'ACTIVE'
-        ORDER BY created_at DESC
-        LIMIT 25
-    """)
-    print(json.dumps([{
-        "case_id": r[0],
-        "source": r[1],
-        "object_id": r[2],
-        "state": r[3],
-        "current_work_id": r[4],
-        "steps": f"{r[5]}/{r[6]}",
-    } for r in cur.fetchall()]))
+    try:
+        cur.execute("""
+            SELECT case_id, source, object_id, state, current_work_id, completed_steps, max_steps, phase
+            FROM workflow_cases
+            WHERE state = 'ACTIVE'
+            ORDER BY created_at DESC
+            LIMIT 25
+        """)
+        print(json.dumps([{
+            "case_id": r[0],
+            "source": r[1],
+            "object_id": r[2],
+            "state": r[3],
+            "current_work_id": r[4],
+            "steps": f"{r[5]}/{r[6]}",
+            "phase": r[7],
+        } for r in cur.fetchall()]))
+    except sqlite3.OperationalError:
+        cur.execute("""
+            SELECT case_id, source, object_id, state, current_work_id, completed_steps, max_steps
+            FROM workflow_cases
+            WHERE state = 'ACTIVE'
+            ORDER BY created_at DESC
+            LIMIT 25
+        """)
+        print(json.dumps([{
+            "case_id": r[0],
+            "source": r[1],
+            "object_id": r[2],
+            "state": r[3],
+            "current_work_id": r[4],
+            "steps": f"{r[5]}/{r[6]}",
+        } for r in cur.fetchall()]))
 
 
 def cmd_tickets():
