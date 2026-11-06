@@ -281,11 +281,35 @@ def cmd_emergency():
         print(json.dumps({"error": "NO_EMERGENCY_TABLES"}))
 
 
+def cmd_containment():
+    cur = get_db().cursor()
+    try:
+        cur.execute("""
+            SELECT attempt_id, task_id, ladder_state, violation_signals_json, investigation_task_id, created_at, updated_at
+            FROM attempt_containments
+            ORDER BY updated_at DESC
+        """)
+        records = []
+        for r in cur.fetchall():
+            records.append({
+                "attempt_id": r[0],
+                "task_id": r[1],
+                "ladder_state": r[2],
+                "violation_signals": json.loads(r[3]) if r[3] else [],
+                "investigation_task_id": r[4],
+                "created_at": r[5],
+                "updated_at": r[6],
+            })
+        print(json.dumps(records))
+    except sqlite3.OperationalError:
+        print(json.dumps({"error": "NO_CONTAINMENT_TABLE"}))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Read-only Summa42 queries")
-    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes", "emergency"])
+    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes", "emergency", "containment"])
     args = parser.parse_args(argv)
-    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes, "emergency": cmd_emergency}[args.command]()
+    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes, "emergency": cmd_emergency, "containment": cmd_containment}[args.command]()
 
 
 if __name__ == "__main__":

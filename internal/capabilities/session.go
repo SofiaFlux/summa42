@@ -48,6 +48,11 @@ func (r *Registry) OpenSession(ctx context.Context, collectiveID, attemptID doma
 			return nil, err
 		}
 	}
+	if r.containment != nil {
+		if err := r.containment.CheckAttemptAllowed(ctx, attemptID, "credential_request"); err != nil {
+			return nil, err
+		}
+	}
 	collectiveID = domain.ID(strings.TrimSpace(string(collectiveID)))
 	visibleCapabilities = normalizeStrings(visibleCapabilities)
 	if collectiveID == "" || attemptID == "" || len(visibleCapabilities) == 0 {

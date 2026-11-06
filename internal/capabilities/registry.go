@@ -90,15 +90,20 @@ type EmergencyChecker interface {
 	CheckExecutionAllowed(ctx context.Context, actionCategory string) error
 }
 
+type ContainmentChecker interface {
+	CheckAttemptAllowed(ctx context.Context, attemptID domain.ID, actionCategory string) error
+}
+
 type Registry struct {
-	store      *state.Store
-	clock      clock.Clock
-	execution  *execution.Service
-	mu         sync.RWMutex
-	providers  map[string]Provider
-	quarantine QuarantineChecker
-	emergency  EmergencyChecker
-	cubeID     domain.ID
+	store       *state.Store
+	clock       clock.Clock
+	execution   *execution.Service
+	mu          sync.RWMutex
+	providers   map[string]Provider
+	quarantine  QuarantineChecker
+	emergency   EmergencyChecker
+	containment ContainmentChecker
+	cubeID      domain.ID
 }
 
 func (r *Registry) SetQuarantine(q QuarantineChecker, cubeID domain.ID) {
@@ -112,6 +117,12 @@ func (r *Registry) SetEmergency(e EmergencyChecker) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.emergency = e
+}
+
+func (r *Registry) SetContainment(c ContainmentChecker) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.containment = c
 }
 
 func NewRegistry(store *state.Store, clk clock.Clock, executionSvc *execution.Service, providers ...Provider) *Registry {

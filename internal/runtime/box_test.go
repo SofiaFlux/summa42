@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/SofiaFlux/summa42/internal/containment"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/emergency"
 	"github.com/SofiaFlux/summa42/internal/operations"
@@ -309,5 +310,106 @@ func TestBoxEmergencyControlsBreakGlassFreezesOperations(t *testing.T) {
 	}
 	if op.State != domain.OperationPrepared {
 		t.Fatalf("expected PREPARED, got %s", op.State)
+	}
+}
+
+func TestBoxAttemptContainmentLadderRejectsOperations(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ownerID := domain.ID("owner-att-cont-test")
+	cubeID := domain.ID("cube-att-cont-test")
+	cubePrincipalID := domain.ID("princ-cube-cont-test")
+
+	box, err := Open(ctx, Config{
+		StatePath: filepath.Join(root, "state.db"), EvidencePath: filepath.Join(root, "evidence"),
+		CollectiveID: "collective-1", OwnerPrincipalID: ownerID, PolicyEngine: compositionPolicy{},
+		CubeID: cubeID, CubePrincipalID: cubePrincipalID,
+		OperationProviders: []operations.Provider{lostAckProvider{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer box.Close()
+
+	now := box.Clock.Now().UTC().Format(time.RFC3339Nano)
+	db := box.Store.DB()
+	envelopeID, taskID := domain.NewID("envelope"), domain.NewID("task")
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO principals(principal_id, principal_kind, public_key, custody_profile, created_at)
+		  VALUES (?, 'HUMAN', X'00', 'LOCAL', ?) ON CONFLICT DO NOTHING`, []any{ownerID, now}},
+		{`INSERT INTO principals(principal_id, principal_kind, public_key, custody_profile, created_at)
+		  VALUES (?, 'CUBE', X'00', 'LOCAL', ?) ON CONFLICT DO NOTHING`, []any{cubePrincipalID, now}},
+		{`INSERT INTO constitutions(version, content, content_hash, signature, signer_principal_id, active, created_at)
+		  VALUES (1, X'00', 'hash-att-cont', X'00', ?, 1, ?)`, []any{ownerID, now}},
+		{`INSERT INTO collective_metadata(singleton, collective_id, owner_principal_id, cube_principal_id, constitutional_root_principal_id, active_constitution_version, created_at)
+		  VALUES (1, 'collective-1', ?, ?, ?, 1, ?)`, []any{ownerID, cubePrincipalID, ownerID, now}},
+		{`INSERT INTO policy_sets(policy_set_id, version, module_name, module, policy_hash, capabilities_hash, active, created_at)
+		  VALUES ('policy-test', 1, 'test.rego', 'package test', 'hash', 'caps', 1, ?)`, []any{now}},
+		{`INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at) VALUES (?, 1000, ?)`, []any{envelopeID, now}},
+		{`INSERT INTO tasks(task_id, purpose_kind, purpose_id, state, current_fence, acceptance_criteria_json,
+		  required_capabilities_json, required_enforcement, authority_ceiling_json, resource_envelope_id, priority, created_at, updated_at)
+		  VALUES (?, 'OWNER_DIRECTIVE', 'owner-test', 'ELIGIBLE', 0, '[]', '[]', 'ENFORCED', '["external:lostack"]', ?, 0, ?, ?)`,
+			[]any{taskID, envelopeID, now, now}},
+	} {
+		if _, err := db.ExecContext(ctx, q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	attempt, err := box.Execution.StartAttempt(ctx, taskID, "test-executor", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Initial prepare succeeds
+	op, err := box.Operations.Prepare(ctx, operations.PrepareRequest{
+		AttemptID: attempt.ID, Provider: "lostack", TrustedSlotKey: "slot-cont-1", Intent: testutil.PurchaseIntent{SKU: "s", Quantity: 1}, Risk: "LOW",
+	})
+	if err != nil {
+		t.Fatalf("prepare in nominal: %v", err)
+	}
+	if op.State != domain.OperationPrepared {
+		t.Fatalf("expected PREPARED, got %s", op.State)
+	}
+
+	// 2. Ladder: Apply WARN
+	err = box.Containment.ApplySignal(ctx, attempt.ID, taskID, "excessive_rate", "telemetry_guard", containment.StepWarn, nil)
+	if err != nil {
+		t.Fatalf("apply warn: %v", err)
+	}
+
+	// 3. Ladder: Apply TERMINATE -> SUSPECTED_ROGUE
+	err = box.Containment.ApplySignal(ctx, attempt.ID, taskID, "rogue_credential_access", "canary_guard", containment.StepTerminate, nil)
+	if err != nil {
+		t.Fatalf("apply terminate: %v", err)
+	}
+
+	// 4. Any further prepare or dispatch for this attempt must fail specifically with ErrAttemptSuspectedRogue
+	_, err = box.Operations.Prepare(ctx, operations.PrepareRequest{
+		AttemptID: attempt.ID, Provider: "lostack", TrustedSlotKey: "slot-cont-2", Intent: testutil.PurchaseIntent{SKU: "s2", Quantity: 2}, Risk: "LOW",
+	})
+	if !errors.Is(err, containment.ErrAttemptSuspectedRogue) {
+		t.Fatalf("expected ErrAttemptSuspectedRogue, got: %v", err)
+	}
+
+	// 5. Capability session requests must also be denied under containment
+	_, err = box.Capabilities.OpenSession(ctx, "col1", attempt.ID, []string{"lostack.purchase"})
+	if !errors.Is(err, containment.ErrAttemptSuspectedRogue) {
+		t.Fatalf("expected ErrAttemptSuspectedRogue when opening session on rogue attempt, got: %v", err)
+	}
+
+	// 5. Verification of forensic evidence: attempt containment record and investigation task exist
+	rec, err := box.Containment.GetRecord(ctx, attempt.ID)
+	if err != nil {
+		t.Fatalf("get containment record: %v", err)
+	}
+	if rec.LadderState != containment.StateSuspectedRogue {
+		t.Fatalf("expected SUSPECTED_ROGUE, got %s", rec.LadderState)
+	}
+	if rec.InvestigationTaskID == "" {
+		t.Fatal("expected InvestigationTaskID to be present")
 	}
 }
