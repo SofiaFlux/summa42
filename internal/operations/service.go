@@ -46,6 +46,10 @@ type EffectSlot struct {
 	AdapterSemantic   bool
 }
 
+type QuarantineChecker interface {
+	CheckOperationPermitted(ctx context.Context, cubeID domain.ID, category string) error
+}
+
 type Service struct {
 	store        *state.Store
 	clock        clock.Clock
@@ -55,6 +59,13 @@ type Service struct {
 	approvals    *approvals.Service
 	collectiveID domain.ID
 	providers    map[string]Provider
+	quarantine   QuarantineChecker
+	cubeID       domain.ID
+}
+
+func (s *Service) SetQuarantine(q QuarantineChecker, cubeID domain.ID) {
+	s.quarantine = q
+	s.cubeID = cubeID
 }
 
 func New(store *state.Store, clk clock.Clock, executionSvc *execution.Service, policyEngine policy.PolicyEngine, resourceSvc *resources.Service, approvalSvc *approvals.Service, collectiveID domain.ID, providers ...Provider) *Service {
@@ -78,6 +89,11 @@ func (s *Service) Prepare(ctx context.Context, request PrepareRequest) (domain.E
 func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, guard execution.TaskGuard) (domain.ExternalOperation, error) {
 	if err := s.configured(); err != nil {
 		return domain.ExternalOperation{}, err
+	}
+	if s.quarantine != nil && s.cubeID != "" {
+		if err := s.quarantine.CheckOperationPermitted(ctx, s.cubeID, "external_operation"); err != nil {
+			return domain.ExternalOperation{}, err
+		}
 	}
 	provider, err := s.validatePrepareRequest(request)
 	if err != nil {
@@ -312,6 +328,11 @@ func (s *Service) Dispatch(ctx context.Context, operationID, attemptID domain.ID
 func (s *Service) DispatchWithGuard(ctx context.Context, operationID, attemptID domain.ID, guard execution.TaskGuard) (domain.ExternalOperation, error) {
 	if err := s.configured(); err != nil {
 		return domain.ExternalOperation{}, err
+	}
+	if s.quarantine != nil && s.cubeID != "" {
+		if err := s.quarantine.CheckOperationPermitted(ctx, s.cubeID, "external_operation"); err != nil {
+			return domain.ExternalOperation{}, err
+		}
 	}
 	if operationID == "" || attemptID == "" {
 		return domain.ExternalOperation{}, errors.New("operation id and current attempt id are required")

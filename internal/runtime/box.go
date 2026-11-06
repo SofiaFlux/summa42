@@ -23,6 +23,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/SofiaFlux/summa42/internal/policy"
 	"github.com/SofiaFlux/summa42/internal/purpose"
+	"github.com/SofiaFlux/summa42/internal/quarantine"
 	"github.com/SofiaFlux/summa42/internal/resources"
 	"github.com/SofiaFlux/summa42/internal/runmanifest"
 	"github.com/SofiaFlux/summa42/internal/scheduler"
@@ -52,6 +53,8 @@ type Config struct {
 	RuntimeVersion      string
 	RuntimeCommit       string
 	LeaseDuration       time.Duration
+	CubeID              domain.ID
+	CubePrincipalID     domain.ID
 }
 
 type Box struct {
@@ -73,10 +76,13 @@ type Box struct {
 	Scheduler     *scheduler.Service
 	Wake          *wake.Service
 	Audit         *audit.Service
+	Quarantine    *quarantine.Service
 	Policy        policy.PolicyEngine
 	Executors     map[string]executors.Executor
 	TEBProfile    teb.Profile
 	CollectiveID  domain.ID
+	CubeID        domain.ID
+	CubePrincipal domain.ID
 
 	leaseDuration time.Duration
 	shutdown      chan struct{}
@@ -193,6 +199,31 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		return nil, fmt.Errorf("construct field feedback sanitizer: %w", err)
 	}
 	experienceSvc := experience.New(store, cfg.Clock, approvalSvc, auditSvc, cfg.OwnerPrincipalID)
+	quarantineSvc := quarantine.NewService(store, cfg.Clock)
+
+	cubeID := cfg.CubeID
+	cubePrincipalID := cfg.CubePrincipalID
+	if cubeID == "" || cubePrincipalID == "" {
+		var metaCubePrincipal string
+		if err := store.DB().QueryRowContext(ctx, `SELECT cube_principal_id FROM collective_metadata WHERE singleton = 1`).Scan(&metaCubePrincipal); err == nil {
+			if cubePrincipalID == "" {
+				cubePrincipalID = domain.ID(metaCubePrincipal)
+			}
+			if cubeID == "" {
+				cubeID = domain.ID("cube_" + metaCubePrincipal)
+			}
+		}
+	}
+	if cubeID != "" && cubePrincipalID != "" {
+		var principalExists int
+		if err := store.DB().QueryRowContext(ctx, `SELECT count(*) FROM principals WHERE principal_id = ?`, cubePrincipalID).Scan(&principalExists); err == nil && principalExists > 0 {
+			if _, err := quarantineSvc.RegisterCube(ctx, cubeID, cubePrincipalID); err != nil {
+				return nil, fmt.Errorf("register local cube in quarantine registry: %w", err)
+			}
+		}
+		operationsSvc.SetQuarantine(quarantineSvc, cubeID)
+		capabilityRegistry.SetQuarantine(quarantineSvc, cubeID)
+	}
 	preferences := make([]scheduler.ExecutorPreference, 0, 2)
 	if len(cfg.TaskClassRouting) > 0 {
 		preferences = append(preferences, scheduler.TaskClassRouting(cfg.TaskClassRouting))
@@ -242,10 +273,13 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		Scheduler:     schedulerSvc,
 		Wake:          wakeSvc,
 		Audit:         auditSvc,
+		Quarantine:    quarantineSvc,
 		Policy:        cfg.PolicyEngine,
 		Executors:     executorSet,
 		TEBProfile:    cfg.TEBProfile,
 		CollectiveID:  cfg.CollectiveID,
+		CubeID:        cubeID,
+		CubePrincipal: cubePrincipalID,
 		shutdown:      make(chan struct{}),
 		leaseDuration: cfg.LeaseDuration,
 	}
