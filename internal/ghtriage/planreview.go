@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -43,6 +44,10 @@ func ParsePlanReviewOutput(raw []byte) (PlanReviewOutput, error) {
 	var out PlanReviewOutput
 	if err := decodeExactlyOne(raw, &out); err != nil {
 		return out, err
+	}
+	if count := utf8.RuneCountInString(out.Reason); count > 1000 {
+		runes := []rune(out.Reason)
+		out.Reason = string(runes[:1000])
 	}
 	return out, out.Validate()
 }

@@ -327,3 +327,92 @@ func FitContext(ctx context.Context, localPath, commit string, paths []string, k
 	}
 	return out, nil
 }
+
+// SensitivePatterns defines glob patterns for paths/filenames that are considered sensitive
+// and must never be exposed through ReadFile.
+var SensitivePatterns = []string{
+	".env*",
+	"*.pem",
+	"*.key",
+	"id_rsa*",
+	"*credentials*",
+	"*secret*",
+	"*token*",
+	".netrc",
+	".npmrc",
+	".pypirc",
+}
+
+func isSensitivePath(relPath string) bool {
+	for _, seg := range strings.Split(relPath, "/") {
+		lower := strings.ToLower(seg)
+		for _, pat := range SensitivePatterns {
+			if m, _ := path.Match(pat, seg); m {
+				return true
+			}
+			if m, _ := path.Match(pat, lower); m {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ReadFile safely retrieves the contents of a single regular file from the repository
+// at the pinned commit without reading from the working tree.
+func ReadFile(ctx context.Context, localPath, commit, relPath string, maxBytes int) (File, error) {
+	if !filepath.IsAbs(localPath) || !FullCommit(commit) {
+		return File{}, errors.New("explicit absolute local repository and full commit required")
+	}
+	if !SafePath(relPath) {
+		return File{}, errors.New("unsafe context path")
+	}
+	for _, part := range strings.Split(relPath, "/") {
+		if strings.EqualFold(part, ".git") {
+			return File{}, errors.New("cannot access .git directory")
+		}
+	}
+	if isSensitivePath(relPath) {
+		return File{}, fmt.Errorf("access to sensitive path %q denied", relPath)
+	}
+
+	if maxBytes <= 0 || maxBytes > MaxContextBytes {
+		maxBytes = MaxContextBytes
+	}
+
+	entry, err := git(ctx, localPath, "ls-tree", "-z", commit, "--", relPath)
+	if err != nil {
+		return File{}, err
+	}
+	parts := bytes.Split(entry, []byte{'\t'})
+	if len(parts) != 2 || string(parts[1]) != relPath+"\x00" {
+		return File{}, fmt.Errorf("context file %q is not a regular tracked file", relPath)
+	}
+	fields := strings.Fields(string(parts[0]))
+	if len(fields) != 3 || (fields[0] != "100644" && fields[0] != "100755") || fields[1] != "blob" {
+		return File{}, fmt.Errorf("context file %q must not be a symlink, submodule or directory", relPath)
+	}
+
+	out := &boundedBuffer{limit: maxBytes + 1}
+	if err := gitStream(ctx, localPath, out, "cat-file", "blob", fields[2]); err != nil {
+		return File{}, err
+	}
+	if out.overflow || out.Len() > maxBytes {
+		return File{}, fmt.Errorf("file %q exceeds byte limit of %d", relPath, maxBytes)
+	}
+
+	raw := out.Bytes()
+	if !utf8.Valid(raw) {
+		return File{}, fmt.Errorf("file %q is not valid UTF-8", relPath)
+	}
+	if bytes.IndexByte(raw, 0) >= 0 {
+		return File{}, fmt.Errorf("file %q contains NUL byte (binary file)", relPath)
+	}
+
+	hash := sha256.Sum256(raw)
+	return File{
+		Path:    relPath,
+		SHA256:  hex.EncodeToString(hash[:]),
+		Content: string(raw),
+	}, nil
+}

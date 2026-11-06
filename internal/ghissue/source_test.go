@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func wireIssue(mutate ...func(map[string]any)) map[string]any {
@@ -491,5 +492,54 @@ func TestCollectIssuesRequiresRepositoryName(t *testing.T) {
 	lister := &stubLister{name: "not-a-repo"}
 	if _, _, err := CollectIssues(context.Background(), lister); err == nil {
 		t.Fatal("expected repository name error")
+	}
+}
+
+func TestExtractSeverityAndFilterOrdering(t *testing.T) {
+	cases := []struct {
+		labels []string
+		want   int
+	}{
+		{[]string{"bug", "summa-auto"}, 0},
+		{[]string{"severity_1"}, 1},
+		{[]string{"severity-5", "other"}, 5},
+		{[]string{"severity:9"}, 9},
+		{[]string{"severity_0"}, 0},
+		{[]string{"severity_10"}, 0},
+		{[]string{"severity_3", "severity_8"}, 8},
+	}
+	for _, tc := range cases {
+		if got := ExtractSeverity(tc.labels); got != tc.want {
+			t.Fatalf("ExtractSeverity(%v) = %d, want %d", tc.labels, got, tc.want)
+		}
+	}
+
+	issue := func(number int64, labels ...string) Issue {
+		return Issue{
+			Repository: "o/r",
+			Number:     number,
+			State:      "open",
+			Author:     "maint",
+			Labels:     labels,
+			UpdatedAt:  time.Now(),
+		}
+	}
+	input := []Issue{
+		issue(1, "severity_2"),
+		issue(2, "severity_9"),
+		issue(3),
+		issue(4, "severity_5"),
+		issue(5, "severity_9"),
+	}
+	kept, _, _ := FilterIssues(input, []string{"maint"})
+	if len(kept) != 5 {
+		t.Fatalf("expected 5 kept issues, got %d", len(kept))
+	}
+	// Highest severity first, then highest issue number
+	wantOrder := []int64{5, 2, 4, 1, 3}
+	for i, wantNum := range wantOrder {
+		if kept[i].Number != wantNum {
+			t.Errorf("kept[%d].Number = %d, want %d", i, kept[i].Number, wantNum)
+		}
 	}
 }

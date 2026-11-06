@@ -30,6 +30,7 @@ type GroundingConfig struct {
 	// repoworkspace.MaxContextBytes (0 keeps that maximum). A producer whose
 	// harness truncates long input (agy keeps about 119 KB) needs it.
 	ContextBytes int
+	ReadMode     bool
 }
 
 func (cfg GroundingConfig) Validate() error {
@@ -37,6 +38,9 @@ func (cfg GroundingConfig) Validate() error {
 		return errors.New("context byte budget must be 0 or between 4096 and the repository context maximum")
 	}
 	prefixMode := len(cfg.AllowedPrefixes) > 0
+	if cfg.ReadMode && !prefixMode {
+		return errors.New("read mode is valid only in prefix mode")
+	}
 	if !filepath.IsAbs(cfg.Source.LocalPath) || !repoworkspace.FullCommit(cfg.Source.Commit) || strings.Count(cfg.Source.Repository, "/") != 1 || (!prefixMode && len(cfg.Source.Paths) < 1) || len(cfg.Source.Paths) > repoworkspace.MaxFiles {
 		return errors.New("explicit repository, full commit and context selection required")
 	}
@@ -214,11 +218,11 @@ func (p *Planner) selectFiles(ctx context.Context, cfg *GroundingConfig, issue S
 		AllowedPrefixes: append([]string(nil), cfg.AllowedPrefixes...), TrackedFiles: regular,
 	})
 	if err != nil {
-		return FileSelection{}, &planFailure{"model-exit", fmt.Errorf("file selection model: %w", err)}
+		return FileSelection{}, &planFailure{class: "model-exit", err: fmt.Errorf("file selection model: %w", err)}
 	}
 	selection = contextFallback(selection, cfg.Source.Paths, tracked)
 	if err := checkSelection(selection, cfg, tracked); err != nil {
-		return FileSelection{}, &planFailure{"validation", fmt.Errorf("file selection: %w", err)}
+		return FileSelection{}, &planFailure{class: "validation", err: fmt.Errorf("file selection: %w", err)}
 	}
 	return selection, nil
 }

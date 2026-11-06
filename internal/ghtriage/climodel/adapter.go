@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
@@ -139,16 +140,92 @@ func New(config Config) (*Adapter, error) {
 // Timeout is the per-call model timeout.
 func (a *Adapter) Timeout() time.Duration { return a.timeout }
 
+const maxJSONRepairs = 2
+
+func saveRejectedJSON(caseID, stage string, attempt int, raw []byte, parseErr error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(home, ".summa42", "logs", "rejected")
+	_ = os.MkdirAll(dir, 0700)
+	filename := fmt.Sprintf("%s_%s_att%d_%d.json", stage, caseID, attempt, time.Now().UnixNano())
+	content := fmt.Sprintf("// Parse error: %v\n%s\n", parseErr, string(raw))
+	_ = os.WriteFile(filepath.Join(dir, filename), []byte(content), 0600)
+}
+
+func buildJSONRepairPrompt(initialPrompt, previousRaw []byte, parseErr error, schemaGuidance string) []byte {
+	var sb strings.Builder
+	sb.WriteString("ATTENTION: Your previous response failed validation and could not be parsed as the required JSON schema.\n\n")
+	sb.WriteString("PARSING / VALIDATION ERROR:\n")
+	sb.WriteString(parseErr.Error())
+	sb.WriteString("\n\n")
+	if schemaGuidance != "" {
+		sb.WriteString("REQUIRED SCHEMA & CONSTRAINTS:\n")
+		sb.WriteString(schemaGuidance)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("YOUR PREVIOUS REJECTED OUTPUT:\n")
+	if len(previousRaw) > 24000 {
+		sb.WriteString(string(previousRaw[:24000]))
+		sb.WriteString("\n...[output truncated due to length]...\n")
+	} else {
+		sb.WriteString(string(previousRaw))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\nORIGINAL INPUT / CONTEXT:\n")
+	if len(initialPrompt) > 32000 {
+		sb.WriteString(string(initialPrompt[:32000]))
+		sb.WriteString("\n...[input truncated due to length]...\n")
+	} else {
+		sb.WriteString(string(initialPrompt))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\nTASK:\n")
+	sb.WriteString("Repair the rejected output so that it fixes the parsing/validation error and strictly complies with the schema requirements.\n")
+	sb.WriteString("Do not include any commentary, prose, markdown fences, or extra unknown fields.\n")
+	sb.WriteString("Respond with ONLY the valid single JSON object.\n")
+	return []byte(sb.String())
+}
+
+func runWithJSONRepair[T any](
+	ctx context.Context,
+	a *Adapter,
+	initialPrompt []byte,
+	schemaGuidance string,
+	parse func([]byte) (T, error),
+) (T, error) {
+	prompt := initialPrompt
+	var zero T
+	var lastErr error
+	for attempt := 0; attempt <= maxJSONRepairs; attempt++ {
+		raw, err := a.run(ctx, prompt)
+		if err != nil {
+			return zero, err
+		}
+		val, parseErr := parse(raw)
+		if parseErr == nil {
+			return val, nil
+		}
+		lastErr = parseErr
+		if a != nil {
+			saveRejectedJSON(a.caseID, a.stage, attempt+1, raw, parseErr)
+		}
+		if attempt == maxJSONRepairs {
+			break
+		}
+		log.Printf("model output failed JSON schema parsing (attempt %d/%d): %v; requesting repair", attempt+1, maxJSONRepairs+1, parseErr)
+		prompt = buildJSONRepairPrompt(initialPrompt, raw, parseErr, schemaGuidance)
+	}
+	return zero, lastErr
+}
+
 func (a *Adapter) Classify(ctx context.Context, input ghtriage.Stage2Input) (ghtriage.Stage2Output, error) {
 	prompt, err := json.Marshal(input)
 	if err != nil {
 		return ghtriage.Stage2Output{}, fmt.Errorf("encode stage 2 input: %w", err)
 	}
-	raw, err := a.run(ctx, prompt)
-	if err != nil {
-		return ghtriage.Stage2Output{}, err
-	}
-	return ghtriage.ParseStage2Output(raw)
+	return runWithJSONRepair(ctx, a, prompt, `Single JSON object with: "is_actionable" (bool), "needs_repro" (bool), "scope" ("small"|"medium"|"large"|"huge"|"unknown"), "suggested_type" ("bug"|"feature"|"question"|"other"), "rationale" (non-empty string). No other fields.`, ghtriage.ParseStage2Output)
 }
 
 func (a *Adapter) Review(ctx context.Context, input ghtriage.ReviewInput) (bool, error) {
@@ -156,11 +233,7 @@ func (a *Adapter) Review(ctx context.Context, input ghtriage.ReviewInput) (bool,
 	if err != nil {
 		return false, fmt.Errorf("encode review input: %w", err)
 	}
-	raw, err := a.run(ctx, prompt)
-	if err != nil {
-		return false, err
-	}
-	return ghtriage.ParseReviewVerdict(raw)
+	return runWithJSONRepair(ctx, a, prompt, `Single JSON object with: "plausible" (bool). No other fields.`, ghtriage.ParseReviewVerdict)
 }
 
 func (a *Adapter) Plan(ctx context.Context, input ghtriage.PlanInput) (ghtriage.PlanOutput, error) {
@@ -168,11 +241,7 @@ func (a *Adapter) Plan(ctx context.Context, input ghtriage.PlanInput) (ghtriage.
 	if err != nil {
 		return ghtriage.PlanOutput{}, fmt.Errorf("encode plan input: %w", err)
 	}
-	raw, err := a.run(ctx, prompt)
-	if err != nil {
-		return ghtriage.PlanOutput{}, err
-	}
-	return ghtriage.ParsePlanOutput(raw)
+	return runWithJSONRepair(ctx, a, prompt, `Single JSON object with EITHER {"read_repo_file": ["path1", ...]} (at most 8 paths) OR {"summary": "...", "steps": [{"objective": "...", "done_when": "..."}], "allowed_paths": [...]}. No other fields.`, ghtriage.ParsePlanOutput)
 }
 
 func (a *Adapter) SelectFiles(ctx context.Context, input ghtriage.FileSelectionInput) (ghtriage.FileSelection, error) {
@@ -180,11 +249,7 @@ func (a *Adapter) SelectFiles(ctx context.Context, input ghtriage.FileSelectionI
 	if err != nil {
 		return ghtriage.FileSelection{}, err
 	}
-	raw, err := a.run(ctx, prompt)
-	if err != nil {
-		return ghtriage.FileSelection{}, err
-	}
-	return ghtriage.ParseFileSelection(raw)
+	return runWithJSONRepair(ctx, a, prompt, `Single JSON object with: "context_files" (array of at most 32 strings from tracked_files), "allowed_paths" (array of 1 to 64 strings under allowed_prefixes). No other fields.`, ghtriage.ParseFileSelection)
 }
 
 func (a *Adapter) ReviewPlan(ctx context.Context, input ghtriage.PlanReviewInput) (ghtriage.PlanReviewOutput, error) {
@@ -192,11 +257,7 @@ func (a *Adapter) ReviewPlan(ctx context.Context, input ghtriage.PlanReviewInput
 	if err != nil {
 		return ghtriage.PlanReviewOutput{}, err
 	}
-	raw, err := a.run(ctx, prompt)
-	if err != nil {
-		return ghtriage.PlanReviewOutput{}, err
-	}
-	return ghtriage.ParsePlanReviewOutput(raw)
+	return runWithJSONRepair(ctx, a, prompt, `Single JSON object with: "verdict" ("ACCEPT"|"REVISE"|"BLOCK"), "reason" (string, 1-1000 chars). No other fields.`, ghtriage.ParsePlanReviewOutput)
 }
 
 func (a *Adapter) Implement(ctx context.Context, input ghtriage.ImplementationInput) (ghtriage.ImplementationOutput, error) {
@@ -204,11 +265,7 @@ func (a *Adapter) Implement(ctx context.Context, input ghtriage.ImplementationIn
 	if err != nil {
 		return ghtriage.ImplementationOutput{}, err
 	}
-	raw, err := a.run(ctx, prompt)
-	if err != nil {
-		return ghtriage.ImplementationOutput{}, err
-	}
-	return ghtriage.ParseImplementationOutput(raw)
+	return runWithJSONRepair(ctx, a, prompt, `Single JSON object with: "summary" (string, 1-1000 chars), "edits" (array of objects with "path" and file content changes). No other fields.`, ghtriage.ParseImplementationOutput)
 }
 
 func (a *Adapter) ReviewCode(ctx context.Context, input ghtriage.CodeReviewInput) (ghtriage.PlanReviewOutput, error) {
@@ -216,11 +273,7 @@ func (a *Adapter) ReviewCode(ctx context.Context, input ghtriage.CodeReviewInput
 	if err != nil {
 		return ghtriage.PlanReviewOutput{}, err
 	}
-	raw, err := a.run(ctx, prompt)
-	if err != nil {
-		return ghtriage.PlanReviewOutput{}, err
-	}
-	return ghtriage.ParsePlanReviewOutput(raw)
+	return runWithJSONRepair(ctx, a, prompt, `Single JSON object with: "verdict" ("ACCEPT"|"REVISE"|"BLOCK"), "reason" (string, 1-1000 chars). No other fields.`, ghtriage.ParsePlanReviewOutput)
 }
 
 func (a *Adapter) run(ctx context.Context, prompt []byte) ([]byte, error) {

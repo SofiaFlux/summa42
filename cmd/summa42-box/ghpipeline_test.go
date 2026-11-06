@@ -112,7 +112,7 @@ func TestPipelineSelectsImplementCasesByGoConstant(t *testing.T) {
 	implement := ensure("o/r#1", ghtriage.ImplementationWorkKind)
 	ensure("o/r#2", ghtriage.PlanReviewWorkKind)
 	ensure("o/r#3", "github.issue.implementation") // the reconciler's misspelt kind
-	got, err := implementationCases(ctx, f.cases, f.mission)
+	got, err := implementationCases(ctx, f.cases, f.evidence, f.mission)
 	if err != nil {
 		t.Fatal(err)
 	}

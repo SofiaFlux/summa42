@@ -70,3 +70,43 @@ func TestAllowedPrefixAndPathMutuallyExclusive(t *testing.T) {
 		t.Fatal("exact mode accepted without --context-file")
 	}
 }
+
+func TestPlanReadModeFlagValidation(t *testing.T) {
+	base := []string{"--source-repo", "/tmp/repo", "--source-repository", "o/r", "--source-sha", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--validation-command-json", `["go","test","./..."]`}
+	parse := func(extra ...string) (*ghtriage.GroundingConfig, *groundingFlags, error) {
+		flags := flag.NewFlagSet("test", flag.ContinueOnError)
+		source := registerGroundingFlags(flags)
+		if err := flags.Parse(append(append([]string(nil), base...), extra...)); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := source.config()
+		return cfg, source, err
+	}
+
+	// ReadMode with exact allowed-path must be rejected
+	if _, _, err := parse("--context-file", "README.md", "--allowed-path", "README.md", "--plan-read-mode"); err == nil {
+		t.Fatal("expected --plan-read-mode with --allowed-path to be rejected")
+	}
+
+	// ReadMode with allowed-prefix must succeed
+	cfg, source, err := parse("--allowed-prefix", "internal/", "--plan-read-mode")
+	if err != nil || cfg == nil {
+		t.Fatalf("expected --plan-read-mode with --allowed-prefix to succeed: %v", err)
+	}
+	if !cfg.ReadMode {
+		t.Fatal("expected cfg.ReadMode to be true")
+	}
+
+	// Check argv includes --plan-read-mode=true
+	argv := source.argv()
+	found := false
+	for _, arg := range argv {
+		if arg == "--plan-read-mode=true" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected --plan-read-mode=true in argv, got: %v", argv)
+	}
+}

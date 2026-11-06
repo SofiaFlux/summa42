@@ -303,7 +303,7 @@ func TestPrefixModePlansWithA30MinuteModelTimeout(t *testing.T) {
 	if err != nil || result.Deferred != 0 || result.Planned != 1 || model.selCalls != 1 {
 		t.Fatalf("result=%+v sel=%d err=%v, want the case planned and not deferred", result, model.selCalls, err)
 	}
-	if got, want := ghtriage.PlanStageTimeout(30*time.Minute), 65*time.Minute; got != want {
+	if got, want := ghtriage.PlanStageTimeout(30*time.Minute), 155*time.Minute; got != want {
 		t.Fatalf("PlanStageTimeout = %s, want %s", got, want)
 	}
 }

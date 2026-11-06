@@ -3,6 +3,7 @@ package climodel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -450,5 +451,65 @@ func TestRunLaunchesAsTheModelUserWithACleanEnvironment(t *testing.T) {
 	}
 	if strings.Contains(string(logged), "/home/box-owner") || strings.Contains(string(logged), "secret") || strings.Contains(string(logged), "ALLOWED=yes") {
 		t.Fatalf("Box state leaked into the launch command: %q", logged)
+	}
+}
+
+func TestAdapterJSONRepairLoop(t *testing.T) {
+	temp := t.TempDir()
+	countFile := filepath.Join(temp, "count.txt")
+	promptLog := filepath.Join(temp, "prompt.txt")
+	scriptPath := filepath.Join(temp, "repair_test.sh")
+
+	script := fmt.Sprintf(`#!/bin/sh
+cnt=0
+if [ -f "%s" ]; then
+    cnt=$(cat "%s")
+fi
+cnt=$((cnt + 1))
+echo "$cnt" > "%s"
+cat >> "%s"
+echo "---END---" >> "%s"
+
+if [ "$cnt" -eq 1 ]; then
+    echo '{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"bad","extra":"unexpected"}'
+else
+    echo '{"is_actionable":true,"needs_repro":false,"scope":"small","suggested_type":"bug","rationale":"repaired"}'
+fi
+`, countFile, countFile, countFile, promptLog, promptLog)
+
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter, err := New(Config{RunAsUser: testUser, Binary: scriptPath, Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := adapter.Classify(t.Context(), ghtriage.Stage2Input{
+		Title:       "Test issue",
+		BodyExcerpt: "Something broke",
+	})
+	if err != nil {
+		t.Fatalf("expected successful repair, got error: %v", err)
+	}
+	if out.Rationale != "repaired" {
+		t.Fatalf("expected rationale 'repaired', got %q", out.Rationale)
+	}
+
+	cntBytes, err := os.ReadFile(countFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(cntBytes)) != "2" {
+		t.Fatalf("expected 2 invocations (1 initial + 1 repair), got %s", string(cntBytes))
+	}
+
+	prompts, err := os.ReadFile(promptLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(prompts), "PARSING / VALIDATION ERROR") || !strings.Contains(string(prompts), "unknown field") {
+		t.Fatalf("expected repair prompt to mention validation error, got: %s", string(prompts))
 	}
 }

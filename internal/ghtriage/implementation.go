@@ -27,15 +27,23 @@ const KindImplementation = "github.issue.implementation"
 const ImplementationLeaseDuration = 15 * time.Minute
 
 type ImplementationInput struct {
-	Schema   string                 `json:"schema"`
-	Question string                 `json:"question"`
-	Plan     Plan                   `json:"plan"`
-	Snapshot Snapshot               `json:"snapshot"`
-	Context  repoworkspace.Snapshot `json:"context"`
+	Schema           string                 `json:"schema"`
+	Question         string                 `json:"question"`
+	Plan             Plan                   `json:"plan"`
+	Snapshot         Snapshot               `json:"snapshot"`
+	Context          repoworkspace.Snapshot `json:"context"`
+	Turn             int                    `json:"turn,omitempty"`
+	ValidationErrors string                 `json:"validation_errors,omitempty"`
 }
 type ImplementationOutput struct {
-	Summary string               `json:"summary"`
-	Edits   []repoworkspace.Edit `json:"edits"`
+	Schema      string               `json:"schema,omitempty"`
+	CaseID      string               `json:"case_id,omitempty"`
+	TaskID      string               `json:"task_id,omitempty"`
+	WorkID      string               `json:"work_id,omitempty"`
+	Question    string               `json:"question,omitempty"`
+	Summary     string               `json:"summary"`
+	Edits       []repoworkspace.Edit `json:"edits"`
+	Explanation string               `json:"explanation,omitempty"`
 }
 
 func (o ImplementationOutput) Validate() error {
@@ -93,6 +101,14 @@ type Implementer struct {
 	validator *repoworkspace.Validator
 	// modelTimeout sizes the attempt lease (zero keeps ImplementationLeaseDuration).
 	modelTimeout time.Duration
+	// maxRepairTurns limits multi-turn repair attempts after validation failure (default 3).
+	maxRepairTurns int
+}
+
+// WithMaxRepairTurns configures the number of repair attempts after validation failures.
+func (i *Implementer) WithMaxRepairTurns(n int) *Implementer {
+	i.maxRepairTurns = n
+	return i
 }
 
 // WithModelTimeout derives the attempt lease from the model call timeout.
@@ -109,6 +125,22 @@ func (i *Implementer) WithValidator(v *repoworkspace.Validator) *Implementer {
 
 func NewImplementer(cases *workflowcase.Service, exec *execution.Service, verify *verification.Service, store *evidence.Store, model ImplementationModel) *Implementer {
 	return &Implementer{cases: cases, exec: exec, verify: verify, evidence: store, model: model}
+}
+
+func formatValidationFailures(commands []repoworkspace.CommandResult) string {
+	const maxPerCommand = 8 * 1024
+	var sb strings.Builder
+	for _, cmd := range commands {
+		if !cmd.Passed {
+			out := strings.TrimSpace(cmd.Output)
+			if len(out) > maxPerCommand {
+				half := maxPerCommand / 2
+				out = out[:half] + "\n...[truncated]...\n" + out[len(out)-half:]
+			}
+			sb.WriteString(fmt.Sprintf("Command %q failed (exit code %d):\n%s\n\n", strings.Join(cmd.Argv, " "), cmd.ExitCode, out))
+		}
+	}
+	return sb.String()
 }
 
 // Prepare produces the implementation record and holds the case when validation did not pass.
@@ -224,26 +256,67 @@ func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 	if i.modelTimeout > 0 {
 		modelBound = i.modelTimeout
 	}
-	modelCtx, modelCancel := context.WithTimeout(runCtx, modelBound)
-	output, modelErr := i.model.Implement(modelCtx, modelInput)
-	modelCancel()
-	if modelErr != nil {
-		return fail(modelErr)
+
+	maxTurns := i.maxRepairTurns
+	if maxTurns <= 0 {
+		maxTurns = 3
 	}
-	if err := output.Validate(); err != nil {
-		return fail(&planFailure{"validation", err})
+
+	var candidate repoworkspace.Candidate
+	var commands []repoworkspace.CommandResult
+	var lastOutput ImplementationOutput
+
+	for turn := 0; turn <= maxTurns; turn++ {
+		if runCtx.Err() != nil {
+			return fail(runCtx.Err())
+		}
+		if turn > 0 {
+			if err := repoworkspace.ResetCheckout(runCtx, destination, cfg.Commit); err != nil {
+				return fail(fmt.Errorf("reset checkout for repair turn %d: %w", turn, err))
+			}
+			modelInput.Turn = turn
+			modelInput.ValidationErrors = formatValidationFailures(commands)
+			modelInput.Question = fmt.Sprintf("The previous implementation attempt failed validation. Please fix the edits to resolve the following test/compilation errors:\n%s", modelInput.ValidationErrors)
+		}
+
+		modelCtx, modelCancel := context.WithTimeout(runCtx, modelBound)
+		output, modelErr := i.model.Implement(modelCtx, modelInput)
+		modelCancel()
+		if modelErr != nil {
+			return fail(modelErr)
+		}
+		if err := output.Validate(); err != nil {
+			return fail(&planFailure{class: "validation", err: err})
+		}
+		if _, _, _, _, err := i.loadInput(runCtx, c); err != nil {
+			return fail(err)
+		}
+
+		cand, err := repoworkspace.PrepareCandidate(runCtx, destination, cfg.Commit, input.Plan.Source.AllowedPaths, output.Edits)
+		if err != nil {
+			return fail(err)
+		}
+		candidate = cand
+		lastOutput = output
+
+		cmds, err := i.validator.ValidateCandidate(runCtx, destination, candidate, input.Plan.Source.ValidationCommands)
+		if err != nil {
+			return fail(err)
+		}
+		commands = cmds
+
+		allPassed := true
+		for _, command := range commands {
+			if !command.Passed {
+				allPassed = false
+				break
+			}
+		}
+		if allPassed {
+			break
+		}
 	}
-	if _, _, _, _, err := i.loadInput(runCtx, c); err != nil {
-		return fail(err)
-	}
-	candidate, err := repoworkspace.PrepareCandidate(runCtx, destination, cfg.Commit, input.Plan.Source.AllowedPaths, output.Edits)
-	if err != nil {
-		return fail(err)
-	}
-	commands, err := i.validator.ValidateCandidate(runCtx, destination, candidate, input.Plan.Source.ValidationCommands)
-	if err != nil {
-		return fail(err)
-	}
+
 	finalSourceState, err := repoworkspace.SourceState(runCtx, sourceRepo)
 	if err != nil {
 		return fail(err)
@@ -256,7 +329,7 @@ func (i *Implementer) prepare(ctx context.Context, id domain.ID, sourceRepo, roo
 	expected.AttemptID = attempt.ID
 	expected.Fence = attempt.FenceGeneration
 	expected.Workspace = destination
-	expected.Summary = output.Summary
+	expected.Summary = lastOutput.Summary
 	expected.Candidate = candidate
 	expected.Commands = commands
 	expected.AllPassed = true

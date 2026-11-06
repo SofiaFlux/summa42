@@ -225,3 +225,101 @@ func TestFitContextHonoursASmallerBudget(t *testing.T) {
 		t.Fatalf("budget 0 must keep the repository maximum: %v", got)
 	}
 }
+
+func TestReadFileTableRejections(t *testing.T) {
+	cfg := sourceFixture(t)
+	dir := cfg.LocalPath
+
+	// 1. Commit a directory
+	os.MkdirAll(filepath.Join(dir, "somedir"), 0755)
+	os.WriteFile(filepath.Join(dir, "somedir", "sub.go"), []byte("package somedir\n"), 0600)
+
+	// 2. Commit a symlink
+	_ = os.Symlink("code.go", filepath.Join(dir, "link_inside"))
+	_ = os.Symlink("/etc/passwd", filepath.Join(dir, "link_outside"))
+
+	// 3. Commit a binary file with NUL byte
+	os.WriteFile(filepath.Join(dir, "binary.bin"), []byte("hello\x00world"), 0600)
+
+	// 4. Commit a large file (2000 bytes)
+	os.WriteFile(filepath.Join(dir, "oversized.txt"), []byte(strings.Repeat("a", 2000)), 0600)
+
+	gitTest(t, dir, "add", "-A")
+	gitTest(t, dir, "commit", "-qm", "more files")
+	commit := gitTest(t, dir, "rev-parse", "HEAD")
+
+	rejections := []struct {
+		name     string
+		path     string
+		maxBytes int
+	}{
+		{"parent path", "../x", 10000},
+		{"absolute path", "/etc/passwd", 10000},
+		{"clean parent traversal", "a/../../x", 10000},
+		{"git config", ".git/config", 10000},
+		{"case insensitive git path", "sub/.GIT/HEAD", 10000},
+		{"sensitive env", ".env", 10000},
+		{"sensitive env suffix", ".env.local", 10000},
+		{"sensitive id_rsa", "deploy/id_rsa", 10000},
+		{"sensitive pem", "certs/server.pem", 10000},
+		{"sensitive key", "keys/private.key", 10000},
+		{"sensitive token", "auth/api_token_prod", 10000},
+		{"sensitive credentials", "config/credentials.json", 10000},
+		{"sensitive netrc", ".netrc", 10000},
+		{"symlink inside", "link_inside", 10000},
+		{"symlink outside", "link_outside", 10000},
+		{"directory", "somedir", 10000},
+		{"non existent", "missing.go", 10000},
+		{"binary with NUL", "binary.bin", 10000},
+		{"file over maxBytes", "oversized.txt", 1000},
+	}
+
+	for _, tc := range rejections {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ReadFile(t.Context(), dir, commit, tc.path, tc.maxBytes)
+			if err == nil {
+				t.Fatalf("expected ReadFile to reject %q, but it succeeded", tc.path)
+			}
+		})
+	}
+}
+
+func TestReadFileReadsCommitContentNotWorkingTree(t *testing.T) {
+	cfg := sourceFixture(t)
+	dir := cfg.LocalPath
+	commit := cfg.Commit // points to "old code\n"
+
+	// Dirty the working tree
+	os.WriteFile(filepath.Join(dir, "code.go"), []byte("modified dirty code\n"), 0600)
+
+	file, err := ReadFile(t.Context(), dir, commit, "code.go", 10000)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if file.Content != "old code\n" {
+		t.Fatalf("expected commit content 'old code\\n', got %q", file.Content)
+	}
+}
+
+func TestReadFileSHA256MatchesCapture(t *testing.T) {
+	cfg := sourceFixture(t)
+	dir := cfg.LocalPath
+	commit := cfg.Commit
+
+	file, err := ReadFile(t.Context(), dir, commit, "code.go", 10000)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+
+	snap, err := Capture(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("Capture failed: %v", err)
+	}
+	if len(snap.Files) != 1 {
+		t.Fatalf("expected 1 file from capture, got %d", len(snap.Files))
+	}
+
+	if file.SHA256 != snap.Files[0].SHA256 {
+		t.Fatalf("SHA256 mismatch: ReadFile=%q Capture=%q", file.SHA256, snap.Files[0].SHA256)
+	}
+}

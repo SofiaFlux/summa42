@@ -107,3 +107,28 @@ func TestCandidateHashesLargeReplacementDiff(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestResetCheckoutRestoresPristineBase(t *testing.T) {
+	cfg, dir := candidateFixture(t)
+	// Make a candidate commit and create untracked/ignored debris
+	_, err := PrepareCandidate(context.Background(), dir, cfg.Commit, []string{"code.go"}, []Edit{{Path: "code.go", Content: "package test\n// v1\n"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "debris.tmp"), []byte("garbage"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// ResetCheckout must restore the commit and wipe debris
+	if err := ResetCheckout(context.Background(), dir, cfg.Commit); err != nil {
+		t.Fatalf("ResetCheckout failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "debris.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("untracked debris was not wiped")
+	}
+	// Another PrepareCandidate must succeed cleanly on the reset checkout
+	_, err = PrepareCandidate(context.Background(), dir, cfg.Commit, []string{"code.go"}, []Edit{{Path: "code.go", Content: "package test\n// v2\n"}})
+	if err != nil {
+		t.Fatalf("PrepareCandidate after ResetCheckout failed: %v", err)
+	}
+}
+

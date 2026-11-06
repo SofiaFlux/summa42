@@ -101,7 +101,52 @@ func ParseReviewVerdict(raw []byte) (bool, error) {
 	return *response.Plausible, nil
 }
 
+func sanitizeJSONEscapes(raw []byte) []byte {
+	var out bytes.Buffer
+	out.Grow(len(raw))
+	inString := false
+	for i := 0; i < len(raw); i++ {
+		b := raw[i]
+		if !inString {
+			if b == '"' {
+				inString = true
+			}
+			out.WriteByte(b)
+			continue
+		}
+		if b == '"' {
+			inString = false
+			out.WriteByte(b)
+			continue
+		}
+		if b == '\\' {
+			if i+1 < len(raw) {
+				next := raw[i+1]
+				switch next {
+				case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+					out.WriteByte('\\')
+					out.WriteByte(next)
+					i++
+				case 'u':
+					out.WriteByte('\\')
+					out.WriteByte('u')
+					i++
+				default:
+					out.WriteByte('\\')
+					out.WriteByte('\\')
+					out.WriteByte(next)
+					i++
+				}
+				continue
+			}
+		}
+		out.WriteByte(b)
+	}
+	return out.Bytes()
+}
+
 func decodeExactlyOne(raw []byte, target any) error {
+	raw = sanitizeJSONEscapes(raw)
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
