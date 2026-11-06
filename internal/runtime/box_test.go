@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
+	"github.com/SofiaFlux/summa42/internal/emergency"
 	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/SofiaFlux/summa42/internal/quarantine"
 	"github.com/SofiaFlux/summa42/internal/resources"
@@ -212,5 +213,101 @@ func TestBoxQuarantineEnforcementRejectsOperations(t *testing.T) {
 	}
 	if op2.State != domain.OperationPrepared {
 		t.Fatalf("op2 state = %s, want PREPARED", op2.State)
+	}
+}
+
+func TestBoxEmergencyControlsBreakGlassFreezesOperations(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	ownerID := domain.ID("owner-emergency-test")
+	cubeID := domain.ID("cube-emergency-test")
+	cubePrincipalID := domain.ID("princ-cube-em-test")
+
+	box, err := Open(ctx, Config{
+		StatePath: filepath.Join(root, "state.db"), EvidencePath: filepath.Join(root, "evidence"),
+		CollectiveID: "collective-1", OwnerPrincipalID: ownerID, PolicyEngine: compositionPolicy{},
+		CubeID: cubeID, CubePrincipalID: cubePrincipalID,
+		OperationProviders: []operations.Provider{lostAckProvider{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer box.Close()
+
+	now := box.Clock.Now().UTC().Format(time.RFC3339Nano)
+	db := box.Store.DB()
+	envelopeID, taskID := domain.NewID("envelope"), domain.NewID("task")
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO principals(principal_id, principal_kind, public_key, custody_profile, created_at)
+		  VALUES (?, 'HUMAN', X'00', 'LOCAL', ?) ON CONFLICT DO NOTHING`, []any{ownerID, now}},
+		{`INSERT INTO principals(principal_id, principal_kind, public_key, custody_profile, created_at)
+		  VALUES (?, 'CUBE', X'00', 'LOCAL', ?) ON CONFLICT DO NOTHING`, []any{cubePrincipalID, now}},
+		{`INSERT INTO constitutions(version, content, content_hash, signature, signer_principal_id, active, created_at)
+		  VALUES (1, X'00', 'hash-em', X'00', ?, 1, ?)`, []any{ownerID, now}},
+		{`INSERT INTO collective_metadata(singleton, collective_id, owner_principal_id, cube_principal_id, constitutional_root_principal_id, active_constitution_version, created_at)
+		  VALUES (1, 'collective-1', ?, ?, ?, 1, ?)`, []any{ownerID, cubePrincipalID, ownerID, now}},
+		{`INSERT INTO policy_sets(policy_set_id, version, module_name, module, policy_hash, capabilities_hash, active, created_at)
+		  VALUES ('policy-test', 1, 'test.rego', 'package test', 'hash', 'caps', 1, ?)`, []any{now}},
+		{`INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at) VALUES (?, 1000, ?)`, []any{envelopeID, now}},
+		{`INSERT INTO tasks(task_id, purpose_kind, purpose_id, state, current_fence, acceptance_criteria_json,
+		  required_capabilities_json, required_enforcement, authority_ceiling_json, resource_envelope_id, priority, created_at, updated_at)
+		  VALUES (?, 'OWNER_DIRECTIVE', 'owner-test', 'ELIGIBLE', 0, '[]', '[]', 'ENFORCED', '["external:lostack"]', ?, 0, ?, ?)`,
+			[]any{taskID, envelopeID, now, now}},
+	} {
+		if _, err := db.ExecContext(ctx, q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	attempt, err := box.Execution.StartAttempt(ctx, taskID, "test-executor", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Trigger Break Glass
+	err = box.Emergency.TriggerBreakGlass(ctx, ownerID, "Breach containment override")
+	if err != nil {
+		t.Fatalf("trigger break glass: %v", err)
+	}
+
+	// 2. Prepare must be deterministically rejected with ErrBreakGlassFrozen
+	_, err = box.Operations.Prepare(ctx, operations.PrepareRequest{
+		AttemptID: attempt.ID, Provider: "lostack", TrustedSlotKey: "slot-em-1", Intent: testutil.PurchaseIntent{SKU: "s", Quantity: 1}, Risk: "LOW",
+	})
+	if !errors.Is(err, emergency.ErrBreakGlassFrozen) {
+		t.Fatalf("expected ErrBreakGlassFrozen, got: %v", err)
+	}
+
+	// 3. Resume system
+	err = box.Emergency.ResumeSystem(ctx, ownerID, "System restored")
+	if err != nil {
+		t.Fatalf("resume system: %v", err)
+	}
+
+	// 4. Stale attempt cannot execute because Break Glass revoked its lease and reset task
+	_, err = box.Operations.Prepare(ctx, operations.PrepareRequest{
+		AttemptID: attempt.ID, Provider: "lostack", TrustedSlotKey: "slot-em-1", Intent: testutil.PurchaseIntent{SKU: "s", Quantity: 1}, Risk: "LOW",
+	})
+	if !errors.Is(err, domain.ErrStaleAttempt) && !errors.Is(err, domain.ErrLeaseInactive) {
+		t.Fatalf("expected ErrStaleAttempt or ErrLeaseInactive for revoked attempt, got: %v", err)
+	}
+
+	// 5. New attempt starts and operations resume
+	attempt2, err := box.Execution.StartAttempt(ctx, taskID, "test-executor-2", time.Hour)
+	if err != nil {
+		t.Fatalf("start new attempt after resume: %v", err)
+	}
+
+	op, err := box.Operations.Prepare(ctx, operations.PrepareRequest{
+		AttemptID: attempt2.ID, Provider: "lostack", TrustedSlotKey: "slot-em-1", Intent: testutil.PurchaseIntent{SKU: "s", Quantity: 1}, Risk: "LOW",
+	})
+	if err != nil {
+		t.Fatalf("prepare after resume with new attempt: %v", err)
+	}
+	if op.State != domain.OperationPrepared {
+		t.Fatalf("expected PREPARED, got %s", op.State)
 	}
 }

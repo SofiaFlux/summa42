@@ -348,6 +348,9 @@ func MaskCapabilities(state CubeState, requestedCaps []string) []string {
 func (s *Service) CheckCapabilityPermitted(ctx context.Context, cubeID domain.ID, capability string) error {
 	cube, err := s.GetCube(ctx, cubeID)
 	if err != nil {
+		if errors.Is(err, ErrCubeNotFound) {
+			return nil
+		}
 		return err
 	}
 	if cube.State != CubeQuarantined {
@@ -366,6 +369,9 @@ func (s *Service) CheckCapabilityPermitted(ctx context.Context, cubeID domain.ID
 func (s *Service) CheckOperationPermitted(ctx context.Context, cubeID domain.ID, operationCategory string) error {
 	cube, err := s.GetCube(ctx, cubeID)
 	if err != nil {
+		if errors.Is(err, ErrCubeNotFound) {
+			return nil
+		}
 		return err
 	}
 	if cube.State != CubeQuarantined {
