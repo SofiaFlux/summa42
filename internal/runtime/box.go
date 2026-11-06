@@ -13,6 +13,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/audit"
 	"github.com/SofiaFlux/summa42/internal/capabilities"
 	"github.com/SofiaFlux/summa42/internal/clock"
+	"github.com/SofiaFlux/summa42/internal/containment"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/emergency"
 	"github.com/SofiaFlux/summa42/internal/evidence"
@@ -79,6 +80,7 @@ type Box struct {
 	Audit         *audit.Service
 	Quarantine    *quarantine.Service
 	Emergency     *emergency.Service
+	Containment   *containment.Service
 	Policy        policy.PolicyEngine
 	Executors     map[string]executors.Executor
 	TEBProfile    teb.Profile
@@ -208,6 +210,9 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	}
 	operationsSvc.SetEmergency(emergencySvc)
 	capabilityRegistry.SetEmergency(emergencySvc)
+	containmentSvc := containment.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
+	operationsSvc.SetAttemptContainment(containmentSvc)
+	capabilityRegistry.SetContainment(containmentSvc)
 
 	cubeID := cfg.CubeID
 	cubePrincipalID := cfg.CubePrincipalID
@@ -283,6 +288,7 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		Audit:         auditSvc,
 		Quarantine:    quarantineSvc,
 		Emergency:     emergencySvc,
+		Containment:   containmentSvc,
 		Policy:        cfg.PolicyEngine,
 		Executors:     executorSet,
 		TEBProfile:    cfg.TEBProfile,

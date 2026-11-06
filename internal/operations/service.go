@@ -54,18 +54,23 @@ type EmergencyChecker interface {
 	CheckExecutionAllowed(ctx context.Context, actionCategory string) error
 }
 
+type AttemptContainmentChecker interface {
+	CheckAttemptAllowed(ctx context.Context, attemptID domain.ID, actionCategory string) error
+}
+
 type Service struct {
-	store        *state.Store
-	clock        clock.Clock
-	execution    *execution.Service
-	policy       policy.PolicyEngine
-	resources    *resources.Service
-	approvals    *approvals.Service
-	collectiveID domain.ID
-	providers    map[string]Provider
-	quarantine   QuarantineChecker
-	emergency    EmergencyChecker
-	cubeID       domain.ID
+	store              *state.Store
+	clock              clock.Clock
+	execution          *execution.Service
+	policy             policy.PolicyEngine
+	resources          *resources.Service
+	approvals          *approvals.Service
+	collectiveID       domain.ID
+	providers          map[string]Provider
+	quarantine         QuarantineChecker
+	emergency          EmergencyChecker
+	attemptContainment AttemptContainmentChecker
+	cubeID             domain.ID
 }
 
 func (s *Service) SetQuarantine(q QuarantineChecker, cubeID domain.ID) {
@@ -75,6 +80,10 @@ func (s *Service) SetQuarantine(q QuarantineChecker, cubeID domain.ID) {
 
 func (s *Service) SetEmergency(e EmergencyChecker) {
 	s.emergency = e
+}
+
+func (s *Service) SetAttemptContainment(c AttemptContainmentChecker) {
+	s.attemptContainment = c
 }
 
 func New(store *state.Store, clk clock.Clock, executionSvc *execution.Service, policyEngine policy.PolicyEngine, resourceSvc *resources.Service, approvalSvc *approvals.Service, collectiveID domain.ID, providers ...Provider) *Service {
@@ -106,6 +115,11 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 	}
 	if s.quarantine != nil && s.cubeID != "" {
 		if err := s.quarantine.CheckOperationPermitted(ctx, s.cubeID, "external_operation"); err != nil {
+			return domain.ExternalOperation{}, err
+		}
+	}
+	if s.attemptContainment != nil {
+		if err := s.attemptContainment.CheckAttemptAllowed(ctx, request.AttemptID, "external_operation"); err != nil {
 			return domain.ExternalOperation{}, err
 		}
 	}
@@ -350,6 +364,11 @@ func (s *Service) DispatchWithGuard(ctx context.Context, operationID, attemptID 
 	}
 	if s.quarantine != nil && s.cubeID != "" {
 		if err := s.quarantine.CheckOperationPermitted(ctx, s.cubeID, "external_operation"); err != nil {
+			return domain.ExternalOperation{}, err
+		}
+	}
+	if s.attemptContainment != nil {
+		if err := s.attemptContainment.CheckAttemptAllowed(ctx, attemptID, "external_operation"); err != nil {
 			return domain.ExternalOperation{}, err
 		}
 	}

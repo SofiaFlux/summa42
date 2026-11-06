@@ -250,5 +250,49 @@ class EmergencyTests(unittest.TestCase):
             self.assertEqual(dm["heartbeat_timeout_seconds"], 3600)
 
 
+class ContainmentTests(unittest.TestCase):
+    MIGRATION_BOOTSTRAP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                       "internal", "state", "sqlite", "migrations", "00001_bootstrap.sql")
+    MIGRATION_EXECUTION = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                       "internal", "state", "sqlite", "migrations", "00003_execution.sql")
+    MIGRATION_CONTAINMENT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                         "internal", "state", "sqlite", "migrations", "00029_attempt_containment.sql")
+
+    def test_containment_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "state"), exist_ok=True)
+            conn = sqlite3.connect(os.path.join(tmp, "state", "summa42.db"))
+            with open(self.MIGRATION_BOOTSTRAP) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+            with open(self.MIGRATION_EXECUTION) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+            with open(self.MIGRATION_CONTAINMENT) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+
+            # Seed task and attempt
+            conn.execute("""
+                INSERT INTO tasks(task_id, purpose_kind, purpose_id, state, acceptance_criteria_json, required_capabilities_json, required_enforcement, authority_ceiling_json, resource_envelope_id, created_at, updated_at)
+                VALUES ('task_c1', 'MISSION', 'm1', 'EXECUTING', '{}', '[]', 'ENFORCED', '{}', 'env1', '2026-11-06T12:00:00Z', '2026-11-06T12:00:00Z')
+            """)
+            conn.execute("INSERT INTO attempts(attempt_id, task_id, state, fence_generation, lease_state, lease_expires_at, started_at, executor_kind) VALUES ('att_c1', 'task_c1', 'RUNNING', 1, 'ACTIVE', '2026-11-06T13:00:00Z', '2026-11-06T12:00:00Z', 'TEST')")
+            conn.execute("""
+                INSERT INTO attempt_containments(attempt_id, task_id, ladder_state, violation_signals_json, investigation_task_id, created_at, updated_at)
+                VALUES ('att_c1', 'task_c1', 'SUSPECTED_ROGUE', '["POLICY_VIOLATION"]', 'task_inv1', '2026-11-06T12:00:00Z', '2026-11-06T12:05:00Z')
+            """)
+            conn.commit()
+            conn.close()
+
+            res = _run(tmp, "containment")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            data = json.loads(res.stdout)
+            self.assertEqual(len(data), 1)
+            rec = data[0]
+            self.assertEqual(rec["attempt_id"], "att_c1")
+            self.assertEqual(rec["task_id"], "task_c1")
+            self.assertEqual(rec["ladder_state"], "SUSPECTED_ROGUE")
+            self.assertEqual(rec["violation_signals"], ["POLICY_VIOLATION"])
+            self.assertEqual(rec["investigation_task_id"], "task_inv1")
+
+
 if __name__ == "__main__":
     unittest.main()
