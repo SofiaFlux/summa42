@@ -96,6 +96,30 @@ class QueryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as empty:
             self.assertEqual(json.loads(_run(empty, "status").stdout), {"error": "NO_DB"})
 
+    def test_board_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_home(tmp)
+            conn = sqlite3.connect(os.path.join(tmp, "state", "summa42.db"))
+            conn.executescript("""
+                CREATE TABLE board_cards(card_id TEXT PRIMARY KEY, mission_id TEXT, source TEXT, source_id TEXT,
+                    revision_id TEXT, column_name TEXT, title TEXT, description TEXT, required_capabilities_json TEXT,
+                    grant_json TEXT, created_at TEXT, updated_at TEXT);
+                CREATE TABLE board_card_moves(move_id TEXT PRIMARY KEY, card_id TEXT, from_column TEXT, to_column TEXT,
+                    actor TEXT, reason TEXT, evidence_ids_json TEXT, created_at TEXT);
+                INSERT INTO board_cards VALUES('c1', 'm1', 'github', 'org/r#1', 'r1', 'HELD', 'Held item', '', '[]', '{}', 'now', 'now');
+                INSERT INTO board_cards VALUES('c2', 'm1', 'github', 'org/r#2', 'r1', 'IN_PROGRESS', 'In flight', '', '[]', '{}', 'now', 'now');
+                INSERT INTO board_card_moves VALUES('m1', 'c1', 'READY', 'HELD', 'owner', 'Awaiting approval', '[]', 'now');
+            """)
+            conn.commit()
+            conn.close()
+            res = _run(tmp, "board")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            data = json.loads(res.stdout)
+            self.assertEqual(data["mission_id"], "m1")
+            self.assertEqual(data["columns"], {"HELD": 1, "IN_PROGRESS": 1})
+            self.assertEqual(len(data["held_cards"]), 1)
+            self.assertEqual(data["held_cards"][0]["reason"], "Awaiting approval")
+
 
 class CapacityTests(unittest.TestCase):
     MIGRATION = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
