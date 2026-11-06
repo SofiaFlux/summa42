@@ -178,6 +178,10 @@ func (s *Session) Call(ctx context.Context, name string, request any) (any, erro
 
 	var provider Provider
 	var semanticName string
+	var ungrantedCapability bool
+	var ungrantedAttemptID, ungrantedTaskID domain.ID
+	var ungrantedName string
+
 	err = s.registry.execution.WithGuardedAttempt(ctx, initial.AttemptID, []domain.TaskState{domain.TaskExecuting}, func(tx *sql.Tx, guarded execution.GuardedAttempt) error {
 		current, err := loadSession(ctx, tx, tokenHash)
 		if err != nil {
@@ -191,9 +195,10 @@ func (s *Session) Call(ctx context.Context, name string, request any) (any, erro
 		}
 		definitionID, ok := current.VisibleCapabilities[name]
 		if !ok {
-			if s.registry.detector != nil {
-				_ = s.registry.detector.ReportUngrantedCapability(ctx, guarded.AttemptID, guarded.TaskID, name)
-			}
+			ungrantedCapability = true
+			ungrantedAttemptID = guarded.AttemptID
+			ungrantedTaskID = guarded.TaskID
+			ungrantedName = name
 			return fmt.Errorf("%w: capability %q is not visible in this session", domain.ErrPolicyDenied, name)
 		}
 		definition, err := s.registry.definitionByIDTx(ctx, tx, definitionID)
@@ -217,6 +222,9 @@ func (s *Session) Call(ctx context.Context, name string, request any) (any, erro
 		semanticName = definition.Skill.Name
 		return nil
 	})
+	if ungrantedCapability && s.registry.detector != nil {
+		_ = s.registry.detector.ReportUngrantedCapability(ctx, ungrantedAttemptID, ungrantedTaskID, ungrantedName)
+	}
 	if err != nil {
 		return nil, err
 	}
