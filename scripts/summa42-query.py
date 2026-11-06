@@ -4,7 +4,7 @@ summa42-query.py - read-only CLI over the canonical Summa42 SQLite database.
 
 Only the Box writes canonical state. This script opens the database with
 mode=ro and a short busy timeout, and offers read subcommands only
-(status, cases, tickets, capacity). Paths resolve from SUMMA42_HOME (default ~/.summa42).
+(status, cases, tickets, capacity, board). Paths resolve from SUMMA42_HOME (default ~/.summa42).
 """
 
 import argparse
@@ -170,11 +170,51 @@ def cmd_capacity():
     }))
 
 
+def cmd_board():
+    cur = get_db().cursor()
+    cur.execute("SELECT mission_id FROM missions WHERE active = 1 ORDER BY created_at DESC LIMIT 1")
+    m = cur.fetchone()
+    if not m:
+        print(json.dumps({"error": "NO_ACTIVE_MISSION"}))
+        return
+    mission_id = m[0]
+    try:
+        cur.execute("SELECT column_name, count(*) FROM board_cards WHERE mission_id = ? GROUP BY column_name", (mission_id,))
+        columns = {r[0]: r[1] for r in cur.fetchall()}
+        cur.execute("""
+            SELECT c.card_id, c.source, c.source_id, c.title, m.reason, m.created_at
+            FROM board_cards c
+            JOIN board_card_moves m ON m.card_id = c.card_id
+            WHERE c.mission_id = ? AND c.column_name = 'HELD' AND m.to_column = 'HELD'
+            ORDER BY m.created_at DESC
+        """, (mission_id,))
+        seen = set()
+        held = []
+        for r in cur.fetchall():
+            if r[0] not in seen:
+                seen.add(r[0])
+                held.append({
+                    "card_id": r[0],
+                    "source": r[1],
+                    "source_id": r[2],
+                    "title": r[3],
+                    "reason": r[4],
+                    "held_at": r[5],
+                })
+        print(json.dumps({
+            "mission_id": mission_id,
+            "columns": columns,
+            "held_cards": held,
+        }))
+    except sqlite3.OperationalError:
+        print(json.dumps({"error": "NO_BOARD_TABLE"}))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Read-only Summa42 queries")
-    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity"])
+    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board"])
     args = parser.parse_args(argv)
-    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity}[args.command]()
+    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board}[args.command]()
 
 
 if __name__ == "__main__":
