@@ -364,11 +364,82 @@ def cmd_attention():
         print(json.dumps({"error": "NO_ATTENTION_TABLES"}))
 
 
+def cmd_company():
+    cur = get_db().cursor()
+    try:
+        cur.execute("""
+            SELECT kind, count(*), sum(exposure_amount)
+            FROM company_entities
+            GROUP BY kind
+        """)
+        by_kind = {}
+        total_entities = 0
+        total_exposure = 0
+        for r in cur.fetchall():
+            kind = r[0]
+            count = r[1]
+            exp = r[2] or 0
+            by_kind[kind] = count
+            total_entities += count
+            total_exposure += exp
+
+        cur.execute("""
+            SELECT entity_id, kind, name, status, attributes_json, exposure_amount, updated_at
+            FROM company_entities
+            ORDER BY updated_at DESC
+            LIMIT 50
+        """)
+        entities = []
+        for r in cur.fetchall():
+            attrs = {}
+            if r[4]:
+                try:
+                    attrs = json.loads(r[4])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            entities.append({
+                "entity_id": r[0],
+                "kind": r[1],
+                "name": r[2],
+                "status": r[3],
+                "attributes": attrs,
+                "exposure_amount": r[5],
+                "updated_at": r[6],
+            })
+
+        cur.execute("""
+            SELECT transition_id, entity_id, task_id, evidence_id, transition_kind, recorded_at
+            FROM company_state_transitions
+            ORDER BY recorded_at DESC
+            LIMIT 25
+        """)
+        transitions = []
+        for r in cur.fetchall():
+            transitions.append({
+                "transition_id": r[0],
+                "entity_id": r[1],
+                "task_id": r[2],
+                "evidence_id": r[3],
+                "transition_kind": r[4],
+                "recorded_at": r[5],
+            })
+
+        print(json.dumps({
+            "total_entities": total_entities,
+            "total_exposure": total_exposure,
+            "entities_by_kind": by_kind,
+            "recent_entities": entities,
+            "recent_transitions": transitions,
+        }))
+    except sqlite3.OperationalError:
+        print(json.dumps({"error": "NO_COMPANY_TABLES"}))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Read-only Summa42 queries")
-    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes", "emergency", "containment", "attention"])
+    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes", "emergency", "containment", "attention", "company"])
     args = parser.parse_args(argv)
-    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes, "emergency": cmd_emergency, "containment": cmd_containment, "attention": cmd_attention}[args.command]()
+    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes, "emergency": cmd_emergency, "containment": cmd_containment, "attention": cmd_attention, "company": cmd_company}[args.command]()
 
 
 if __name__ == "__main__":

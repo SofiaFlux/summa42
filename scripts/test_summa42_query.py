@@ -354,5 +354,52 @@ class AttentionTests(unittest.TestCase):
             self.assertEqual(packets[1]["urgency"], "LOW")
 
 
+class CompanyTests(unittest.TestCase):
+    MIGRATION_COMPANY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                     "internal", "state", "sqlite", "migrations", "00031_company_state.sql")
+
+    def test_company_no_tables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_home(tmp)
+            res = _run(tmp, "company")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(json.loads(res.stdout), {"error": "NO_COMPANY_TABLES"})
+
+    def test_company_summary_and_entities(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "state"), exist_ok=True)
+            conn = sqlite3.connect(os.path.join(tmp, "state", "summa42.db"))
+            with open(self.MIGRATION_COMPANY) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+
+            conn.execute("""
+                INSERT INTO company_entities (entity_id, kind, name, status, attributes_json, exposure_amount, created_at, updated_at)
+                VALUES ('cust_1', 'CUSTOMER', 'Acme', 'ACTIVE', '{"tier":"A"}', 50000, '2026-11-09T08:00:00Z', '2026-11-09T08:00:00Z')
+            """)
+            conn.execute("""
+                INSERT INTO company_entities (entity_id, kind, name, status, attributes_json, exposure_amount, created_at, updated_at)
+                VALUES ('comm_1', 'COMMITMENT', 'AWS', 'ACTIVE', '{"tier":"B"}', 20000, '2026-11-09T08:00:00Z', '2026-11-09T09:00:00Z')
+            """)
+            conn.execute("""
+                INSERT INTO company_state_transitions (transition_id, entity_id, task_id, evidence_id, transition_kind, previous_state_json, new_state_json, recorded_at)
+                VALUES ('tr_1', 'cust_1', 't_1', 'ev_1', 'ONBOARD', NULL, '{"status":"ACTIVE"}', '2026-11-09T08:00:00Z')
+            """)
+            conn.commit()
+            conn.close()
+
+            res = _run(tmp, "company")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            data = json.loads(res.stdout)
+            self.assertEqual(data["total_entities"], 2)
+            self.assertEqual(data["total_exposure"], 70000)
+            self.assertEqual(data["entities_by_kind"]["CUSTOMER"], 1)
+            self.assertEqual(data["entities_by_kind"]["COMMITMENT"], 1)
+            self.assertEqual(len(data["recent_entities"]), 2)
+            # Most recently updated first
+            self.assertEqual(data["recent_entities"][0]["entity_id"], "comm_1")
+            self.assertEqual(len(data["recent_transitions"]), 1)
+            self.assertEqual(data["recent_transitions"][0]["transition_kind"], "ONBOARD")
+
+
 if __name__ == "__main__":
     unittest.main()
