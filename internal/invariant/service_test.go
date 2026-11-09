@@ -272,7 +272,42 @@ func TestEvaluate_SevereExposure_TriggersContainmentLadder(t *testing.T) {
 	riskID := domain.ID("ent_risk_subprime")
 	createEntityDirect(t, s, riskID, company.KindRisk, "Counterparty Default Risk", map[string]any{}, 2500000)
 
-	_, err := s.service.RegisterInvariant(ctx, invariant.BusinessInvariant{
+	// Seed task and attempt linked via company_state_transitions
+	taskID := domain.ID("task_risk_eval")
+	attemptID := domain.ID("attempt_risk_eval")
+	_, err := s.store.DB().ExecContext(ctx, `
+		INSERT INTO tasks (
+			task_id, purpose_kind, purpose_id, state, acceptance_criteria_json,
+			required_capabilities_json, required_enforcement, authority_ceiling_json,
+			resource_envelope_id, priority, created_at, updated_at
+		) VALUES (?, 'OBLIGATION', 'ob_1', 'EXECUTING', '[]', '[]', 'ENFORCED', '[]', 'envelope_default', 100, '2026-11-09T00:00:00Z', '2026-11-09T00:00:00Z')`,
+		taskID,
+	)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	_, err = s.store.DB().ExecContext(ctx, `
+		INSERT INTO attempts (
+			attempt_id, task_id, state, fence_generation, lease_state, lease_expires_at, started_at, executor_kind
+		) VALUES (?, ?, 'RUNNING', 1, 'ACTIVE', '2026-11-10T12:00:00Z', '2026-11-10T10:00:00Z', 'codex')`,
+		attemptID, taskID,
+	)
+	if err != nil {
+		t.Fatalf("insert attempt: %v", err)
+	}
+
+	_, err = s.store.DB().ExecContext(ctx, `
+		INSERT INTO company_state_transitions (
+			transition_id, entity_id, task_id, evidence_id, transition_kind, new_state_json, recorded_at
+		) VALUES ('trans_1', ?, ?, 'ev_1', 'RISK_ASSESSMENT', '{}', '2026-11-10T10:00:00Z')`,
+		riskID, taskID,
+	)
+	if err != nil {
+		t.Fatalf("insert transition: %v", err)
+	}
+
+	_, err = s.service.RegisterInvariant(ctx, invariant.BusinessInvariant{
 		Name:        "Maximum Counterparty Risk Exposure",
 		Description: "Total risk exposure must not exceed threshold; severe triggers RESTRICT",
 		TargetKind:  string(company.KindRisk),
@@ -311,6 +346,9 @@ func TestEvaluate_SevereExposure_TriggersContainmentLadder(t *testing.T) {
 		t.Fatalf("expected 1 containment call, got %d", len(s.containmentSvc.calls))
 	}
 	call := s.containmentSvc.calls[0]
+	if call.AttemptID != attemptID || call.TaskID != taskID {
+		t.Fatalf("expected attempt %s and task %s, got attempt %s and task %s", attemptID, taskID, call.AttemptID, call.TaskID)
+	}
 	if call.Step != containment.StepRestrict {
 		t.Fatalf("expected RESTRICT step, got %s", call.Step)
 	}
@@ -447,5 +485,29 @@ func TestEvaluate_Idempotency_NoDuplicateRemediationTasksOrPackets(t *testing.T)
 	}
 	if packetCount != 1 {
 		t.Fatalf("expected exactly 1 packet in owner_decision_packets, got %d", packetCount)
+	}
+
+	// Now fail the task, advance time, and evaluate again.
+	// The engine must vacate the old task's idempotency key and create a new replacement task
+	// without violating the tasks_idempotency_key UNIQUE index!
+	_, err = s.store.DB().ExecContext(ctx, `UPDATE tasks SET state = 'FAILED' WHERE task_id = ?`, task1)
+	if err != nil {
+		t.Fatalf("fail task: %v", err)
+	}
+
+	s.clock.Set(now.Add(20 * time.Minute))
+	evals3, err := s.service.EvaluateAll(ctx)
+	if err != nil {
+		t.Fatalf("eval 3 after task failure: %v", err)
+	}
+	task3 := evals3[0].TriggeredTaskID
+	if task3 == "" || task3 == task1 {
+		t.Fatalf("expected a new replacement task, got %s (old was %s)", task3, task1)
+	}
+
+	var activeCount int
+	_ = s.store.DB().QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE purpose_kind = 'RECOVERY' AND state = 'ELIGIBLE'`).Scan(&activeCount)
+	if activeCount != 1 {
+		t.Fatalf("expected exactly 1 active ELIGIBLE replacement task, got %d", activeCount)
 	}
 }

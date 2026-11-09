@@ -62,6 +62,16 @@ func (s *Service) RegisterInvariant(ctx context.Context, inv BusinessInvariant) 
 	if !inv.RuleType.Valid() {
 		return BusinessInvariant{}, ErrInvalidRuleType
 	}
+	if inv.RuleType == RuleThreshold {
+		switch inv.RuleConfig.Operator {
+		case "<", "<=", ">", ">=", "==", "!=":
+			// valid
+		case "":
+			inv.RuleConfig.Operator = "<="
+		default:
+			return BusinessInvariant{}, ErrInvalidOperator
+		}
+	}
 	if strings.TrimSpace(inv.TargetKind) == "" {
 		inv.TargetKind = "COMPANY"
 	}
@@ -349,14 +359,31 @@ func (s *Service) recordAndAct(
 			signalName = fmt.Sprintf("INVARIANT_BREACH_%s", inv.InvariantID)
 		}
 
-		err := s.containment.ApplySignal(ctx, "", rec.TriggeredTaskID, signalName, "INVARIANT_ENGINE", step, map[string]any{
-			"invariant_id": inv.InvariantID,
-			"entity_id":    entityID,
-			"reason":       res.Reason,
-			"observed":     res.ObservedValue,
-			"is_severe":    res.IsSevere,
-		})
-		if err == nil {
+		attemptID, taskID, err := s.resolveAttemptForEntity(ctx, entityID)
+		if err == nil && attemptID != "" && taskID != "" {
+			err = s.containment.ApplySignal(ctx, attemptID, taskID, signalName, "INVARIANT_ENGINE", step, map[string]any{
+				"invariant_id": inv.InvariantID,
+				"entity_id":    entityID,
+				"reason":       res.Reason,
+				"observed":     res.ObservedValue,
+				"is_severe":    res.IsSevere,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("containment apply signal: %w", err)
+			}
+			rec.ContainmentSignal = string(step)
+		} else {
+			// If no direct attempt exists on this entity yet, fallback to triggered task if available
+			if rec.TriggeredTaskID != "" && attemptID != "" {
+				err = s.containment.ApplySignal(ctx, attemptID, rec.TriggeredTaskID, signalName, "INVARIANT_ENGINE", step, map[string]any{
+					"invariant_id": inv.InvariantID,
+					"entity_id":    entityID,
+					"reason":       res.Reason,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("containment apply signal fallback: %w", err)
+				}
+			}
 			rec.ContainmentSignal = string(step)
 		}
 	}
@@ -376,6 +403,40 @@ func (s *Service) recordAndAct(
 	}
 
 	return rec, nil
+}
+
+func (s *Service) resolveAttemptForEntity(ctx context.Context, entityID domain.ID) (domain.ID, domain.ID, error) {
+	if entityID == "" {
+		return "", "", nil
+	}
+
+	var taskID domain.ID
+	err := s.store.DB().QueryRowContext(ctx, `
+		SELECT task_id FROM company_state_transitions
+		WHERE entity_id = ? ORDER BY recorded_at DESC LIMIT 1`,
+		entityID,
+	).Scan(&taskID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", nil
+		}
+		return "", "", err
+	}
+
+	var attemptID domain.ID
+	err = s.store.DB().QueryRowContext(ctx, `
+		SELECT attempt_id FROM attempts
+		WHERE task_id = ? ORDER BY started_at DESC LIMIT 1`,
+		taskID,
+	).Scan(&attemptID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", taskID, nil
+		}
+		return "", "", err
+	}
+
+	return attemptID, taskID, nil
 }
 
 func (s *Service) ensureRemediationTask(
@@ -398,6 +459,15 @@ func (s *Service) ensureRemediationTask(
 		// If task exists and is not in terminal failed/expired state, return it idempotently
 		if existingState != string(domain.TaskFailed) && existingState != string(domain.TaskCancelled) && existingState != string(domain.TaskExpired) {
 			return domain.ID(existingTaskID), nil
+		}
+
+		// Existing task is terminal (FAILED, CANCELLED, EXPIRED):
+		// Clear its idempotency key so the replacement task can occupy the unique slot
+		_, err = s.store.DB().ExecContext(ctx, `
+			UPDATE tasks SET idempotency_key = NULL WHERE task_id = ?`, existingTaskID,
+		)
+		if err != nil {
+			return "", fmt.Errorf("clear terminal task idempotency key: %w", err)
 		}
 	}
 
@@ -457,17 +527,19 @@ func (s *Service) ensureEscalationPacket(
 	evidenceID domain.ID,
 ) (domain.ID, error) {
 	// Check if pending decision packet for this invariant already exists
-	dedupTag := fmt.Sprintf("INVARIANT:%s:%s", inv.InvariantID, entityID)
 	var existingPacketID string
 	err := s.store.DB().QueryRowContext(ctx, `
 		SELECT packet_id FROM owner_decision_packets
-		WHERE summary LIKE ? AND status = 'PENDING' LIMIT 1`,
-		"%"+dedupTag+"%",
+		WHERE proposed_action_json LIKE ? AND proposed_action_json LIKE ? AND status = 'PENDING' LIMIT 1`,
+		fmt.Sprintf("%%\"invariant_id\":\"%s\"%%", inv.InvariantID),
+		fmt.Sprintf("%%\"entity_id\":\"%s\"%%", entityID),
 	).Scan(&existingPacketID)
 
 	if err == nil && existingPacketID != "" {
 		return domain.ID(existingPacketID), nil
 	}
+
+	dedupTag := fmt.Sprintf("INVARIANT:%s:%s", inv.InvariantID, entityID)
 
 	category := inv.ActionConfig.AttentionCategory
 	if category == "" {

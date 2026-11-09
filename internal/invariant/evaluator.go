@@ -70,8 +70,11 @@ func evaluateExpiration(inv *BusinessInvariant, attrs map[string]any, now time.T
 	var expiryStr string
 	for _, key := range []string{"expires_at", "valid_until", "deadline", "expiration_date"} {
 		if v, ok := attrs[key]; ok && v != nil {
-			expiryStr = fmt.Sprintf("%v", v)
-			break
+			s := strings.TrimSpace(fmt.Sprintf("%v", v))
+			if s != "" {
+				expiryStr = s
+				break
+			}
 		}
 	}
 	if expiryStr == "" {
@@ -83,7 +86,12 @@ func evaluateExpiration(inv *BusinessInvariant, attrs map[string]any, now time.T
 		// Attempt alternate ISO parse
 		t2, err2 := time.Parse("2006-01-02", expiryStr)
 		if err2 != nil {
-			return EvaluationResult{Status: StatusNominal, ObservedValue: map[string]any{"error": "unparseable expiry date"}}, nil
+			return EvaluationResult{
+				Status:        StatusBreached,
+				ObservedValue: map[string]any{"error": "unparseable expiry date", "raw_value": expiryStr},
+				IsSevere:      true,
+				Reason:        fmt.Sprintf("unparseable expiration date: %s", expiryStr),
+			}, nil
 		}
 		expiryTime = t2
 	}
