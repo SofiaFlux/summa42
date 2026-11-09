@@ -270,6 +270,13 @@ func authorityEligible(task domain.Task) bool {
 }
 
 func candidateBefore(a, b TaskCandidate) bool {
+	// Compliance Obligations strictly precede discretionary goals (Anti-starvation / non-preemption guarantee)
+	aIsObligation := a.Task.Purpose.Kind == domain.PurposeObligation
+	bIsObligation := b.Task.Purpose.Kind == domain.PurposeObligation
+	if aIsObligation != bIsObligation {
+		return aIsObligation
+	}
+
 	aHasDeadline := !a.Task.Deadline.IsZero()
 	bHasDeadline := !b.Task.Deadline.IsZero()
 	if aHasDeadline != bHasDeadline {
