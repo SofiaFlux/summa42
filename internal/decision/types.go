@@ -6,6 +6,9 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 )
 
+// OutcomeAbstain is the canonical outcome value indicating an honest abstention.
+const OutcomeAbstain = "ABSTAIN"
+
 // DecisionType represents the semantic category of bounded micro-decision.
 type DecisionType string
 
