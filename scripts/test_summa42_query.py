@@ -401,5 +401,56 @@ class CompanyTests(unittest.TestCase):
             self.assertEqual(data["recent_transitions"][0]["transition_kind"], "ONBOARD")
 
 
+class ObligationsTests(unittest.TestCase):
+    MIGRATION_PURPOSE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                     "internal", "state", "sqlite", "migrations", "00002_purpose.sql")
+    MIGRATION_RESOURCES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                       "internal", "state", "sqlite", "migrations", "00005_resources.sql")
+    MIGRATION_OBLIGATIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                         "internal", "state", "sqlite", "migrations", "00032_obligations.sql")
+
+    def test_obligations_no_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_home(tmp)
+            res = _run(tmp, "obligations")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(json.loads(res.stdout), {"error": "NO_OBLIGATIONS_TABLE"})
+
+    def test_obligations_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "state"), exist_ok=True)
+            conn = sqlite3.connect(os.path.join(tmp, "state", "summa42.db"))
+            with open(self.MIGRATION_PURPOSE) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+            with open(self.MIGRATION_RESOURCES) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+            with open(self.MIGRATION_OBLIGATIONS) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+
+            conn.execute("""
+                INSERT INTO obligations (
+                    obligation_id, source, statement, active, due_at,
+                    grace_period_seconds, consequences_json, cost_of_delay_rate,
+                    lead_time_seconds, lifecycle_state, created_at, updated_at
+                ) VALUES (
+                    'ob_sla', 'CONTRACT', 'Maintain 99.9% uptime', 1, '2026-11-15T00:00:00Z',
+                    3600, '{"penalty":5000}', 150, 86400, 'SCHEDULED',
+                    '2026-11-09T08:00:00Z', '2026-11-09T08:00:00Z'
+                )
+            """)
+            conn.commit()
+            conn.close()
+
+            res = _run(tmp, "obligations")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            data = json.loads(res.stdout)
+            self.assertEqual(len(data), 1)
+            self.assertEqual(data[0]["obligation_id"], "ob_sla")
+            self.assertEqual(data[0]["source"], "CONTRACT")
+            self.assertEqual(data[0]["lifecycle_state"], "SCHEDULED")
+            self.assertEqual(data[0]["cost_of_delay_rate"], 150)
+            self.assertEqual(data[0]["consequences"], {"penalty": 5000})
+
+
 if __name__ == "__main__":
     unittest.main()

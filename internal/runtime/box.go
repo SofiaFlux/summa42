@@ -24,6 +24,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/experience"
 	"github.com/SofiaFlux/summa42/internal/fieldfeedback"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
+	"github.com/SofiaFlux/summa42/internal/obligation"
 	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/SofiaFlux/summa42/internal/policy"
 	"github.com/SofiaFlux/summa42/internal/purpose"
@@ -85,6 +86,8 @@ type Box struct {
 	Containment   *containment.Service
 	Detector      *detection.Detector
 	Attention     *attention.Service
+	Obligations   *obligation.Service
+	Planner       *obligation.PlannerAdapter
 	Policy        policy.PolicyEngine
 	Executors     map[string]executors.Executor
 	TEBProfile    teb.Profile
@@ -221,6 +224,8 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	capabilityRegistry.SetDetector(detector)
 	operationsSvc.SetDetector(detector)
 	attentionSvc := attention.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
+	obligationSvc := obligation.NewService(store, cfg.Clock)
+	plannerAdapter := obligation.NewPlannerAdapter(obligationSvc, schedulerSvc)
 
 	cubeID := cfg.CubeID
 	cubePrincipalID := cfg.CubePrincipalID
@@ -299,6 +304,8 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		Containment:   containmentSvc,
 		Detector:      detector,
 		Attention:     attentionSvc,
+		Obligations:   obligationSvc,
+		Planner:       plannerAdapter,
 		Policy:        cfg.PolicyEngine,
 		Executors:     executorSet,
 		TEBProfile:    cfg.TEBProfile,

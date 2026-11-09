@@ -435,11 +435,59 @@ def cmd_company():
         print(json.dumps({"error": "NO_COMPANY_TABLES"}))
 
 
+def cmd_obligations():
+    cur = get_db().cursor()
+    try:
+        cur.execute("""
+            SELECT obligation_id, source, statement, active, due_at,
+                   grace_period_seconds, consequences_json, cost_of_delay_rate,
+                   lead_time_seconds, lifecycle_state, synthesized_task_id,
+                   entity_id, created_at, updated_at, resolved_at
+            FROM obligations
+            ORDER BY CASE lifecycle_state
+                WHEN 'PENDING' THEN 1
+                WHEN 'SCHEDULED' THEN 2
+                WHEN 'ACTIVE' THEN 3
+                WHEN 'BREACHED' THEN 4
+                WHEN 'FULFILLED' THEN 5
+                ELSE 6
+            END, due_at ASC
+        """)
+        obligations = []
+        for r in cur.fetchall():
+            consequences = {}
+            if r[6]:
+                try:
+                    consequences = json.loads(r[6])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            obligations.append({
+                "obligation_id": r[0],
+                "source": r[1],
+                "statement": r[2],
+                "active": bool(r[3]),
+                "due_at": r[4],
+                "grace_period_seconds": r[5],
+                "consequences": consequences,
+                "cost_of_delay_rate": r[7],
+                "lead_time_seconds": r[8],
+                "lifecycle_state": r[9],
+                "synthesized_task_id": r[10],
+                "entity_id": r[11],
+                "created_at": r[12],
+                "updated_at": r[13],
+                "resolved_at": r[14],
+            })
+        print(json.dumps(obligations))
+    except sqlite3.OperationalError:
+        print(json.dumps({"error": "NO_OBLIGATIONS_TABLE"}))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Read-only Summa42 queries")
-    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes", "emergency", "containment", "attention", "company"])
+    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes", "emergency", "containment", "attention", "company", "obligations"])
     args = parser.parse_args(argv)
-    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes, "emergency": cmd_emergency, "containment": cmd_containment, "attention": cmd_attention, "company": cmd_company}[args.command]()
+    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes, "emergency": cmd_emergency, "containment": cmd_containment, "attention": cmd_attention, "company": cmd_company, "obligations": cmd_obligations}[args.command]()
 
 
 if __name__ == "__main__":
