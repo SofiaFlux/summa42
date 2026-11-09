@@ -17,6 +17,8 @@ type DecisionEngine struct {
 	mu        sync.RWMutex
 	preChecks []Rule
 	providers map[DecisionType][]DecisionProvider
+	store     ProvenanceStore
+	emitter   TelemetryEmitter
 }
 
 // NewEngine creates a new DecisionEngine.
@@ -25,6 +27,20 @@ func NewEngine() *DecisionEngine {
 		preChecks: make([]Rule, 0),
 		providers: make(map[DecisionType][]DecisionProvider),
 	}
+}
+
+// SetProvenanceStore configures a provenance store for tracking decision lineage.
+func (e *DecisionEngine) SetProvenanceStore(store ProvenanceStore) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.store = store
+}
+
+// SetTelemetryEmitter configures an emitter for publishing decision telemetry.
+func (e *DecisionEngine) SetTelemetryEmitter(emitter TelemetryEmitter) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.emitter = emitter
 }
 
 // RegisterPreCheck adds a deterministic pre-check rule executed at L0 before provider dispatch.
@@ -117,6 +133,7 @@ func (e *DecisionEngine) Decide(ctx context.Context, req DecisionRequest) (Decis
 			}
 
 			if err := ValidateEnvelope(req, res); err == nil {
+				e.recordAndEmit(ctx, req, res)
 				return res, nil
 			}
 		}
@@ -177,6 +194,7 @@ func (e *DecisionEngine) Decide(ctx context.Context, req DecisionRequest) (Decis
 			continue
 		}
 
+		e.recordAndEmit(ctx, req, res)
 		return res, nil
 	}
 
@@ -201,7 +219,40 @@ func (e *DecisionEngine) Decide(ctx context.Context, req DecisionRequest) (Decis
 		return failSafe, fmt.Errorf("fail-safe validation error: %w", err)
 	}
 
+	e.recordAndEmit(ctx, req, failSafe)
 	return failSafe, nil
+}
+
+func (e *DecisionEngine) recordAndEmit(ctx context.Context, req DecisionRequest, res DecisionResult) {
+	e.mu.RLock()
+	store := e.store
+	emitter := e.emitter
+	e.mu.RUnlock()
+
+	if store != nil {
+		_ = store.RecordDecision(ctx, req, res)
+	}
+	if emitter != nil {
+		decidedAt := res.DecidedAt
+		if decidedAt.IsZero() {
+			decidedAt = time.Now().UTC()
+		}
+		emitter.EmitDecision(ctx, ProvenanceRecord{
+			DecisionID:      req.DecisionID,
+			DecisionType:    req.DecisionType,
+			SubjectRef:      req.SubjectRef,
+			Provider:        res.Provider,
+			SelectedOutcome: res.SelectedOutcome,
+			Confidence:      res.Confidence,
+			ConfidenceKind:  res.ConfidenceKind,
+			Abstained:       res.Abstained,
+			AbstainReason:   res.AbstainReason,
+			ProjectionHash:  res.ProjectionHash,
+			Latency:         res.Latency,
+			Usage:           res.Usage,
+			DecidedAt:       decidedAt,
+		})
+	}
 }
 
 // safeResolve invokes provider.Resolve with panic recovery for robust isolation.
