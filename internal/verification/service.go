@@ -233,6 +233,9 @@ func (s *Service) AcceptTaskWithGuard(ctx context.Context, taskID domain.ID, req
 		if err := requireEvidence(ctx, tx, evidenceIDs); err != nil {
 			return err
 		}
+		if err := validateEvidenceLineage(ctx, tx, evidenceIDs, request.VerifierID); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO acceptance_records(acceptance_id, task_id, attempt_id, verifier_id, verifier_type, criteria_result_json, evidence_ids_json, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -332,6 +335,51 @@ func requireEvidence(ctx context.Context, tx *sql.Tx, ids []domain.ID) error {
 				return fmt.Errorf("evidence %q not found", id)
 			}
 			return err
+		}
+	}
+	return nil
+}
+
+func validateEvidenceLineage(ctx context.Context, tx *sql.Tx, ids []domain.ID, verifierID domain.ID) error {
+	for _, id := range ids {
+		var producerID, trustTier, corroborationLevel, witnessesJSON, lineageHash, objHash string
+		err := tx.QueryRowContext(ctx, `
+			SELECT l.producer_principal_id, l.trust_tier, l.corroboration_level, l.witnesses_json, l.content_hash, o.content_hash
+			FROM foreign_evidence_lineage l
+			JOIN evidence_objects o ON o.evidence_id = l.evidence_id
+			WHERE l.evidence_id = ?`,
+			id,
+		).Scan(&producerID, &trustTier, &corroborationLevel, &witnessesJSON, &lineageHash, &objHash)
+		if errors.Is(err, sql.ErrNoRows) {
+			// Internal evidence not tracked in foreign lineage is valid
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if lineageHash != objHash {
+			return fmt.Errorf("lineage content hash mismatch for evidence %s", id)
+		}
+		if strings.EqualFold(strings.TrimSpace(producerID), strings.TrimSpace(string(verifierID))) {
+			return fmt.Errorf("%w: foreign evidence %s producer cannot be the verifier", ErrVerifierIsExecutor, id)
+		}
+
+		var witnesses []domain.ID
+		_ = json.Unmarshal([]byte(witnessesJSON), &witnesses)
+		for _, w := range witnesses {
+			if strings.EqualFold(strings.TrimSpace(string(w)), strings.TrimSpace(string(verifierID))) {
+				return fmt.Errorf("%w: foreign evidence %s witness cannot be the verifier", ErrVerifierIsExecutor, id)
+			}
+		}
+
+		// Untrusted or Provisional foreign artifacts cannot be accepted without independent witness corroboration
+		if (trustTier == "UNTRUSTED" || trustTier == "PROVISIONAL") &&
+			(corroborationLevel == "NONE" || corroborationLevel == "SELF_ATTESTED") {
+			return fmt.Errorf("uncorroborated foreign evidence %s cannot satisfy acceptance criteria", id)
+		}
+
+		if (corroborationLevel == "INDEPENDENT_WITNESS" || corroborationLevel == "MULTI_PARTY_ATTESTED") && len(witnesses) == 0 {
+			return fmt.Errorf("foreign evidence %s declares %s but provides no witnesses", id, corroborationLevel)
 		}
 	}
 	return nil
