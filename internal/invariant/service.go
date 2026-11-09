@@ -360,7 +360,11 @@ func (s *Service) recordAndAct(
 		}
 
 		attemptID, taskID, err := s.resolveAttemptForEntity(ctx, entityID)
-		if err == nil && attemptID != "" && taskID != "" {
+		if err != nil {
+			return nil, fmt.Errorf("resolve attempt for containment: %w", err)
+		}
+
+		if attemptID != "" && taskID != "" {
 			err = s.containment.ApplySignal(ctx, attemptID, taskID, signalName, "INVARIANT_ENGINE", step, map[string]any{
 				"invariant_id": inv.InvariantID,
 				"entity_id":    entityID,
@@ -370,19 +374,6 @@ func (s *Service) recordAndAct(
 			})
 			if err != nil {
 				return nil, fmt.Errorf("containment apply signal: %w", err)
-			}
-			rec.ContainmentSignal = string(step)
-		} else {
-			// If no direct attempt exists on this entity yet, fallback to triggered task if available
-			if rec.TriggeredTaskID != "" && attemptID != "" {
-				err = s.containment.ApplySignal(ctx, attemptID, rec.TriggeredTaskID, signalName, "INVARIANT_ENGINE", step, map[string]any{
-					"invariant_id": inv.InvariantID,
-					"entity_id":    entityID,
-					"reason":       res.Reason,
-				})
-				if err != nil {
-					return nil, fmt.Errorf("containment apply signal fallback: %w", err)
-				}
 			}
 			rec.ContainmentSignal = string(step)
 		}

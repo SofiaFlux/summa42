@@ -511,3 +511,43 @@ func TestEvaluate_Idempotency_NoDuplicateRemediationTasksOrPackets(t *testing.T)
 		t.Fatalf("expected exactly 1 active ELIGIBLE replacement task, got %d", activeCount)
 	}
 }
+
+// 6. When no attempt exists on an entity, containment signal is not falsely claimed
+func TestEvaluate_NoAttempt_NoPhantomContainmentSignal(t *testing.T) {
+	now := time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)
+	s := setupSuite(t, now)
+	ctx := context.Background()
+
+	riskID := domain.ID("ent_risk_orphan")
+	createEntityDirect(t, s, riskID, company.KindRisk, "Orphan Risk Without Attempt", map[string]any{}, 2500000)
+
+	_, err := s.service.RegisterInvariant(ctx, invariant.BusinessInvariant{
+		Name:        "Orphan Risk Exposure",
+		Description: "Risk without attempt",
+		TargetKind:  string(company.KindRisk),
+		RuleType:    invariant.RuleExposureLimit,
+		RuleConfig: invariant.RuleConfig{
+			Threshold:               500000,
+			SevereExposureThreshold: 1000000,
+		},
+		Severity:   invariant.SeverityCritical,
+		ActionType: invariant.ActionContainmentAlert,
+	})
+	if err != nil {
+		t.Fatalf("register invariant: %v", err)
+	}
+
+	evals, err := s.service.EvaluateAll(ctx)
+	if err != nil {
+		t.Fatalf("evaluate all: %v", err)
+	}
+	if len(evals) != 1 {
+		t.Fatalf("expected 1 eval, got %d", len(evals))
+	}
+	if evals[0].ContainmentSignal != "" {
+		t.Fatalf("expected empty containment signal when no attempt exists, got %q", evals[0].ContainmentSignal)
+	}
+	if len(s.containmentSvc.calls) != 0 {
+		t.Fatalf("expected 0 containment calls when no attempt exists, got %d", len(s.containmentSvc.calls))
+	}
+}
