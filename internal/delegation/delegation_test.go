@@ -312,3 +312,161 @@ func TestDelegationChain_RejectsInternalSummandImpersonation(t *testing.T) {
 		}
 	}
 }
+
+// 6. Review fixes coverage: RateLimit, ValidUntil monotonicity, delimiter matching, max depth, issuer isolation
+func TestDelegationChain_ReviewCases(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+
+	rootKey := genKey(t)
+	middleKey := genKey(t)
+	rootID := domain.ID("foreign_collective_root")
+	middleID := domain.ID("foreign_agent_partner")
+
+	resolver := delegation.MapPublicKeyResolver{
+		rootID:   rootKey.pub,
+		middleID: middleKey.pub,
+	}
+	v := delegation.NewValidator(resolver)
+
+	// A: Identity isolation boundary checks
+	t.Run("IdentityIsolation_Boundaries", func(t *testing.T) {
+		forbidden := []domain.ID{
+			"summand.alpha",
+			"cube.beta",
+			"owner.service",
+			"system.daemon",
+			"constitutional_root_principal",
+			"root_worker",
+			"root.task",
+			"summand_root",
+			"cube_root",
+			"principal_root_master",
+		}
+		for _, id := range forbidden {
+			if !v.IsInternalIdentity(id) {
+				t.Errorf("expected %s to be recognized as internal identity", id)
+			}
+		}
+
+		allowed := []domain.ID{
+			"foreign_collective_root",
+			"rooted_foreign_agent",
+			"rootless_org",
+			"summary_generator",
+			"ownership_dao",
+			"foreign_partner",
+		}
+		for _, id := range allowed {
+			if v.IsInternalIdentity(id) {
+				t.Errorf("expected %s to NOT be recognized as internal identity", id)
+			}
+		}
+	})
+
+	// B: Internal identity as issuer rejected
+	t.Run("InternalIssuer_Rejected", func(t *testing.T) {
+		badIssuerRecord := &delegation.DelegationRecord{
+			DelegationID:       domain.ID("del_bad_issuer"),
+			IssuerPrincipalID:  domain.ID("summand.kernel"),
+			SubjectPrincipalID: middleID,
+			Scope: delegation.CapabilityCeiling{
+				AllowedCapabilities: []string{"http.get"},
+			},
+			ValidFrom:  now.Add(-1 * time.Hour),
+			ValidUntil: now.Add(24 * time.Hour),
+		}
+		_ = badIssuerRecord.Sign(rootKey.priv)
+		_, err := v.ValidateChain(ctx, []*delegation.DelegationRecord{badIssuerRecord}, "http.get", 0, now)
+		if err == nil {
+			t.Fatalf("expected error when issuer is internal identity")
+		}
+	})
+
+	// C: ValidUntil monotonicity violation
+	t.Run("ValidUntil_Monotonicity", func(t *testing.T) {
+		rootRecord := &delegation.DelegationRecord{
+			DelegationID:       domain.ID("del_root"),
+			IssuerPrincipalID:  rootID,
+			SubjectPrincipalID: middleID,
+			Scope: delegation.CapabilityCeiling{
+				AllowedCapabilities: []string{"http.get"},
+			},
+			ValidFrom:  now.Add(-1 * time.Hour),
+			ValidUntil: now.Add(5 * time.Hour),
+			CreatedAt:  now.Add(-1 * time.Hour),
+		}
+		_ = rootRecord.Sign(rootKey.priv)
+
+		childRecord := &delegation.DelegationRecord{
+			DelegationID:       domain.ID("del_child"),
+			ParentDelegationID: rootRecord.DelegationID,
+			IssuerPrincipalID:  middleID,
+			SubjectPrincipalID: domain.ID("foreign_leaf"),
+			Scope: delegation.CapabilityCeiling{
+				AllowedCapabilities: []string{"http.get"},
+			},
+			ValidFrom:  now.Add(-1 * time.Hour),
+			ValidUntil: now.Add(6 * time.Hour), // Parent expires at +5h, child cannot outlive parent!
+			CreatedAt:  now.Add(-1 * time.Hour),
+		}
+		_ = childRecord.Sign(middleKey.priv)
+
+		_, err := v.ValidateChain(ctx, []*delegation.DelegationRecord{rootRecord, childRecord}, "http.get", 0, now)
+		if err == nil {
+			t.Fatalf("expected error when child ValidUntil > parent ValidUntil, got nil")
+		}
+	})
+
+	// D: RateLimit attenuation violation
+	t.Run("RateLimit_Attenuation", func(t *testing.T) {
+		rootRecord := &delegation.DelegationRecord{
+			DelegationID:       domain.ID("del_root_rate"),
+			IssuerPrincipalID:  rootID,
+			SubjectPrincipalID: middleID,
+			Scope: delegation.CapabilityCeiling{
+				AllowedCapabilities: []string{"http.get"},
+				RateLimitPerMinute:  60,
+			},
+			ValidFrom:  now.Add(-1 * time.Hour),
+			ValidUntil: now.Add(5 * time.Hour),
+			CreatedAt:  now.Add(-1 * time.Hour),
+		}
+		_ = rootRecord.Sign(rootKey.priv)
+
+		childRecord := &delegation.DelegationRecord{
+			DelegationID:       domain.ID("del_child_rate"),
+			ParentDelegationID: rootRecord.DelegationID,
+			IssuerPrincipalID:  middleID,
+			SubjectPrincipalID: domain.ID("foreign_leaf"),
+			Scope: delegation.CapabilityCeiling{
+				AllowedCapabilities: []string{"http.get"},
+				RateLimitPerMinute:  120, // Exceeds parent's 60 rpm!
+			},
+			ValidFrom:  now.Add(-1 * time.Hour),
+			ValidUntil: now.Add(4 * time.Hour),
+			CreatedAt:  now.Add(-1 * time.Hour),
+		}
+		_ = childRecord.Sign(middleKey.priv)
+
+		_, err := v.ValidateChain(ctx, []*delegation.DelegationRecord{rootRecord, childRecord}, "http.get", 0, now)
+		if err == nil {
+			t.Fatalf("expected error when child RateLimit > parent RateLimit, got nil")
+		}
+	})
+
+	// E: MaxChainDepth limit
+	t.Run("MaxChainDepth_Exceeded", func(t *testing.T) {
+		var longChain []*delegation.DelegationRecord
+		for i := 0; i <= delegation.MaxChainDepth; i++ {
+			rec := &delegation.DelegationRecord{
+				DelegationID: domain.ID("del"),
+			}
+			longChain = append(longChain, rec)
+		}
+		_, err := v.ValidateChain(ctx, longChain, "http.get", 0, now)
+		if err == nil {
+			t.Fatalf("expected error when chain exceeds MaxChainDepth")
+		}
+	})
+}

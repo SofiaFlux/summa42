@@ -27,24 +27,15 @@ func (m MapPublicKeyResolver) ResolvePublicKey(_ context.Context, principalID do
 }
 
 // Validator validates foreign principals and inter-collective delegation chains.
+const MaxChainDepth = 10
+
 type Validator struct {
-	resolver             PublicKeyResolver
-	internalPrefixes     []string
-	allowInternalSummand bool // strictly false in production
+	resolver PublicKeyResolver
 }
 
 func NewValidator(resolver PublicKeyResolver) *Validator {
 	return &Validator{
 		resolver: resolver,
-		internalPrefixes: []string{
-			"summand_",
-			"cube_",
-			"principal_owner",
-			"owner_",
-			"system_",
-			"root",
-		},
-		allowInternalSummand: false,
 	}
 }
 
@@ -54,11 +45,43 @@ func (v *Validator) IsInternalIdentity(id domain.ID) bool {
 	if str == "" {
 		return false
 	}
-	for _, prefix := range v.internalPrefixes {
-		if strings.HasPrefix(str, prefix) || str == prefix {
+
+	// Exact matches
+	exactMatches := map[string]bool{
+		"root":                          true,
+		"owner":                         true,
+		"system":                        true,
+		"principal_owner":               true,
+		"principal_root":                true,
+		"principal_cube":                true,
+		"constitutional_root_principal": true,
+		"owner_admin":                   true,
+		"summand":                       true,
+		"cube":                          true,
+		"summand_root":                  true,
+		"cube_root":                     true,
+	}
+	if exactMatches[str] {
+		return true
+	}
+
+	// Delimiter-separated prefixes
+	prefixes := []string{
+		"summand_", "summand.",
+		"cube_", "cube.",
+		"owner_", "owner.",
+		"system_", "system.",
+		"root_", "root.",
+		"principal_owner_", "principal_owner.",
+		"principal_root_", "principal_root.",
+		"principal_cube_", "principal_cube.",
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(str, p) {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -98,17 +121,26 @@ func (v *Validator) ValidateChain(
 	if len(chain) == 0 {
 		return nil, ErrInvalidDelegation
 	}
+	if len(chain) > MaxChainDepth {
+		return nil, fmt.Errorf("%w: chain depth %d exceeds limit %d", ErrBrokenDelegationChain, len(chain), MaxChainDepth)
+	}
 
 	var prevRecord *DelegationRecord
 
 	for i, record := range chain {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if record == nil {
 			return nil, ErrInvalidDelegation
 		}
 
-		// 1. Identity isolation: no internal identity assignment
+		// 1. Identity isolation: no internal identity assignment for subject OR issuer
 		if v.IsInternalIdentity(record.SubjectPrincipalID) {
-			return nil, fmt.Errorf("%w: subject %s is internal summand", ErrInternalIdentityAssigned, record.SubjectPrincipalID)
+			return nil, fmt.Errorf("%w: subject %s is internal identity", ErrInternalIdentityAssigned, record.SubjectPrincipalID)
+		}
+		if v.IsInternalIdentity(record.IssuerPrincipalID) {
+			return nil, fmt.Errorf("%w: issuer %s is internal identity", ErrInternalIdentityAssigned, record.IssuerPrincipalID)
 		}
 
 		// 2. Temporal validity
@@ -151,6 +183,12 @@ func (v *Validator) ValidateChain(
 			if record.IssuerPrincipalID != prevRecord.SubjectPrincipalID {
 				return nil, fmt.Errorf("%w: record %s issuer %s != prev subject %s",
 					ErrBrokenDelegationChain, record.DelegationID, record.IssuerPrincipalID, prevRecord.SubjectPrincipalID,
+				)
+			}
+			// Validity window monotonicity: child cannot outlive parent
+			if record.ValidUntil.After(prevRecord.ValidUntil) {
+				return nil, fmt.Errorf("%w: record %s valid_until exceeds parent %s",
+					ErrCeilingExceeded, record.DelegationID, prevRecord.DelegationID,
 				)
 			}
 			// Acceptance Criterion 2: Requested authority must not exceed issuer ceiling

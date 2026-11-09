@@ -79,6 +79,9 @@ func (parent CapabilityCeiling) Subsumes(child CapabilityCeiling) bool {
 	if child.MaxResourceCredits > parent.MaxResourceCredits {
 		return false
 	}
+	if parent.RateLimitPerMinute > 0 && child.RateLimitPerMinute > parent.RateLimitPerMinute {
+		return false
+	}
 	for _, childCap := range child.AllowedCapabilities {
 		if !parent.AllowsCapability(childCap) {
 			return false
@@ -111,6 +114,7 @@ func (d *DelegationRecord) CanonicalBytes() []byte {
 	sort.Strings(caps)
 
 	type canonicalPayload struct {
+		DomainTag          string   `json:"_domain"`
 		DelegationID       string   `json:"delegation_id"`
 		ParentDelegationID string   `json:"parent_delegation_id,omitempty"`
 		IssuerPrincipalID  string   `json:"issuer_principal_id"`
@@ -120,11 +124,14 @@ func (d *DelegationRecord) CanonicalBytes() []byte {
 		AllowedCaps        []string `json:"allowed_caps"`
 		MaxExposure        int64    `json:"max_exposure"`
 		MaxCredits         int64    `json:"max_credits"`
+		RateLimitPerMinute int      `json:"rate_limit_per_minute,omitempty"`
 		ValidFromRFC3339   string   `json:"valid_from"`
 		ValidUntilRFC3339  string   `json:"valid_until"`
+		CreatedAtRFC3339   string   `json:"created_at"`
 	}
 
 	payload := canonicalPayload{
+		DomainTag:          "summa42:delegation:v1",
 		DelegationID:       string(d.DelegationID),
 		ParentDelegationID: string(d.ParentDelegationID),
 		IssuerPrincipalID:  string(d.IssuerPrincipalID),
@@ -134,8 +141,10 @@ func (d *DelegationRecord) CanonicalBytes() []byte {
 		AllowedCaps:        caps,
 		MaxExposure:        d.Scope.MaxExposureAmount,
 		MaxCredits:         d.Scope.MaxResourceCredits,
-		ValidFromRFC3339:   d.ValidFrom.UTC().Format(time.RFC3339),
-		ValidUntilRFC3339:  d.ValidUntil.UTC().Format(time.RFC3339),
+		RateLimitPerMinute: d.Scope.RateLimitPerMinute,
+		ValidFromRFC3339:   d.ValidFrom.UTC().Format(time.RFC3339Nano),
+		ValidUntilRFC3339:  d.ValidUntil.UTC().Format(time.RFC3339Nano),
+		CreatedAtRFC3339:   d.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
 
 	raw, _ := json.Marshal(payload)
