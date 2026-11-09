@@ -483,11 +483,85 @@ def cmd_obligations():
         print(json.dumps({"error": "NO_OBLIGATIONS_TABLE"}))
 
 
+def cmd_invariants():
+    cur = get_db().cursor()
+    try:
+        cur.execute("""
+            SELECT invariant_id, name, description, target_kind, rule_type,
+                   rule_config_json, severity, action_type, action_config_json,
+                   enabled, created_at, updated_at
+            FROM business_invariants
+            ORDER BY created_at ASC
+        """)
+        invariants = []
+        for r in cur.fetchall():
+            rule_cfg = {}
+            action_cfg = {}
+            if r[5]:
+                try:
+                    rule_cfg = json.loads(r[5])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if r[8]:
+                try:
+                    action_cfg = json.loads(r[8])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            invariants.append({
+                "invariant_id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "target_kind": r[3],
+                "rule_type": r[4],
+                "rule_config": rule_cfg,
+                "severity": r[6],
+                "action_type": r[7],
+                "action_config": action_cfg,
+                "enabled": bool(r[9]),
+                "created_at": r[10],
+                "updated_at": r[11],
+            })
+
+        cur.execute("""
+            SELECT evaluation_id, invariant_id, entity_id, status, observed_value_json,
+                   evidence_id, triggered_task_id, triggered_packet_id, containment_signal, evaluated_at
+            FROM invariant_evaluations
+            ORDER BY evaluated_at DESC LIMIT 20
+        """)
+        evaluations = []
+        for r in cur.fetchall():
+            obs = {}
+            if r[4]:
+                try:
+                    obs = json.loads(r[4])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            evaluations.append({
+                "evaluation_id": r[0],
+                "invariant_id": r[1],
+                "entity_id": r[2],
+                "status": r[3],
+                "observed_value": obs,
+                "evidence_id": r[5],
+                "triggered_task_id": r[6],
+                "triggered_packet_id": r[7],
+                "containment_signal": r[8],
+                "evaluated_at": r[9],
+            })
+
+        print(json.dumps({
+            "invariants": invariants,
+            "recent_evaluations": evaluations,
+        }))
+    except sqlite3.OperationalError:
+        print(json.dumps({"error": "NO_INVARIANTS_TABLE"}))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Read-only Summa42 queries")
-    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes", "emergency", "containment", "attention", "company", "obligations"])
+    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes", "emergency", "containment", "attention", "company", "obligations", "invariants"])
     args = parser.parse_args(argv)
-    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes, "emergency": cmd_emergency, "containment": cmd_containment, "attention": cmd_attention, "company": cmd_company, "obligations": cmd_obligations}[args.command]()
+    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes, "emergency": cmd_emergency, "containment": cmd_containment, "attention": cmd_attention, "company": cmd_company, "obligations": cmd_obligations, "invariants": cmd_invariants}[args.command]()
 
 
 if __name__ == "__main__":

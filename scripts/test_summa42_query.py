@@ -452,5 +452,62 @@ class ObligationsTests(unittest.TestCase):
             self.assertEqual(data[0]["consequences"], {"penalty": 5000})
 
 
+class InvariantsTests(unittest.TestCase):
+    MIGRATION_INVARIANTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                        "internal", "state", "sqlite", "migrations", "00033_business_invariants.sql")
+
+    def test_invariants_no_table(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_home(tmp)
+            res = _run(tmp, "invariants")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(json.loads(res.stdout), {"error": "NO_INVARIANTS_TABLE"})
+
+    def test_invariants_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "state"), exist_ok=True)
+            conn = sqlite3.connect(os.path.join(tmp, "state", "summa42.db"))
+            with open(self.MIGRATION_INVARIANTS) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+
+            conn.execute("""
+                INSERT INTO business_invariants (
+                    invariant_id, name, description, target_kind, rule_type,
+                    rule_config_json, severity, action_type, action_config_json,
+                    enabled, created_at, updated_at
+                ) VALUES (
+                    'inv_runway_1', 'Cash Runway Guard', 'Runway > 3 months', 'ASSET', 'THRESHOLD',
+                    '{"threshold":3.0,"operator":"<"}', 'BREACH', 'REMEDIATION_TASK',
+                    '{"remediation_task_title":"Raise capital"}', 1,
+                    '2026-11-09T08:00:00Z', '2026-11-09T08:00:00Z'
+                )
+            """)
+            conn.execute("""
+                INSERT INTO invariant_evaluations (
+                    evaluation_id, invariant_id, entity_id, status, observed_value_json,
+                    evidence_id, triggered_task_id, triggered_packet_id, containment_signal, evaluated_at
+                ) VALUES (
+                    'eval_101', 'inv_runway_1', 'ent_treasury_1', 'BREACHED', '{"runway_months":1.5}',
+                    'ev_1', 'task_remed_1', 'pkt_1', 'RESTRICT', '2026-11-09T09:00:00Z'
+                )
+            """)
+            conn.commit()
+            conn.close()
+
+            res = _run(tmp, "invariants")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            data = json.loads(res.stdout)
+            self.assertIn("invariants", data)
+            self.assertIn("recent_evaluations", data)
+            self.assertEqual(len(data["invariants"]), 1)
+            self.assertEqual(data["invariants"][0]["invariant_id"], "inv_runway_1")
+            self.assertEqual(data["invariants"][0]["rule_type"], "THRESHOLD")
+            self.assertEqual(data["invariants"][0]["rule_config"]["threshold"], 3.0)
+            self.assertEqual(len(data["recent_evaluations"]), 1)
+            self.assertEqual(data["recent_evaluations"][0]["status"], "BREACHED")
+            self.assertEqual(data["recent_evaluations"][0]["containment_signal"], "RESTRICT")
+
+
+
 if __name__ == "__main__":
     unittest.main()

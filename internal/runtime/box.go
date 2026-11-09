@@ -14,6 +14,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/audit"
 	"github.com/SofiaFlux/summa42/internal/capabilities"
 	"github.com/SofiaFlux/summa42/internal/clock"
+	"github.com/SofiaFlux/summa42/internal/company"
 	"github.com/SofiaFlux/summa42/internal/containment"
 	"github.com/SofiaFlux/summa42/internal/detection"
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -23,6 +24,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/executors"
 	"github.com/SofiaFlux/summa42/internal/experience"
 	"github.com/SofiaFlux/summa42/internal/fieldfeedback"
+	"github.com/SofiaFlux/summa42/internal/invariant"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
 	"github.com/SofiaFlux/summa42/internal/obligation"
 	"github.com/SofiaFlux/summa42/internal/operations"
@@ -88,6 +90,8 @@ type Box struct {
 	Attention     *attention.Service
 	Obligations   *obligation.Service
 	Planner       *obligation.PlannerAdapter
+	Company       *company.Service
+	Invariants    *invariant.Service
 	Policy        policy.PolicyEngine
 	Executors     map[string]executors.Executor
 	TEBProfile    teb.Profile
@@ -226,6 +230,8 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	attentionSvc := attention.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
 	obligationSvc := obligation.NewService(store, cfg.Clock)
 	plannerAdapter := obligation.NewPlannerAdapter(obligationSvc, schedulerSvc)
+	companySvc := company.NewService(store, cfg.Clock)
+	invariantSvc := invariant.NewService(store, cfg.Clock, companySvc, containmentSvc, attentionSvc, evidenceStore)
 
 	cubeID := cfg.CubeID
 	cubePrincipalID := cfg.CubePrincipalID
@@ -306,6 +312,8 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		Attention:     attentionSvc,
 		Obligations:   obligationSvc,
 		Planner:       plannerAdapter,
+		Company:       companySvc,
+		Invariants:    invariantSvc,
 		Policy:        cfg.PolicyEngine,
 		Executors:     executorSet,
 		TEBProfile:    cfg.TEBProfile,
