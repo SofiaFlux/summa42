@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/approvals"
+	"github.com/SofiaFlux/summa42/internal/attention"
 	"github.com/SofiaFlux/summa42/internal/audit"
 	"github.com/SofiaFlux/summa42/internal/capabilities"
 	"github.com/SofiaFlux/summa42/internal/clock"
@@ -83,6 +84,7 @@ type Box struct {
 	Emergency     *emergency.Service
 	Containment   *containment.Service
 	Detector      *detection.Detector
+	Attention     *attention.Service
 	Policy        policy.PolicyEngine
 	Executors     map[string]executors.Executor
 	TEBProfile    teb.Profile
@@ -218,6 +220,7 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	detector := detection.NewDetector(store, cfg.Clock, containmentSvc)
 	capabilityRegistry.SetDetector(detector)
 	operationsSvc.SetDetector(detector)
+	attentionSvc := attention.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
 
 	cubeID := cfg.CubeID
 	cubePrincipalID := cfg.CubePrincipalID
@@ -295,6 +298,7 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		Emergency:     emergencySvc,
 		Containment:   containmentSvc,
 		Detector:      detector,
+		Attention:     attentionSvc,
 		Policy:        cfg.PolicyEngine,
 		Executors:     executorSet,
 		TEBProfile:    cfg.TEBProfile,

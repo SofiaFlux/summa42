@@ -305,11 +305,70 @@ def cmd_containment():
         print(json.dumps({"error": "NO_CONTAINMENT_TABLE"}))
 
 
+def cmd_attention():
+    cur = get_db().cursor()
+    try:
+        cur.execute("""
+            SELECT daily_budget_units, used_budget_units, period_start, updated_at
+            FROM owner_attention_budgets
+            WHERE singleton = 1
+        """)
+        b_row = cur.fetchone()
+        budget = {}
+        if b_row:
+            budget = {
+                "daily_budget_units": b_row[0],
+                "used_budget_units": b_row[1],
+                "remaining_budget_units": max(0, b_row[0] - b_row[1]),
+                "period_start": b_row[2],
+                "updated_at": b_row[3],
+            }
+
+        cur.execute("""
+            SELECT packet_id, title, category, urgency, sovereign_required, status, estimated_attention_units, summary, evidence_ids_json, sub_decisions_json, proposed_action_json, resolved_at, resolved_by_principal_id, created_at, updated_at
+            FROM owner_decision_packets
+            WHERE status = 'PENDING'
+            ORDER BY CASE urgency
+                WHEN 'CRITICAL' THEN 1
+                WHEN 'HIGH' THEN 2
+                WHEN 'MEDIUM' THEN 3
+                WHEN 'LOW' THEN 4
+                ELSE 5
+            END, created_at ASC
+        """)
+        packets = []
+        for r in cur.fetchall():
+            packets.append({
+                "packet_id": r[0],
+                "title": r[1],
+                "category": r[2],
+                "urgency": r[3],
+                "sovereign_required": bool(r[4]),
+                "status": r[5],
+                "estimated_attention_units": r[6],
+                "summary": r[7],
+                "evidence_ids": json.loads(r[8]) if r[8] else [],
+                "sub_decisions": json.loads(r[9]) if r[9] else [],
+                "proposed_action": json.loads(r[10]) if r[10] else {},
+                "resolved_at": r[11],
+                "resolved_by_principal_id": r[12],
+                "created_at": r[13],
+                "updated_at": r[14],
+            })
+
+        print(json.dumps({
+            "budget": budget,
+            "pending_packets": packets,
+        }))
+    except sqlite3.OperationalError:
+        print(json.dumps({"error": "NO_ATTENTION_TABLES"}))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Read-only Summa42 queries")
-    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes", "emergency", "containment"])
+    parser.add_argument("command", choices=["status", "cases", "tickets", "capacity", "board", "cubes", "emergency", "containment", "attention"])
     args = parser.parse_args(argv)
-    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes, "emergency": cmd_emergency, "containment": cmd_containment}[args.command]()
+    {"status": cmd_status, "cases": cmd_cases, "tickets": cmd_tickets, "capacity": cmd_capacity, "board": cmd_board, "cubes": cmd_cubes, "emergency": cmd_emergency, "containment": cmd_containment, "attention": cmd_attention}[args.command]()
 
 
 if __name__ == "__main__":

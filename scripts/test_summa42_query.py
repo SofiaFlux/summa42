@@ -294,5 +294,65 @@ class ContainmentTests(unittest.TestCase):
             self.assertEqual(rec["investigation_task_id"], "task_inv1")
 
 
+class AttentionTests(unittest.TestCase):
+    MIGRATION_ATTENTION = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                       "internal", "state", "sqlite", "migrations", "00030_owner_attention.sql")
+
+    def test_attention_no_tables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_home(tmp)
+            res = _run(tmp, "attention")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(json.loads(res.stdout), {"error": "NO_ATTENTION_TABLES"})
+
+    def test_attention_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "state"), exist_ok=True)
+            conn = sqlite3.connect(os.path.join(tmp, "state", "summa42.db"))
+            with open(self.MIGRATION_ATTENTION) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+
+            # The migration seeds default budget: daily 100, used 0.
+            # Update used budget to 30.
+            conn.execute("UPDATE owner_attention_budgets SET used_budget_units = 30 WHERE singleton = 1")
+
+            # Seed packets
+            conn.execute("""
+                INSERT INTO owner_decision_packets(packet_id, title, category, urgency, sovereign_required, status, estimated_attention_units, summary, evidence_ids_json, sub_decisions_json, proposed_action_json, created_at, updated_at)
+                VALUES ('pkt_low', 'Minor config', 'STRATEGIC_MISSION', 'LOW', 1, 'PENDING', 2, 'Minor item', '["ev_1"]', '[]', '{"action": "update"}', '2026-11-09T10:00:00Z', '2026-11-09T10:00:00Z')
+            """)
+            conn.execute("""
+                INSERT INTO owner_decision_packets(packet_id, title, category, urgency, sovereign_required, status, estimated_attention_units, summary, evidence_ids_json, sub_decisions_json, proposed_action_json, created_at, updated_at)
+                VALUES ('pkt_crit', 'Safety alert', 'SAFETY_OVERRIDE', 'CRITICAL', 1, 'PENDING', 10, 'Critical safety item', '["ev_2"]', '[{"id":"sub_1","type":"WARN","summary":"check","risk_score":4}]', '{"action": "halt"}', '2026-11-09T10:01:00Z', '2026-11-09T10:01:00Z')
+            """)
+            conn.execute("""
+                INSERT INTO owner_decision_packets(packet_id, title, category, urgency, sovereign_required, status, estimated_attention_units, summary, evidence_ids_json, sub_decisions_json, proposed_action_json, created_at, updated_at)
+                VALUES ('pkt_approved', 'Already approved', 'CONSTITUTIONAL', 'HIGH', 1, 'APPROVED', 5, 'Approved item', '[]', '[]', '{}', '2026-11-09T09:00:00Z', '2026-11-09T09:30:00Z')
+            """)
+            conn.commit()
+            conn.close()
+
+            res = _run(tmp, "attention")
+            self.assertEqual(res.returncode, 0, res.stderr)
+            data = json.loads(res.stdout)
+            self.assertIn("budget", data)
+            self.assertEqual(data["budget"]["daily_budget_units"], 100)
+            self.assertEqual(data["budget"]["used_budget_units"], 30)
+            self.assertEqual(data["budget"]["remaining_budget_units"], 70)
+
+            packets = data["pending_packets"]
+            self.assertEqual(len(packets), 2)
+            # CRITICAL should be first, LOW second
+            self.assertEqual(packets[0]["packet_id"], "pkt_crit")
+            self.assertEqual(packets[0]["urgency"], "CRITICAL")
+            self.assertEqual(packets[0]["evidence_ids"], ["ev_2"])
+            self.assertEqual(len(packets[0]["sub_decisions"]), 1)
+            self.assertEqual(packets[0]["sub_decisions"][0]["id"], "sub_1")
+            self.assertEqual(packets[0]["proposed_action"], {"action": "halt"})
+
+            self.assertEqual(packets[1]["packet_id"], "pkt_low")
+            self.assertEqual(packets[1]["urgency"], "LOW")
+
+
 if __name__ == "__main__":
     unittest.main()
