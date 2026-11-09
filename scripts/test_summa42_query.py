@@ -404,6 +404,8 @@ class CompanyTests(unittest.TestCase):
 class ObligationsTests(unittest.TestCase):
     MIGRATION_PURPOSE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                      "internal", "state", "sqlite", "migrations", "00002_purpose.sql")
+    MIGRATION_RESOURCES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                       "internal", "state", "sqlite", "migrations", "00005_resources.sql")
     MIGRATION_OBLIGATIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                                          "internal", "state", "sqlite", "migrations", "00032_obligations.sql")
 
@@ -419,6 +421,8 @@ class ObligationsTests(unittest.TestCase):
             os.makedirs(os.path.join(tmp, "state"), exist_ok=True)
             conn = sqlite3.connect(os.path.join(tmp, "state", "summa42.db"))
             with open(self.MIGRATION_PURPOSE) as f:
+                conn.executescript(f.read().split("-- +goose Down")[0])
+            with open(self.MIGRATION_RESOURCES) as f:
                 conn.executescript(f.read().split("-- +goose Down")[0])
             with open(self.MIGRATION_OBLIGATIONS) as f:
                 conn.executescript(f.read().split("-- +goose Down")[0])
