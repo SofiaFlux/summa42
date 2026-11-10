@@ -215,9 +215,37 @@ func cloneAnyMap(m map[string]any) map[string]any {
 	}
 	cp := make(map[string]any, len(m))
 	for k, v := range m {
-		cp[k] = v
+		cp[k] = deepCloneValue(v)
 	}
 	return cp
+}
+
+func deepCloneValue(v any) any {
+	if v == nil {
+		return nil
+	}
+	switch val := v.(type) {
+	case map[string]any:
+		return cloneAnyMap(val)
+	case map[string]string:
+		return cloneStringMap(val)
+	case []any:
+		cp := make([]any, len(val))
+		for i, elem := range val {
+			cp[i] = deepCloneValue(elem)
+		}
+		return cp
+	case []byte:
+		cp := make([]byte, len(val))
+		copy(cp, val)
+		return cp
+	case []string:
+		cp := make([]string, len(val))
+		copy(cp, val)
+		return cp
+	default:
+		return val
+	}
 }
 
 func cloneResponsesMap(m map[string]InvocationResponse) map[string]InvocationResponse {
