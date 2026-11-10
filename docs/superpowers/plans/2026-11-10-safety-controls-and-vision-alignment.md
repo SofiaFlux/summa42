@@ -40,10 +40,10 @@ Files: internal/emergency/service.go, types.go, service_test.go;
 internal/runtime/box.go, box_test.go;
 internal/state/sqlite/migrations/00035_dead_man_owner_horizon.sql.
 
-- [ ] Tests: default is seven days; reopening with another lease duration keeps
+- [x] Tests: default is seven days; reopening with another lease duration keeps
   the stored timeout; `attempt_lease` and `external_operation` are refused in
   safe mode; RED.
-- [ ] `EnsureDefaults` inserts once; default constant; migration; runtime passes
+- [x] `EnsureDefaults` inserts once; default constant; migration; runtime passes
   no derived value; GREEN.
 
 ### Task 2: Lease gate and audited revocation
@@ -52,9 +52,9 @@ Files: internal/execution/service.go, lease_gate_test.go;
 internal/emergency/service.go, service_test.go; internal/containment/service.go;
 internal/runtime/box.go, box_test.go.
 
-- [ ] Tests: `StartAttempt` refused while FROZEN and in safe mode, allowed after
+- [x] Tests: `StartAttempt` refused while FROZEN and in safe mode, allowed after
   resume; break glass appends `LEASE_REVOKED` per Attempt; RED.
-- [ ] `LeaseGate`, `RevokeActiveLeasesTx`, `RevokeLeaseTx`;
+- [x] `LeaseGate`, `RevokeActiveLeasesTx`, `RevokeLeaseTx`;
   `CheckLeaseAllowedTx`; wire in runtime; GREEN.
 
 ### Task 3: Owner-signed emergency commands
@@ -63,10 +63,10 @@ Files: internal/emergency/owner_command.go, owner_command_test.go;
 internal/state/sqlite/migrations/00036_emergency_audit_signature.sql;
 cmd/summa42/emergency_cmd.go, emergency_cmd_test.go, root.go.
 
-- [ ] Tests: valid command applies and stores the signature; wrong key, stale
+- [x] Tests: valid command applies and stores the signature; wrong key, stale
   time, replayed event ID and unknown action are refused; CLI freeze, status,
   resume, heartbeat with `--timeout`; RED.
-- [ ] Implement and register; GREEN.
+- [x] Implement and register; GREEN.
 
 ### Task 4: Maintainer-only issue revisions
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/domain"
+	"github.com/SofiaFlux/summa42/internal/execution"
 	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 )
 
@@ -140,14 +141,10 @@ func (s *Service) ApplySignal(ctx context.Context, attemptID, taskID domain.ID, 
 
 	var investigationTaskID *domain.ID
 	if targetState == StateSuspectedRogue {
-		// 1. Revoke attempt lease immediately
-		_, err = tx.ExecContext(ctx, `
-			UPDATE attempts
-			SET lease_state = 'REVOKED'
-			WHERE attempt_id = ?`,
-			attemptID,
-		)
-		if err != nil {
+		// 1. Revoke the attempt lease through the execution kernel, so the
+		// revocation is on the execution trail. An Attempt the kernel does not
+		// know has no lease to revoke.
+		if err := execution.RevokeLeaseTx(ctx, tx, attemptID, now, "containment:"+signalName); err != nil && !errors.Is(err, domain.ErrStaleAttempt) {
 			return fmt.Errorf("revoke attempt lease on rogue termination: %w", err)
 		}
 
@@ -201,7 +198,7 @@ func (s *Service) ApplySignal(ctx context.Context, attemptID, taskID domain.ID, 
 				) VALUES (
 					?, ?, 'RECOVERY', 'recovery_investigation', 'ELIGIBLE',
 					0, ?, '["diagnostics.read_logs","evidence.export"]',
-					'ENFORCED', '["diagnostics:read_logs"]', ?,
+					'ENFORCED', '["diagnostics.read_logs","evidence.export"]', ?,
 					100, ?, ?
 				)`,
 				invTaskID, taskID, string(criteriaJSON), envelopeID, nowStr, nowStr,

@@ -216,9 +216,13 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	experienceSvc := experience.New(store, cfg.Clock, approvalSvc, auditSvc, cfg.OwnerPrincipalID)
 	quarantineSvc := quarantine.NewService(store, cfg.Clock)
 	emergencySvc := emergency.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
-	if err := emergencySvc.EnsureDefaults(ctx, int(cfg.LeaseDuration.Seconds()*10)); err != nil {
+	// The dead man horizon is the Owner's setting (default seven days), never
+	// a function of this process's lease duration.
+	if err := emergencySvc.EnsureDefaults(ctx, 0); err != nil {
 		return nil, fmt.Errorf("ensure emergency defaults: %w", err)
 	}
+	// Break glass and Owner absence close Attempt leasing, not only effects.
+	executionSvc.SetLeaseGate(emergencySvc)
 	operationsSvc.SetEmergency(emergencySvc)
 	capabilityRegistry.SetEmergency(emergencySvc)
 	containmentSvc := containment.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
