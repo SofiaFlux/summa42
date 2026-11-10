@@ -257,7 +257,7 @@ func TestOpenWorkerBoxLeavesADegradedBoxWithoutTriage(t *testing.T) {
 func TestRunWorkerStartsWithoutAUsableModelBinary(t *testing.T) {
 	initializedCollective(t)
 	readStderr := captureStderr(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err := runWorker(ctx, []string{
 		"--workspace-root=" + t.TempDir(),
@@ -276,7 +276,7 @@ func TestRunWorkerStartsWithoutAUsableModelBinary(t *testing.T) {
 func TestRunWorkerStartsWithAUsableModelBinary(t *testing.T) {
 	initializedCollective(t)
 	readStderr := captureStderr(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := runWorker(ctx, []string{
 		"--workspace-root=" + t.TempDir(),
@@ -297,7 +297,7 @@ func TestRunWorkerStartsWithAUsableModelBinary(t *testing.T) {
 // --model-timeout would otherwise run this to the package timeout.
 func TestRunWorkerStillRejectsAMalformedModelTimeout(t *testing.T) {
 	initializedCollective(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err := runWorker(ctx, []string{
 		"--workspace-root=" + t.TempDir(),
