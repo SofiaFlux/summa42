@@ -1306,12 +1306,15 @@ func openGHIntakeBox(ctx context.Context, cfg summa42runtime.Config) (*summa42ru
 // resolved repository and the environment. BaseURL stays unset so the client
 // applies its api.github.com default: the loopback override is a test seam the
 // CLI cannot reach.
-func ghIntakeClientConfig(repository, botLogin, credentialFile string) ghissue.Config {
+// maintainers is the intake allowlist: only their comments may move an issue's
+// revision, so the client and the observer must be given the same list.
+func ghIntakeClientConfig(repository, botLogin, credentialFile string, maintainers []string) ghissue.Config {
 	tokenFile := tokenFileFromFlagOrEnv(credentialFile, "SUMMA42_GITHUB_TOKEN_FILE")
 	return ghissue.Config{
-		Repository: repository,
-		BotLogin:   botLogin,
-		TokenFile:  tokenFile,
+		Repository:  repository,
+		BotLogin:    botLogin,
+		TokenFile:   tokenFile,
+		Maintainers: append([]string(nil), maintainers...),
 	}
 }
 
@@ -1389,7 +1392,7 @@ func runGHIntake(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	client, err := ghissue.New(ghIntakeClientConfig(observerCfg.Repository, observerCfg.BotLogin, observerCfg.CredentialFile))
+	client, err := ghissue.New(ghIntakeClientConfig(observerCfg.Repository, observerCfg.BotLogin, observerCfg.CredentialFile, observerCfg.Maintainers))
 	if err != nil {
 		return fmt.Errorf("construct read-only GitHub issues client: %w", err)
 	}

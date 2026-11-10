@@ -41,6 +41,12 @@ type Config struct {
 	// issue whose latest update is only a comment by this login keeps the revision it
 	// had before that comment. Empty keeps the issue's updated_at as the revision.
 	BotLogin string
+	// Maintainers are the logins whose comments may move an issue's revision.
+	// When set, a comment by anyone else (the bot included) is untrusted: an
+	// issue whose latest update is exactly such a comment is flagged so the
+	// observer keeps the revision it already recorded. Empty trusts every
+	// author except BotLogin, which is the behavior before this field existed.
+	Maintainers []string
 }
 
 // Client performs GET requests only; no write method exists on the type.
@@ -51,6 +57,7 @@ type Client struct {
 	http             *http.Client
 	maxResponseBytes int
 	botLogin         string
+	maintainers      map[string]bool
 }
 
 func New(cfg Config) (*Client, error) {
@@ -111,6 +118,7 @@ func New(cfg Config) (*Client, error) {
 		http:             &http.Client{Timeout: timeout, CheckRedirect: rejectRedirect},
 		maxResponseBytes: limit,
 		botLogin:         strings.TrimSpace(cfg.BotLogin),
+		maintainers:      maintainerSet(cfg.Maintainers),
 	}, nil
 }
 
@@ -171,7 +179,11 @@ func (c *Client) ListIssues(ctx context.Context, cursor string) ([]any, []Unpars
 			unparseable = append(unparseable, Unparseable{Raw: item})
 			continue
 		}
-		if c.botLogin != "" {
+		// The trust markers are this client's own verdict; a copy in the
+		// response body is never believed.
+		delete(item.(map[string]any), wireUntrustedTail)
+		delete(item.(map[string]any), wireTrustedFloor)
+		if c.botLogin != "" || len(c.maintainers) > 0 {
 			if err := c.discountBotComments(ctx, token, item.(map[string]any)); err != nil {
 				// A comment-fetch failure excludes this issue only; the page goes on.
 				unparseable = append(unparseable, Unparseable{Raw: item})
@@ -326,14 +338,16 @@ func readTokenFile(path string) (string, error) {
 // updated_at is kept (the conservative, pre-existing behaviour).
 const maxCommentPages = 10
 
-// discountBotComments rewrites item["updated_at"] when the issue's latest update is
-// exactly the latest comment, that comment was written by the configured bot, and a
-// human comment exists: the revision then falls back to the last human comment's time.
-// With no human comment the previous revision cannot be derived, so plain updated_at is
-// kept (it may churn, but never hides a human edit).
-// ponytail: a human body/label edit made after the last human comment and before the
-// bot's reply is hidden (revision = last human comment); the bot normally replies to an
-// already observed revision, so the window is one poll interval.
+// discountBotComments handles an issue whose latest update is exactly its latest
+// comment and that comment is untrusted: written by the configured bot or, when
+// maintainers are configured, by anyone who is not a maintainer. It marks the item
+// with wireUntrustedTail, and when a trusted comment exists it rewrites
+// item["updated_at"] to that comment's time and marks wireTrustedFloor. The observer
+// then keeps the revision it already recorded unless the floor is newer. With no
+// trusted comment plain updated_at is kept; it is the revision only on first sight.
+// ponytail: a maintainer's body/label edit made after their last comment and followed
+// by an untrusted comment within one poll interval stays unseen until the next
+// maintainer activity.
 func (c *Client) discountBotComments(ctx context.Context, token string, item map[string]any) error {
 	if n, ok := item["comments"].(float64); ok && n == 0 {
 		return nil
@@ -388,7 +402,7 @@ func (c *Client) discountBotComments(ctx context.Context, token string, item map
 			if err != nil {
 				return nil
 			}
-			bot := strings.EqualFold(comment.User.Login, c.botLogin)
+			bot := !c.trustedCommenter(comment.User.Login)
 			if !at.Before(latest) {
 				latest, latestByBot = at, bot
 			}
@@ -400,9 +414,35 @@ func (c *Client) discountBotComments(ctx context.Context, token string, item map
 			break
 		}
 	}
-	if latest.IsZero() || !latestByBot || !latest.Equal(updated) || latestHuman.IsZero() {
+	if latest.IsZero() || !latestByBot || !latest.Equal(updated) {
 		return nil
 	}
+	item[wireUntrustedTail] = true
+	if latestHuman.IsZero() {
+		return nil
+	}
+	item[wireTrustedFloor] = true
 	item["updated_at"] = latestHuman.UTC().Format(time.RFC3339)
 	return nil
+}
+
+// trustedCommenter reports whether a comment by login may move a revision.
+func (c *Client) trustedCommenter(login string) bool {
+	if c.botLogin != "" && strings.EqualFold(login, c.botLogin) {
+		return false
+	}
+	if len(c.maintainers) == 0 {
+		return true
+	}
+	return c.maintainers[strings.ToLower(strings.TrimSpace(login))]
+}
+
+func maintainerSet(logins []string) map[string]bool {
+	set := make(map[string]bool, len(logins))
+	for _, login := range logins {
+		if login = strings.ToLower(strings.TrimSpace(login)); login != "" {
+			set[login] = true
+		}
+	}
+	return set
 }

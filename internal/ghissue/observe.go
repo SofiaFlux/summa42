@@ -195,7 +195,40 @@ func ObserveOnce(ctx context.Context, lister IssueLister, cases *workflowcase.Se
 	return result, nil
 }
 
+// resolveRevision keeps an issue on the revision already recorded for it when
+// its latest update is an untrusted comment. Only a trusted comment newer than
+// every recorded revision moves it; an issue never seen before keeps what the
+// Client reported.
+func resolveRevision(ctx context.Context, cases *workflowcase.Service, cfg ObserveConfig, issue Issue) (Issue, error) {
+	if !issue.UntrustedTail {
+		return issue, nil
+	}
+	recorded, err := cases.ListByObject(ctx, cfg.MissionID, "github", issue.ObjectID())
+	if err != nil {
+		return issue, err
+	}
+	var latest time.Time
+	for _, c := range recorded {
+		at, err := time.Parse(time.RFC3339Nano, c.RevisionID)
+		if err != nil {
+			return issue, fmt.Errorf("parse recorded revision %q of %s: %w", c.RevisionID, issue.ObjectID(), err)
+		}
+		if at.After(latest) {
+			latest = at
+		}
+	}
+	if latest.IsZero() || (issue.TrustedFloor && issue.UpdatedAt.After(latest)) {
+		return issue, nil
+	}
+	issue.UpdatedAt = latest.UTC()
+	return issue, nil
+}
+
 func observeIssue(ctx context.Context, cases *workflowcase.Service, execSvc *execution.Service, evidenceStore *evidence.Store, cfg ObserveConfig, issue Issue, result *ObserveResult) error {
+	issue, err := resolveRevision(ctx, cases, cfg, issue)
+	if err != nil {
+		return err
+	}
 	existing, found, err := cases.Find(ctx, cfg.MissionID, "github", issue.ObjectID(), issue.RevisionID())
 	if err != nil {
 		return err

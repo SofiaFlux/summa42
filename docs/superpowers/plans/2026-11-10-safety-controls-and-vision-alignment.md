@@ -73,9 +73,9 @@ cmd/summa42/emergency_cmd.go, emergency_cmd_test.go, root.go.
 Files: internal/ghissue/client.go, client_test.go, source.go, observe.go,
 observe_test.go; cmd/summa42-box/main.go.
 
-- [ ] Tests: outsider comment keeps the recorded revision; maintainer comment
+- [x] Tests: outsider comment keeps the recorded revision; maintainer comment
   moves it; first sight keeps `updated_at`; bot rule unchanged; RED.
-- [ ] Client flags the untrusted tail; observer resolves the revision; GREEN.
+- [x] Client flags the untrusted tail; observer resolves the revision; GREEN.
 
 ### Task 5: Park spikes
 

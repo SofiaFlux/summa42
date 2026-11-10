@@ -49,7 +49,18 @@ type Issue struct {
 	UpdatedAt     time.Time
 	Triage        string
 	IsPullRequest bool
+	// UntrustedTail is set by the Client when the issue's latest update is a
+	// comment that may not move its revision. TrustedFloor then says that
+	// UpdatedAt is the last trusted comment's time, not the issue's own.
+	UntrustedTail bool
+	TrustedFloor  bool
 }
+
+// Wire markers the Client adds to an issue item; see Issue.UntrustedTail.
+const (
+	wireUntrustedTail = "summa42_untrusted_tail"
+	wireTrustedFloor  = "summa42_trusted_floor"
+)
 
 // ObjectID qualifies the issue with its repository: plain issue#n collides
 // across repositories under the unique (mission, source, object, revision) key.
@@ -183,6 +194,8 @@ func ParseIssue(item any, repository string) (Issue, error) {
 		UpdatedAt:  updatedAt.UTC(),
 	}
 	issue.Triage = ClassifyTriage(labels, title)
+	issue.UntrustedTail, _ = object[wireUntrustedTail].(bool)
+	issue.TrustedFloor, _ = object[wireTrustedFloor].(bool)
 	if raw, ok := object["pull_request"]; ok {
 		issue.IsPullRequest = raw != nil
 	}
