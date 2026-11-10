@@ -20,6 +20,48 @@ To nadal komendy nadzorowane, a nie automatycznie złożony worker. Dziś Summa 
 
 Pierwotna analiza poniżej opisuje stan na wskazanej bazie i pozostaje historycznym punktem odniesienia.
 
+## Aktualizacja — 10 listopada 2026
+
+Przegląd całego repozytorium (`main` @ `c3d5454`) i zmiana opisana w
+[specyfikacji](../specs/2026-11-10-safety-controls-and-vision-alignment-design.md).
+
+**Gdzie jesteśmy na drabinie A0–A3.** A1 jest osiągnięte w jednym przypadku od
+remediacji z 21 października: issue #115 → PR #131, 10 dni i co najmniej sześć
+interwencji właściciela. A2 zostało wycofane 21 października. A3 nie zaczęto.
+Warunek z etapu 6 („10 małych zadań pilota A1") ma stan 1 z 10.
+
+**Co się stało między 6 a 10 listopada.** Do `main` weszło 29 commitów i około
+25,6 tys. linii spoza pipeline'u, czyli w trybie A0. Część zamykała epiki
+„Post-MVC" kodem, którego nie woła żadna działająca ścieżka. Ten kod jest teraz
+zaparkowany poza `main`; indeks z commitami i komendami przywracania jest w
+[parked spikes](../research/2026-11-10-parked-spikes.md).
+
+**Co naprawiono.** Dead man switch ma horyzont ustawiany przez właściciela
+(domyślnie 7 dni) zamiast 10 lease'ów; break glass zamyka leasing i zostawia
+ślad w `execution_events`; oba są dostępne jako `summa42 emergency …` z
+podpisem właściciela. Rewizję issue przesuwa tylko komentarz maintainera.
+
+**Wizja.** `docs/VISION.md` dostało sekcję o celu, artykuły 27–29 i siódme
+pytanie. Usunięto z niej opis blue-green z przekazaniem `control.sock`, dodany
+przez PR #23: był szczegółem implementacji i stał w sprzeczności z etapem 7
+poniżej (osobny supervisor; działający Box nie podmienia własnego binarium).
+Tekst jest w historii pod `c3d5454`.
+
+**Kolejność dalej** (bez zmiany etapów poniżej, tylko ich porządek wejścia):
+
+1. Wymagany check CI na `main` i brak merge'a bez zielonego CI (ustawienie
+   repozytorium, po stronie właściciela).
+2. Dziewięć pozostałych małych zadań A1 przez pipeline, z pomiarem interwencji
+   i kosztu na zadanie (sekcja 9).
+3. Ciągłość (artykuł 28 wizji): budżet w walucie, powiadomienia do właściciela,
+   testowany backup i restore, watchdog poza procesem.
+4. Etap 6 (A2), potem etap 7 (A3).
+5. Profil [Company OS](../../COMPANY_OS.md): pierwsze podpięcie obligacji do
+   schedulera.
+
+Nowy pakiet wchodzi do `main` dopiero z wywołaniem w działającym Boxie i testem
+akceptacyjnym tej ścieżki.
+
 ## 1. Wniosek
 
 Summa42 ma już znaczną część mechaniki sterowania i trwałości. Najbliższa przeszkoda jest konkretna: przepływ GitHuba dochodzi do planu i propozycji `github.issue.plan.review`, po czym nie ma executora i kontraktu routingu pozwalającego kontynuować. Kolejne brakujące elementy to przygotowanie repozytorium, wykonanie i niezależna weryfikacja zmiany, publikacja PR oraz powrót wyników CI/review do workflow.

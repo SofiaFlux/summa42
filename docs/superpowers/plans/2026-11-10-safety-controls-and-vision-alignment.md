@@ -104,7 +104,7 @@ Files: docs/VISION.md, docs/COMPANY_OS.md, README.md,
 docs/superpowers/plans/2026-10-07-self-development-roadmap.md,
 docs/incidents/2026-10-21-canned-model-reviews.md.
 
-- [ ] Write; `python3 scripts/verify_docs.py` on every changed Markdown file.
+- [x] Write; `python3 scripts/verify_docs.py` on every changed Markdown file.
 
 ### Task 8: Delivery
 
@@ -113,5 +113,6 @@ docs/incidents/2026-10-21-canned-model-reviews.md.
 
 ## Decisions
 
-See the spec. Suite tests that need a non-root user are skipped when run as
-root, with the reason in the skip message.
+See the spec. The `internal/ghtriage` suite refuses to run as root (its
+isolation probe correctly reports that root can read everything); it is run as
+an unprivileged user, as in CI. No skip was added.
