@@ -67,6 +67,15 @@ type EvidenceRef struct {
 	ContentHash string    `json:"content_hash"`
 }
 
+type EnvironmentSnapshot struct {
+	Mode              string   `json:"mode,omitempty"`
+	ProviderID        string   `json:"provider_id,omitempty"`
+	ProviderVersion   string   `json:"provider_version,omitempty"`
+	Fidelity          string   `json:"fidelity,omitempty"`
+	ScenarioSeed      int64    `json:"scenario_seed,omitempty"`
+	DivergenceProfile []string `json:"divergence_profile,omitempty"`
+}
+
 // Manifest is a descriptive lease-time snapshot. In the current MVC there is
 // no separate materialized capability-session projection, so the executor-visible
 // set is derived from Task.RequiredCapabilities at lease time. Missing IDs remain
@@ -88,6 +97,7 @@ type Manifest struct {
 	InputEvidence         []EvidenceRef        `json:"input_evidence"`
 	ResourceEnvelopeID    domain.ID            `json:"resource_envelope_id"`
 	ContextProjectionHash string               `json:"context_projection_hash,omitempty"`
+	Environment           *EnvironmentSnapshot `json:"environment,omitempty"`
 	StartedAt             time.Time            `json:"started_at"`
 }
 
@@ -125,6 +135,11 @@ func New(store *state.Store, static StaticContext) *Service {
 // transaction that creates the Attempt. The record is descriptive only: it
 // never grants authority, extends a lease, or changes Task/Attempt semantics.
 func (s *Service) RecordAttemptStartInTx(ctx context.Context, tx *sql.Tx, attempt domain.Attempt, task domain.Task) error {
+	return s.RecordAttemptStartWithEnvironmentInTx(ctx, tx, attempt, task, nil)
+}
+
+// RecordAttemptStartWithEnvironmentInTx records execution provenance including DTU or LIVE environment context.
+func (s *Service) RecordAttemptStartWithEnvironmentInTx(ctx context.Context, tx *sql.Tx, attempt domain.Attempt, task domain.Task, env *EnvironmentSnapshot) error {
 	if err := s.configured(); err != nil {
 		return err
 	}
@@ -175,6 +190,7 @@ func (s *Service) RecordAttemptStartInTx(ctx context.Context, tx *sql.Tx, attemp
 		VisibleCapabilities: capabilities,
 		InputEvidence:       []EvidenceRef{},
 		ResourceEnvelopeID:  task.ResourceEnvelopeID,
+		Environment:         env,
 		StartedAt:           attempt.StartedAt.UTC(),
 	}
 	encoded, err := json.Marshal(manifest)
