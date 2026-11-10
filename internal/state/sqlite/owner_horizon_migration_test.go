@@ -67,3 +67,21 @@ func TestOwnerHorizonMigrationReplacesDerivedTimeoutAndClearsSafeMode(t *testing
 		t.Fatalf("insert an audit event with a signature: %v", err)
 	}
 }
+
+// The envelope seeded for synthesized obligation Tasks must not carry a budget
+// nobody granted: after the upgrade it is unfunded until the Owner funds it.
+func TestDefaultEnvelopeIsUnfundedAfterMigration(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB().Close()
+	var limit int64
+	if err := store.DB().QueryRowContext(ctx, `SELECT hard_limit FROM resource_envelopes WHERE envelope_id = 'envelope_default'`).Scan(&limit); err != nil {
+		t.Fatal(err)
+	}
+	if limit != 0 {
+		t.Fatalf("default envelope limit = %d, want 0", limit)
+	}
+}

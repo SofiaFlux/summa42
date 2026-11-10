@@ -10,6 +10,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/emergency"
 	"github.com/SofiaFlux/summa42/internal/operations"
+	"github.com/SofiaFlux/summa42/internal/scheduler"
 	"github.com/SofiaFlux/summa42/internal/testutil"
 )
 
@@ -145,5 +146,18 @@ func TestBoxBreakGlassStopsLeasingUntilResume(t *testing.T) {
 	}
 	if _, err := box.Execution.StartAttempt(ctx, taskID, "test-executor", time.Hour); err != nil {
 		t.Fatalf("StartAttempt after resume: %v", err)
+	}
+}
+
+// The obligation planner must hold the scheduler the Box runs, not a nil one.
+func TestBoxObligationPlannerReachesTheScheduler(t *testing.T) {
+	clk := testutil.NewClock(time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC))
+	box, _ := openWiringBox(t, t.TempDir(), clk, 5*time.Minute, false)
+	candidate, err := box.Planner.PlanNext(context.Background(), scheduler.CapacitySnapshot{})
+	if err != nil {
+		t.Fatalf("PlanNext on an empty Collective: %v", err)
+	}
+	if candidate != nil {
+		t.Fatalf("candidate = %+v, want none on an empty Collective", candidate)
 	}
 }

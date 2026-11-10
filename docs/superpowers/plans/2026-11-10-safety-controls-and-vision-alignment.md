@@ -94,9 +94,9 @@ Files: internal/runtime/box.go, box_test.go;
 internal/state/sqlite/migrations/00037_default_envelope_unfunded.sql;
 internal/obligation/service_test.go.
 
-- [ ] Tests: `Box.Planner.PlanNext` reaches the scheduler; default envelope
+- [x] Tests: `Box.Planner.PlanNext` reaches the scheduler; default envelope
   limit is zero after migration; RED.
-- [ ] Construct the planner after the scheduler; migration; GREEN.
+- [x] Construct the planner after the scheduler; migration; GREEN.
 
 ### Task 7: Vision and documentation
 

@@ -233,7 +233,6 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	operationsSvc.SetDetector(detector)
 	attentionSvc := attention.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
 	obligationSvc := obligation.NewService(store, cfg.Clock)
-	plannerAdapter := obligation.NewPlannerAdapter(obligationSvc, schedulerSvc)
 	companySvc := company.NewService(store, cfg.Clock)
 	invariantSvc := invariant.NewService(store, cfg.Clock, companySvc, containmentSvc, attentionSvc, evidenceStore)
 
@@ -270,6 +269,8 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		preferences = append(preferences, experienceSvc)
 	}
 	schedulerSvc = scheduler.New(store, cfg.Clock, purposes, executionSvc, resourceSvc, cfg.LeaseDuration, preferences...)
+	// The planner needs the scheduler that exists only from here on.
+	plannerAdapter := obligation.NewPlannerAdapter(obligationSvc, schedulerSvc)
 	wakeSvc = wake.New(store, cfg.Clock, schedulerSvc)
 
 	executorSet := make(map[string]executors.Executor, len(cfg.Executors)+1)
