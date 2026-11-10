@@ -85,8 +85,8 @@ internal/teb/{openshell.go,openshell_test.go},
 internal/executors/{maf.go,maf_test.go}; edit internal/executors/executor.go;
 add docs/superpowers/research/2026-11-10-parked-spikes.md.
 
-- [ ] Index with issue, pull request, commits and restore command per item.
-- [ ] Remove; build, vet and full tests green.
+- [x] Index with issue, pull request, commits and restore command per item.
+- [x] Remove; build, vet and full tests green.
 
 ### Task 6: Company OS library fixes
 

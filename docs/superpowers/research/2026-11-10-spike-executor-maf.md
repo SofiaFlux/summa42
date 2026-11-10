@@ -1,5 +1,7 @@
 # Architecture Spike: Evaluation of Executor Abstraction and Microsoft Agent Framework (MAF) Integration
 
+> **Status 2026-11-10:** The MAF adapter described here is parked, not on `main`. See [parked spikes](2026-11-10-parked-spikes.md) for the commit and the restore command.
+
 **Issue:** [#58](https://github.com/SofiaFlux/summa42/issues/58)  
 **Parent Epic:** [#3](https://github.com/SofiaFlux/summa42/issues/3) (*Slim Meeseek into a semantic control plane over mature OSS runtimes*)  
 **Status:** Completed  
