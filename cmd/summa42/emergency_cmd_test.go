@@ -100,6 +100,10 @@ func TestEmergencyFreezeAndResumeAreOwnerSigned(t *testing.T) {
 	if state, _ := emergencyRow(t, cfg.DatabasePath, `SELECT break_glass_state, 0 FROM emergency_controls WHERE singleton = 1`); state != "RESTORED" {
 		t.Fatalf("break glass = %s after resume, want RESTORED", state)
 	}
+	output, err = runCLIOutput(t, "--json", "emergency", "status", "--home", home)
+	if err != nil || !strings.Contains(output, `"break_glass":"RESTORED"`) || strings.Contains(output, "freeze_reason") {
+		t.Fatalf("JSON status after resume must not repeat the old freeze reason (err %v):\n%s", err, output)
+	}
 }
 
 func TestEmergencyHeartbeatSetsTheOwnerHorizon(t *testing.T) {

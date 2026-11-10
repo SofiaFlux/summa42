@@ -126,17 +126,22 @@ func printEmergencyStatus(cmd *cobra.Command, service *emergency.Service, asJSON
 	}
 	horizon := time.Duration(deadMan.HeartbeatTimeoutSec) * time.Second
 	safeModeAt := deadMan.LastHeartbeatAt.Add(horizon)
+	// The reason of a past freeze is in the audit trail, not in the status.
+	freezeReason := ""
+	if breakGlass.State == emergency.BreakGlassFrozen {
+		freezeReason = breakGlass.FreezeReason
+	}
 	if asJSON {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(emergencyStatusDTO{
-			BreakGlass: string(breakGlass.State), FreezeReason: breakGlass.FreezeReason, DeadMan: string(deadMan.State),
+			BreakGlass: string(breakGlass.State), FreezeReason: freezeReason, DeadMan: string(deadMan.State),
 			LastHeartbeatAt: deadMan.LastHeartbeatAt.UTC().Format(time.RFC3339), HorizonSeconds: deadMan.HeartbeatTimeoutSec,
 			SafeModeAt: safeModeAt.UTC().Format(time.RFC3339),
 		})
 	}
 	out := cmd.OutOrStdout()
 	line := "Break glass: " + string(breakGlass.State)
-	if breakGlass.State == emergency.BreakGlassFrozen {
-		line += " (" + breakGlass.FreezeReason + ")"
+	if freezeReason != "" {
+		line += " (" + freezeReason + ")"
 	}
 	if _, err := fmt.Fprintln(out, line); err != nil {
 		return err
