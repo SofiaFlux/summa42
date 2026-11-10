@@ -181,10 +181,11 @@ func (c *Client) ListIssues(ctx context.Context, cursor string) ([]any, []Unpars
 		}
 		// The trust markers are this client's own verdict; a copy in the
 		// response body is never believed.
-		delete(item.(map[string]any), wireUntrustedTail)
-		delete(item.(map[string]any), wireTrustedFloor)
+		for _, marker := range wireMarkers {
+			delete(item.(map[string]any), marker)
+		}
 		if c.botLogin != "" || len(c.maintainers) > 0 {
-			if err := c.discountBotComments(ctx, token, item.(map[string]any)); err != nil {
+			if err := c.classifyComments(ctx, token, item.(map[string]any)); err != nil {
 				// A comment-fetch failure excludes this issue only; the page goes on.
 				unparseable = append(unparseable, Unparseable{Raw: item})
 				continue
@@ -338,17 +339,14 @@ func readTokenFile(path string) (string, error) {
 // updated_at is kept (the conservative, pre-existing behaviour).
 const maxCommentPages = 10
 
-// discountBotComments handles an issue whose latest update is exactly its latest
-// comment and that comment is untrusted: written by the configured bot or, when
-// maintainers are configured, by anyone who is not a maintainer. It marks the item
-// with wireUntrustedTail, and when a trusted comment exists it rewrites
-// item["updated_at"] to that comment's time and marks wireTrustedFloor. The observer
-// then keeps the revision it already recorded unless the floor is newer. With no
-// trusted comment plain updated_at is kept; it is the revision only on first sight.
-// ponytail: a maintainer's body/label edit made after their last comment and followed
-// by an untrusted comment within one poll interval stays unseen until the next
-// maintainer activity.
-func (c *Client) discountBotComments(ctx context.Context, token string, item map[string]any) error {
+// classifyComments reads an issue's comments and reports what the observer needs
+// to decide its revision. A comment is trusted when a maintainer who is not the bot
+// wrote it (with no maintainers configured: anyone but the bot). It marks the time
+// of the latest trusted comment. When the issue's latest update is exactly an
+// untrusted comment it marks wireUntrustedTail and, if a trusted comment exists,
+// replaces item["updated_at"] with that comment's time, keeping the original in
+// wireRawUpdatedAt. With no trusted comment plain updated_at is kept.
+func (c *Client) classifyComments(ctx context.Context, token string, item map[string]any) error {
 	if n, ok := item["comments"].(float64); ok && n == 0 {
 		return nil
 	}
@@ -414,6 +412,9 @@ func (c *Client) discountBotComments(ctx context.Context, token string, item map
 			break
 		}
 	}
+	if !latestHuman.IsZero() {
+		item[wireLatestTrustedComment] = latestHuman.UTC().Format(time.RFC3339)
+	}
 	if latest.IsZero() || !latestByBot || !latest.Equal(updated) {
 		return nil
 	}
@@ -421,7 +422,7 @@ func (c *Client) discountBotComments(ctx context.Context, token string, item map
 	if latestHuman.IsZero() {
 		return nil
 	}
-	item[wireTrustedFloor] = true
+	item[wireRawUpdatedAt] = updated.UTC().Format(time.RFC3339)
 	item["updated_at"] = latestHuman.UTC().Format(time.RFC3339)
 	return nil
 }

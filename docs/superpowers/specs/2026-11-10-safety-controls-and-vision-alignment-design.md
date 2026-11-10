@@ -84,15 +84,27 @@ reason for every Attempt. Attempt containment revokes its lease the same way.
 
 ### Issue revisions follow maintainers
 
-The intake client receives the maintainer allowlist. A comment is trusted only
-when a maintainer who is not the bot wrote it. When an issue's latest update is
-exactly an untrusted comment, the observer keeps the latest revision it has
-already recorded for that issue, or the last trusted comment's time when that
-is newer. An issue seen for the first time keeps its `updated_at`.
+GitHub's `updated_at` moves for reasons that say nothing about what the
+maintainers want: a comment by anyone, a deleted comment, a reference from
+another issue. A first version of this fix judged only the author of the
+latest comment; review of that version showed the other causes were still
+open, so the rule is stated over what the maintainers authored instead.
 
-Limit (unchanged in kind from the existing bot rule): a maintainer's body or
-label edit made after their last comment and followed by an untrusted comment
-within one poll interval is not seen until the next maintainer activity.
+Once an issue has a recorded revision, a new one is opened only when a
+maintainer commented after it, or the issue's own content changed (title,
+body, labels, assignees: what the canonical snapshot captures). Otherwise the
+issue stays on the recorded revision. An issue seen for the first time keeps
+its `updated_at`.
+
+The intake client receives the maintainer allowlist and reports, per issue,
+the latest maintainer comment and whether the latest update is a comment by
+someone else. The observer compares the current content with the recorded
+snapshot by content hash and decides. Revisions stay timestamps because the
+pipeline orders by them.
+
+Consequences to know: reopening an issue without commenting or editing no
+longer starts a new revision; a maintainer comment does, as before. An edit and
+an unrelated update inside one poll interval are one revision.
 
 ### Parked spikes
 
@@ -152,6 +164,8 @@ wrong: only a session with `revoked_at` set is reported. No change is made.
 Tests written first for each behavior: dead man horizon survives reopen and is
 not rewritten; safe mode after the horizon and recovery by signed heartbeat;
 signature, freshness and replay rejection; freeze refuses `StartAttempt` and
-records `LEASE_REVOKED`; resume restores leasing; untrusted comments keep the
-recorded revision, maintainer comments move it; planner wired; envelope limit.
+records `LEASE_REVOKED`; resume restores leasing; a moved `updated_at`, a
+stranger's comment and an older maintainer comment keep the recorded revision,
+a maintainer comment and a content change move it; planner wired; envelope
+limit.
 Then the validation matrix from CONTRIBUTING.md.

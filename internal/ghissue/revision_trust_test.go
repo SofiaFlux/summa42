@@ -4,8 +4,10 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // collectOne lists one issue through a real Client configured with maintainers.
@@ -32,42 +34,51 @@ func collectOne(t *testing.T, updated, comments string, extraIssueFields string)
 	return issues[0]
 }
 
-func TestCommentByNonMaintainerIsAnUntrustedTail(t *testing.T) {
+func TestClientReportsWhoMovedTheIssueLast(t *testing.T) {
+	at := func(clock string) time.Time {
+		parsed, err := time.Parse(time.RFC3339, "2026-09-24T"+clock+"Z")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parsed
+	}
 	// A maintainer commented at 09:00, then someone else at 10:00.
 	issue := collectOne(t, "2026-09-24T10:00:00Z",
 		`[{"user":{"login":"maint"},"updated_at":"2026-09-24T09:00:00Z"},{"user":{"login":"stranger"},"updated_at":"2026-09-24T10:00:00Z"}]`, "")
-	if !issue.UntrustedTail || !issue.TrustedFloor || issue.RevisionID() != "2026-09-24T09:00:00Z" {
-		t.Fatalf("untrusted=%v floor=%v revision=%s; want an untrusted tail on the maintainer's 09:00 comment",
-			issue.UntrustedTail, issue.TrustedFloor, issue.RevisionID())
+	if !issue.UntrustedTail || !issue.LatestTrustedComment.Equal(at("09:00:00")) || !issue.RawUpdatedAt.Equal(at("10:00:00")) || issue.RevisionID() != "2026-09-24T09:00:00Z" {
+		t.Fatalf("untrusted=%v trusted=%s raw=%s revision=%s; want an untrusted tail resting on the maintainer's 09:00 comment",
+			issue.UntrustedTail, issue.LatestTrustedComment, issue.RawUpdatedAt, issue.RevisionID())
 	}
 
-	// Only a non-maintainer commented: no trusted comment to fall back to.
+	// Only a non-maintainer commented: nothing trusted to rest on.
 	issue = collectOne(t, "2026-09-24T10:00:00Z", `[{"user":{"login":"stranger"},"updated_at":"2026-09-24T10:00:00Z"}]`, "")
-	if !issue.UntrustedTail || issue.TrustedFloor || issue.RevisionID() != "2026-09-24T10:00:00Z" {
-		t.Fatalf("untrusted=%v floor=%v revision=%s; want an untrusted tail without a floor",
-			issue.UntrustedTail, issue.TrustedFloor, issue.RevisionID())
+	if !issue.UntrustedTail || !issue.LatestTrustedComment.IsZero() || !issue.RawUpdatedAt.IsZero() || issue.RevisionID() != "2026-09-24T10:00:00Z" {
+		t.Fatalf("untrusted=%v trusted=%s raw=%s revision=%s; want an untrusted tail with plain updated_at",
+			issue.UntrustedTail, issue.LatestTrustedComment, issue.RawUpdatedAt, issue.RevisionID())
 	}
 
-	// The maintainer's comment is the latest update: an ordinary revision.
+	// The maintainer's comment is the latest update.
 	issue = collectOne(t, "2026-09-24T10:00:00Z",
 		`[{"user":{"login":"stranger"},"updated_at":"2026-09-24T09:00:00Z"},{"user":{"login":"MAINT"},"updated_at":"2026-09-24T10:00:00Z"}]`, "")
-	if issue.UntrustedTail || issue.RevisionID() != "2026-09-24T10:00:00Z" {
-		t.Fatalf("untrusted=%v revision=%s; a maintainer's comment must move the revision", issue.UntrustedTail, issue.RevisionID())
+	if issue.UntrustedTail || !issue.LatestTrustedComment.Equal(at("10:00:00")) || issue.RevisionID() != "2026-09-24T10:00:00Z" {
+		t.Fatalf("untrusted=%v trusted=%s revision=%s; want the maintainer's 10:00 comment reported",
+			issue.UntrustedTail, issue.LatestTrustedComment, issue.RevisionID())
 	}
 
-	// The issue changed after the stranger's comment (an edit or a label): trusted again.
+	// The issue changed after the stranger's comment: not a comment tail.
 	issue = collectOne(t, "2026-09-24T11:00:00Z", `[{"user":{"login":"stranger"},"updated_at":"2026-09-24T10:00:00Z"}]`, "")
 	if issue.UntrustedTail || issue.RevisionID() != "2026-09-24T11:00:00Z" {
-		t.Fatalf("untrusted=%v revision=%s; an update after the comment is a new revision", issue.UntrustedTail, issue.RevisionID())
+		t.Fatalf("untrusted=%v revision=%s; an update after the comment is not an untrusted tail", issue.UntrustedTail, issue.RevisionID())
 	}
 }
 
 func TestTrustMarkersInTheResponseAreIgnored(t *testing.T) {
 	issue := collectOne(t, "2026-09-24T10:00:00Z",
-		`[{"user":{"login":"maint"},"updated_at":"2026-09-24T10:00:00Z"}]`,
-		`"summa42_untrusted_tail":true,"summa42_trusted_floor":true,`)
-	if issue.UntrustedTail || issue.TrustedFloor {
-		t.Fatalf("untrusted=%v floor=%v; markers supplied by the server must not be believed", issue.UntrustedTail, issue.TrustedFloor)
+		`[{"user":{"login":"stranger"},"updated_at":"2026-09-24T09:00:00Z"}]`,
+		`"summa42_untrusted_tail":true,"summa42_latest_trusted_comment":"2026-09-24T09:30:00Z","summa42_raw_updated_at":"2026-09-24T08:00:00Z",`)
+	if issue.UntrustedTail || !issue.LatestTrustedComment.IsZero() || !issue.RawUpdatedAt.IsZero() {
+		t.Fatalf("untrusted=%v trusted=%s raw=%s; markers supplied by the server must not be believed",
+			issue.UntrustedTail, issue.LatestTrustedComment, issue.RawUpdatedAt)
 	}
 }
 
@@ -81,68 +92,97 @@ func observedRevisions(t *testing.T, f observeFixture) []string {
 	for _, c := range cases {
 		revisions = append(revisions, c.RevisionID)
 	}
+	sort.Strings(revisions)
 	return revisions
 }
 
-func TestObserveKeepsRecordedRevisionAcrossUntrustedComments(t *testing.T) {
-	f := setupObserve(t)
-	observe := func(updated string, untrustedTail, trustedFloor bool) {
-		t.Helper()
-		lister := &stubLister{name: "o/r", pages: []stubPage{{items: []any{wireIssue(func(m map[string]any) {
-			m["updated_at"] = updated
-			if untrustedTail {
-				m[wireUntrustedTail] = true
-			}
-			if trustedFloor {
-				m[wireTrustedFloor] = true
-			}
-		})}}}}
-		if _, err := ObserveOnce(f.ctx, lister, f.cases, f.execSvc, f.evidenceStore, f.cfg); err != nil {
-			t.Fatal(err)
-		}
-	}
-	wantRevisions := func(when string, want ...string) {
-		t.Helper()
-		got := observedRevisions(t, f)
-		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Fatalf("%s: recorded revisions = %v, want %v", when, got, want)
-		}
-	}
-
-	// The maintainer's issue is recorded at its 11:00 edit.
-	observe("2026-09-24T11:00:00Z", false, false)
-	wantRevisions("first sight", "2026-09-24T11:00:00Z")
-
-	// A stranger comments at 12:00; no maintainer comment exists.
-	observe("2026-09-24T12:00:00Z", true, false)
-	wantRevisions("stranger comment without a floor", "2026-09-24T11:00:00Z")
-
-	// A stranger comments while the last maintainer comment (10:00) is older
-	// than the recorded 11:00 edit: the revision must not go back to 10:00.
-	observe("2026-09-24T10:00:00Z", true, true)
-	wantRevisions("stranger comment with an older floor", "2026-09-24T11:00:00Z")
-
-	// A maintainer comment at 13:00 that was not observed before a stranger's
-	// 14:00 comment still moves the revision.
-	observe("2026-09-24T13:00:00Z", true, true)
-	wantRevisions("unobserved maintainer comment under a stranger's", "2026-09-24T11:00:00Z", "2026-09-24T13:00:00Z")
-
-	// And a maintainer's own later update moves it as before.
-	observe("2026-09-24T15:00:00Z", false, false)
-	wantRevisions("maintainer update", "2026-09-24T11:00:00Z", "2026-09-24T13:00:00Z", "2026-09-24T15:00:00Z")
+// observation is one poll result for issue #7 as the Client would report it.
+type observation struct {
+	updated, raw, trusted string // clock times on 2026-09-24; empty = not reported
+	untrustedTail         bool
+	body                  string
 }
 
-func TestObserveFirstSightUnderAnUntrustedCommentIsRecordedOnce(t *testing.T) {
-	f := setupObserve(t)
-	for _, updated := range []string{"2026-09-24T12:00:00Z", "2026-09-24T12:30:00Z"} {
-		lister := &stubLister{name: "o/r", pages: []stubPage{{items: []any{wireIssue(func(m map[string]any) {
-			m["updated_at"] = updated
+func observe(t *testing.T, f observeFixture, o observation) {
+	t.Helper()
+	stamp := func(clock string) string { return "2026-09-24T" + clock + "Z" }
+	lister := &stubLister{name: "o/r", pages: []stubPage{{items: []any{wireIssue(func(m map[string]any) {
+		m["updated_at"] = stamp(o.updated)
+		if o.body != "" {
+			m["body"] = o.body
+		}
+		if o.untrustedTail {
 			m[wireUntrustedTail] = true
-		})}}}}
-		if _, err := ObserveOnce(f.ctx, lister, f.cases, f.execSvc, f.evidenceStore, f.cfg); err != nil {
-			t.Fatal(err)
+		}
+		if o.raw != "" {
+			m[wireRawUpdatedAt] = stamp(o.raw)
+		}
+		if o.trusted != "" {
+			m[wireLatestTrustedComment] = stamp(o.trusted)
+		}
+	})}}}}
+	if _, err := ObserveOnce(f.ctx, lister, f.cases, f.execSvc, f.evidenceStore, f.cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRevisionMovesOnlyOnMaintainerCommentOrContentChange(t *testing.T) {
+	f := setupObserve(t)
+	want := func(when string, clocks ...string) {
+		t.Helper()
+		expected := make([]string, 0, len(clocks))
+		for _, clock := range clocks {
+			expected = append(expected, "2026-09-24T"+clock+"Z")
+		}
+		if got := observedRevisions(t, f); strings.Join(got, ",") != strings.Join(expected, ",") {
+			t.Fatalf("%s: recorded revisions = %v, want %v", when, got, expected)
 		}
 	}
+
+	observe(t, f, observation{updated: "11:00:00"})
+	want("first sight", "11:00:00")
+
+	// updated_at moved with no comment behind it: a reference from another
+	// issue, or a comment that was posted and deleted.
+	observe(t, f, observation{updated: "12:00:00"})
+	want("updated_at moved, nothing changed", "11:00:00")
+
+	// A stranger's comment is the latest update; no maintainer ever commented.
+	observe(t, f, observation{updated: "12:30:00", untrustedTail: true})
+	want("stranger comment", "11:00:00")
+
+	// A stranger's comment over a maintainer comment older than the recorded
+	// revision: the Client reports 10:00, the revision must not go back to it.
+	observe(t, f, observation{updated: "10:00:00", raw: "13:00:00", trusted: "10:00:00", untrustedTail: true})
+	want("stranger comment over an older maintainer comment", "11:00:00")
+
+	// A maintainer comments: the content is the same, the revision moves.
+	observe(t, f, observation{updated: "14:00:00", trusted: "14:00:00"})
+	want("maintainer comment", "11:00:00", "14:00:00")
+
+	// A maintainer comment that a stranger's later comment hides from updated_at.
+	observe(t, f, observation{updated: "15:00:00", raw: "15:30:00", trusted: "15:00:00", untrustedTail: true})
+	want("maintainer comment under a stranger's", "11:00:00", "14:00:00", "15:00:00")
+
+	// The maintainer edits the body.
+	observe(t, f, observation{updated: "16:00:00", trusted: "15:00:00", body: "steps, revised"})
+	want("body edit", "11:00:00", "14:00:00", "15:00:00", "16:00:00")
+
+	// Another edit, followed by a stranger's comment before the next poll: the
+	// Client rests on the 15:00 comment, but the content did change.
+	observe(t, f, observation{updated: "15:00:00", raw: "17:00:00", trusted: "15:00:00", untrustedTail: true, body: "steps, revised twice"})
+	want("body edit under a stranger's comment", "11:00:00", "14:00:00", "15:00:00", "16:00:00", "17:00:00")
+
+	// Polling the same state again changes nothing.
+	observe(t, f, observation{updated: "15:00:00", raw: "17:00:00", trusted: "15:00:00", untrustedTail: true, body: "steps, revised twice"})
+	observe(t, f, observation{updated: "18:00:00", trusted: "15:00:00", body: "steps, revised twice"})
+	want("repoll and another unrelated update", "11:00:00", "14:00:00", "15:00:00", "16:00:00", "17:00:00")
+}
+
+func TestFirstSightUnderAStrangersCommentIsRecordedOnce(t *testing.T) {
+	f := setupObserve(t)
+	observe(t, f, observation{updated: "12:00:00", untrustedTail: true})
+	observe(t, f, observation{updated: "12:30:00", untrustedTail: true})
 	if got := observedRevisions(t, f); len(got) != 1 || got[0] != "2026-09-24T12:00:00Z" {
 		t.Fatalf("recorded revisions = %v, want only the first sight at 12:00", got)
 	}

@@ -231,7 +231,22 @@ func TestObserveOnceRepollIsNoopAndNormalizesOffsets(t *testing.T) {
 	if after := snapshotCount(t, f.store, f.ctx); after != before {
 		t.Fatalf("evidence snapshots grew %d -> %d", before, after)
 	}
-	next, err := ObserveOnce(f.ctx, page("2026-09-24T13:00:00+02:00"), f.cases, f.execSvc, f.evidenceStore, f.cfg)
+	// A later updated_at alone is not an edit (see resolveRevision): the issue
+	// stays on its recorded revision until its content changes.
+	touched, err := ObserveOnce(f.ctx, page("2026-09-24T13:00:00+02:00"), f.cases, f.execSvc, f.evidenceStore, f.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if touched.Ensured[0] != first.Ensured[0] {
+		t.Fatal("a moved updated_at with unchanged content opened a new case")
+	}
+	edited := &stubLister{name: "o/r", pages: []stubPage{{items: []any{
+		wireIssue(func(m map[string]any) {
+			m["updated_at"] = "2026-09-24T13:00:00+02:00"
+			m["body"] = "steps, revised"
+		}),
+	}}}}
+	next, err := ObserveOnce(f.ctx, edited, f.cases, f.execSvc, f.evidenceStore, f.cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

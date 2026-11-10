@@ -76,6 +76,11 @@ observe_test.go; cmd/summa42-box/main.go.
 - [x] Tests: outsider comment keeps the recorded revision; maintainer comment
   moves it; first sight keeps `updated_at`; bot rule unchanged; RED.
 - [x] Client flags the untrusted tail; observer resolves the revision; GREEN.
+- [x] Self-review found that a deleted comment or a cross-reference still moved
+  `updated_at`. Tests for a moved `updated_at` with unchanged content and for a
+  content change under a stranger's comment; observer now decides on maintainer
+  comment or content change; GREEN. One existing test simulated an edit by
+  moving only `updated_at`; it now edits the body.
 
 ### Task 5: Park spikes
 
