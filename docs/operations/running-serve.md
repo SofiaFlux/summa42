@@ -132,6 +132,7 @@ journalctl -u summa42-serve -f
 | `SUMMA42_MODEL_USER`, `SUMMA42_VALIDATION_USER`, `SUMMA42_VALIDATION_TOOLCHAIN_DIRS` | From section 3 |
 | `SUMMA42_PRODUCER_*`, `SUMMA42_REVIEWER_*` | Harness profile and model ID of the two models |
 | `SUMMA42_CONTEXT_MAX_BYTES` | Planner context limit; keep `80000` for `agy` |
+| `SUMMA42_MAX_REPAIRS`, `SUMMA42_MAX_STEPS` | Optional. Repairs per case after `REVISE` (default 2) and steps per case (default 12; a case without repairs takes about five) |
 
 The service runs `summa42-box serve` with three supervised loops: the control
 daemon, intake and the pipeline. A loop that stops is restarted by `serve`;
@@ -154,10 +155,13 @@ Collective refuses to start.
 
 ## 8. What you still do by hand
 
-- **A plan or a candidate the reviewer sends back (`REVISE`) holds the case.**
-  Nothing re-plans by itself yet (plan card M1-T1).
-  `scripts/requeue-revise.py` posts the reviewer's reasons as your comment,
-  which opens a new case.
+- **A case held after its repairs.** When a reviewer sends a plan or a
+  candidate back (`REVISE`), the pipeline repairs it by itself: the reviewer's
+  reasons go to a new plan or a new candidate, at most twice per case
+  (`SUMMA42_MAX_REPAIRS`, `0` turns it off). The third `REVISE`, any `BLOCK`,
+  and a case that ran out of steps or budget hold the case; look at
+  `summa42 cases --state BLOCKED`. `scripts/requeue-revise.py` posts the
+  reviewer's reasons as your comment, which opens a new case.
 - **Merging and closing the issue.** There is no merge stage.
 - **Restart after each merge**, because the commit is pinned at start.
 - **Notifications.** Nothing tells you that an approval is waiting or a case

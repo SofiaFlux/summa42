@@ -179,6 +179,8 @@ type PlanInput struct {
 	TrackedFiles       []string       `json:"tracked_files,omitempty"`
 	Turn               int            `json:"turn,omitempty"`
 	ReadResults        []ReadResult   `json:"read_results,omitempty"`
+	// PriorReviews is set for a plan repair: why earlier plans were sent back.
+	PriorReviews []PriorReview `json:"prior_reviews,omitempty"`
 }
 
 type PlanModel interface {

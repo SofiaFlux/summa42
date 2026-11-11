@@ -17,17 +17,22 @@ import (
 )
 
 // parseGHPlanReviewFlags is run-gh-plan-review's flag parsing.
-func parseGHPlanReviewFlags(args []string) (mission, baseSHA string, modelConfig climodel.Config, err error) {
+func parseGHPlanReviewFlags(args []string) (mission, baseSHA string, modelConfig climodel.Config, maxRepairs int, err error) {
 	flags := flag.NewFlagSet("run-gh-plan-review", flag.ContinueOnError)
 	fallbackOf := flags.String("model-fallback-of", "", "pool a replacement reviewer stands in for (set by run-gh-pipeline)")
 	flags.StringVar(&mission, "mission", "", "mission whose grounded plans are independently reviewed")
 	flags.StringVar(&baseSHA, "source-sha", "", "commit plans must be grounded on; a plan on another base is held unreviewed (optional)")
+	flags.IntVar(&maxRepairs, "max-repairs", 0, "repairs a case may get after a REVISE, counted over plan and code review; 0 holds the case on every REVISE")
 	registerTriageModelFlags(flags, "model binary reviewing a grounded issue plan")
 	if err = flags.Parse(args); err != nil {
 		return
 	}
 	if strings.TrimSpace(mission) == "" || flags.NArg() != 0 {
 		err = errors.New("run-gh-plan-review requires --mission and no positional arguments")
+		return
+	}
+	if maxRepairs < 0 {
+		err = errors.New("run-gh-plan-review requires a non-negative --max-repairs")
 		return
 	}
 	modelConfig, err = triageModelConfig(flags)
@@ -40,7 +45,7 @@ func runGHPlanReview(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	mission, baseSHA, modelConfig, err := parseGHPlanReviewFlags(args)
+	mission, baseSHA, modelConfig, maxRepairs, err := parseGHPlanReviewFlags(args)
 	if err != nil {
 		return err
 	}
@@ -67,6 +72,7 @@ func runGHPlanReview(ctx context.Context, args []string) error {
 	defer box.Close()
 	adapter = adapter.WithLedger(box.Store, "plan-review", "")
 	reviewer := ghtriage.NewPlanReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout()).WithBaseSHA(strings.TrimSpace(baseSHA)).WithReviewer(reviewerIdentity(modelConfig))
+	reviewer.WithMaxRepairs(maxRepairs)
 	result, err := reviewer.Tick(ctx, domain.ID(strings.TrimSpace(mission)))
 	if err != nil {
 		return err

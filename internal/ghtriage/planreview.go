@@ -82,6 +82,19 @@ type PlanReviewer struct {
 	baseSHA string
 	// reviewer is recorded with every verdict; nil when the caller set none.
 	reviewer *ReviewerIdentity
+	// maxRepairs is how many repairs a case may get after a REVISE; zero
+	// (the default) holds the case on every REVISE.
+	maxRepairs int
+}
+
+// WithMaxRepairs lets a REVISE verdict continue the case into plan repair
+// until the case has had max repairs (see repair.go). Zero holds every REVISE.
+func (r *PlanReviewer) WithMaxRepairs(max int) *PlanReviewer {
+	if max < 0 {
+		max = 0
+	}
+	r.maxRepairs = max
+	return r
 }
 
 // WithReviewer records who gives the verdicts, so a replacement reviewer's
@@ -235,8 +248,26 @@ func (r *PlanReviewer) loadPlan(ctx context.Context, c workflowcase.Case) (Plan,
 	if err := json.Unmarshal(indexRaw, &accepted); err != nil {
 		return fail(err)
 	}
-	if accepted.CaseID != c.ID || accepted.TaskID != request.WorkID || accepted.Revision != c.RevisionID || accepted.DecisionEvidenceID != plan.DecisionEvidenceID {
+	if accepted.CaseID != c.ID || accepted.Revision != c.RevisionID || accepted.DecisionEvidenceID != plan.DecisionEvidenceID {
 		return fail(errors.New("plan differs from accepted triage index"))
+	}
+	if accepted.TaskID != request.WorkID {
+		// The plan was not written for the triage work itself. That is valid
+		// only for plan repair work that a REVISE plan review produced.
+		history, err := decodeAssessments(records)
+		if err != nil {
+			return fail(err)
+		}
+		producer, err := producerOf(history, string(request.WorkID))
+		if err != nil {
+			return fail(err)
+		}
+		if producer == nil {
+			return fail(errors.New("plan differs from accepted triage index"))
+		}
+		if err := checkRepair(ctx, r.evidence, c, *producer, RepairOfPlanReview, PlanRepairWorkKind); err != nil {
+			return fail(fmt.Errorf("plan is for work that is neither the accepted triage nor a plan repair: %w", err))
+		}
 	}
 	// The existing accepted index's task_id is the Work creation key, not the
 	// generated Task ID (the planning gate uses the same lookup).
@@ -328,7 +359,25 @@ func (r *PlanReviewer) reviewCase(ctx context.Context, c workflowcase.Case) (boo
 			assessment.Reason = "plan-review:implementation-grant-missing"
 		}
 	}
-	result, err := r.cases.Assess(ctx, workflowcase.AssessmentRequest{CaseID: c.ID, WorkID: c.CurrentWorkID, Assessment: assessment, RemainingBudget: c.RemainingBudget, ProgressSignature: object.ContentHash, RequireLatestRevision: true, PlanReviewVerdict: typedVerdict})
+	repairOf := ""
+	if output.Verdict == "REVISE" && !fallback && r.maxRepairs > 0 {
+		records, err := r.cases.ListAssessments(ctx, c.ID)
+		if err != nil {
+			return false, err
+		}
+		history, err := decodeAssessments(records)
+		if err != nil {
+			return false, err
+		}
+		if repairsSoFar(history) < r.maxRepairs {
+			// Continue into plan repair: the planner writes a new plan for new
+			// work, with this reason as input (repair.go).
+			assessment.Verdict = workflow.Continue
+			assessment.Next = &workflow.WorkProposal{Kind: PlanRepairWorkKind, RequiredCapabilities: []string{RequiredCapability}, AuthorityCeiling: []string{RequiredCapability}}
+			repairOf = RepairOfPlanReview
+		}
+	}
+	result, err := r.cases.Assess(ctx, workflowcase.AssessmentRequest{CaseID: c.ID, WorkID: c.CurrentWorkID, Assessment: assessment, RemainingBudget: c.RemainingBudget, ProgressSignature: object.ContentHash, RequireLatestRevision: true, PlanReviewVerdict: typedVerdict, RepairOf: repairOf})
 	if err != nil {
 		return false, err
 	}

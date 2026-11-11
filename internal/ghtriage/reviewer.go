@@ -357,11 +357,30 @@ func (r *Reviewer) stateMatches(ctx context.Context, c workflowcase.Case, record
 			return false
 		}
 		for _, record := range records[1:] {
-			if !postPlanReason(recordReason(record)) {
+			// A later planning assessment is a plan repair's new plan.
+			if reason := recordReason(record); !postPlanReason(reason) && reason != PlanningAssessmentReason {
 				return false
 			}
 		}
 		if len(records) > 1 {
+			// Bounded repair (repair.go): a REVISE that continued the case leaves
+			// it active at plan repair or at new implementation work, and a
+			// repaired plan leaves it active at plan review again.
+			if history, err := decodeAssessments(records); err == nil {
+				last := history[len(history)-1]
+				if latest == nil || last.record.ID == *latest {
+					if last.isRepair() {
+						want := ImplementationWorkKind
+						if last.req.RepairOf == RepairOfPlanReview {
+							want = PlanRepairWorkKind
+						}
+						return c.State == workflowcase.Active && c.NextWork.Kind == want
+					}
+					if last.result.Decision.Reason == PlanningAssessmentReason && last.result.Decision.Outcome == workflow.OutcomeContinue {
+						return c.State == workflowcase.Active && c.NextWork.Kind == PlanReviewWorkKind
+					}
+				}
+			}
 			// An accepted review hands the case to implementation; a confirmed
 			// publication leaves it ready for an independent verifier; every other
 			// outcome (verdict, missing grant, held failure) blocks it.

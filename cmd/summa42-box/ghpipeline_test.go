@@ -267,7 +267,7 @@ func TestPipelineStageArgvParsesWithEachStageParser(t *testing.T) {
 			return err
 		},
 		"plan-review": func(args []string) error {
-			_, _, model, err := parseGHPlanReviewFlags(args)
+			_, _, model, _, err := parseGHPlanReviewFlags(args)
 			modelIs("plan-review", "/bin/reviewer", model.Binary)
 			return err
 		},
@@ -277,7 +277,7 @@ func TestPipelineStageArgvParsesWithEachStageParser(t *testing.T) {
 			return err
 		},
 		"code-review": func(args []string) error {
-			_, _, model, err := parseGHCodeReviewFlags(args)
+			_, _, model, _, err := parseGHCodeReviewFlags(args)
 			modelIs("code-review", "/bin/reviewer", model.Binary)
 			return err
 		},
@@ -383,5 +383,45 @@ func TestPipelineAcceptsAProfileProducerWithACommandCodeReviewer(t *testing.T) {
 		if !slices.Contains(got, want) {
 			t.Errorf("stage flags lack %s: %v", want, got)
 		}
+	}
+}
+
+// The pipeline gives both review stages the repair limit: two by default, the
+// Owner's value otherwise, and zero to hold a case on every REVISE.
+func TestPipelineForwardsTheRepairLimitToBothReviewStages(t *testing.T) {
+	limits := func(args []string) (plan, code int) {
+		p, _ := parsedPipeline(t, args)
+		plan, code = -1, -1
+		for _, s := range p.stages {
+			if s.name == "plan-review" {
+				_, _, _, got, err := parseGHPlanReviewFlags(s.args)
+				if err != nil {
+					t.Fatal(err)
+				}
+				plan = got
+			}
+		}
+		for _, s := range p.perCase {
+			if s.name == "code-review" {
+				_, _, _, got, err := parseGHCodeReviewFlags(append([]string{"--case", "case-1"}, s.args...))
+				if err != nil {
+					t.Fatal(err)
+				}
+				code = got
+			}
+		}
+		return plan, code
+	}
+	if plan, code := limits(validPipelineArgs(t)); plan != ghtriage.DefaultMaxRepairs || code != ghtriage.DefaultMaxRepairs {
+		t.Fatalf("default repair limit: plan review %d, code review %d, want %d", plan, code, ghtriage.DefaultMaxRepairs)
+	}
+	if plan, code := limits(append(validPipelineArgs(t), "--max-repairs=0")); plan != 0 || code != 0 {
+		t.Fatalf("--max-repairs=0: plan review %d, code review %d", plan, code)
+	}
+	if plan, code := limits(append(validPipelineArgs(t), "--max-repairs=5")); plan != 5 || code != 5 {
+		t.Fatalf("--max-repairs=5: plan review %d, code review %d", plan, code)
+	}
+	if _, _, err := parsePipelineFlags(append(validPipelineArgs(t), "--max-repairs=-1")); err == nil {
+		t.Fatal("a negative repair limit was accepted")
 	}
 }

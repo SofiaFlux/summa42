@@ -35,6 +35,9 @@ type ImplementationInput struct {
 	Context          repoworkspace.Snapshot `json:"context"`
 	Turn             int                    `json:"turn,omitempty"`
 	ValidationErrors string                 `json:"validation_errors,omitempty"`
+	// PriorReviews is set for an implementation repair: why earlier
+	// candidates of this plan were sent back by the code reviewer.
+	PriorReviews []PriorReview `json:"prior_reviews,omitempty"`
 }
 type ImplementationOutput struct {
 	Schema      string               `json:"schema,omitempty"`

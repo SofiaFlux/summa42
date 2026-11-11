@@ -22,7 +22,11 @@ type AssessmentRequest struct {
 	// implementation. Rows written before this field existed carry only the reason
 	// prefix, which readers still accept when the field is absent.
 	PlanReviewVerdict string `json:"PlanReviewVerdict,omitempty"`
-	Phase             Phase  `json:"Phase,omitempty"`
+	// RepairOf marks an assessment that continues the case into a bounded
+	// repair after a reviewer's REVISE: "plan-review" or "code-review". Empty
+	// for every other assessment.
+	RepairOf string `json:"RepairOf,omitempty"`
+	Phase    Phase  `json:"Phase,omitempty"`
 }
 
 type AssessmentResult struct {

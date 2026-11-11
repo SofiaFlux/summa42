@@ -37,7 +37,7 @@ set -- serve \
     --envelope "$SUMMA42_ENVELOPE" \
     --credential-file "$SUMMA42_GITHUB_TOKEN_FILE" \
     --grant-capability github.issue.read \
-    --max-steps "${SUMMA42_MAX_STEPS:-8}" \
+    --max-steps "${SUMMA42_MAX_STEPS:-12}" \
     --remaining-budget "${SUMMA42_REMAINING_BUDGET:-10}" \
     --poll-interval "${SUMMA42_INTAKE_INTERVAL:-1m}"
 if [ -n "${SUMMA42_AUTO_GRANT_LABEL:-}" ]; then
@@ -54,6 +54,7 @@ set -- "$@" \
     --pipeline \
     --mission "$SUMMA42_MISSION" \
     --interval "${SUMMA42_PIPELINE_INTERVAL:-2m}" \
+    --max-repairs "${SUMMA42_MAX_REPAIRS:-2}" \
     --repository "$SUMMA42_GITHUB_REPOSITORY" \
     --base-branch "$SUMMA42_BASE_BRANCH" \
     --credential-file "$SUMMA42_GITHUB_TOKEN_FILE" \

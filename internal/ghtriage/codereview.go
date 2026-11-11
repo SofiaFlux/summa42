@@ -72,6 +72,9 @@ type CodeReviewer struct {
 	verify   *verification.Service
 	evidence *evidence.Store
 	model    CodeReviewModel
+	// maxRepairs is how many repairs a case may get after a REVISE; zero
+	// holds the case on every REVISE.
+	maxRepairs int
 	// modelTimeout sizes the attempt lease (zero keeps CodeReviewLeaseDuration).
 	modelTimeout time.Duration
 	// reviewer is recorded with every verdict; nil when the caller set none.
@@ -88,6 +91,17 @@ func (r *CodeReviewer) WithReviewer(id ReviewerIdentity) *CodeReviewer {
 // WithModelTimeout derives the attempt lease from the model call timeout.
 func (r *CodeReviewer) WithModelTimeout(d time.Duration) *CodeReviewer {
 	r.modelTimeout = d
+	return r
+}
+
+// WithMaxRepairs lets a REVISE verdict continue the case into new
+// implementation work until the case has had max repairs (see repair.go).
+// Zero, the default, holds the case on every REVISE.
+func (r *CodeReviewer) WithMaxRepairs(max int) *CodeReviewer {
+	if max < 0 {
+		max = 0
+	}
+	r.maxRepairs = max
 	return r
 }
 
@@ -299,8 +313,14 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 		if fallback {
 			reason = "code-review:fallback:" + record.Verdict + ": " + record.Reason
 		}
-		if err := moveCase(ctx, r.cases, c, workflow.Unknown, reason, object.ID); err != nil {
+		repaired, err := r.repair(ctx, c, record, fallback, reason, object)
+		if err != nil {
 			return CodeReviewResult{}, err
+		}
+		if !repaired {
+			if err := moveCase(ctx, r.cases, c, workflow.Unknown, reason, object.ID); err != nil {
+				return CodeReviewResult{}, err
+			}
 		}
 	}
 	return CodeReviewResult{Reused: reused, Accepted: accepted, EvidenceID: object.ID, Record: &record}, nil
@@ -389,4 +409,37 @@ func (r *CodeReviewer) acceptReview(ctx context.Context, task domain.Task, recor
 		return err
 	}
 	return nil
+}
+
+// repair continues the case into new implementation work after a REVISE, when
+// repairs are enabled and the case has not used them up. The new work gets a
+// new Task, candidate, validation and code review; the plan and its accepted
+// review stay the same. It reports whether the case was continued; a case the
+// step limit or budget stops is blocked by the assessment itself.
+func (r *CodeReviewer) repair(ctx context.Context, c workflowcase.Case, record CodeReviewRecord, fallback bool, reason string, object evidence.EvidenceObject) (bool, error) {
+	if record.Verdict != "REVISE" || fallback || r.maxRepairs <= 0 {
+		return false, nil
+	}
+	records, err := r.cases.ListAssessments(ctx, c.ID)
+	if err != nil {
+		return false, err
+	}
+	history, err := decodeAssessments(records)
+	if err != nil {
+		return false, err
+	}
+	if repairsSoFar(history) >= r.maxRepairs {
+		return false, nil
+	}
+	caps := []string{"workspace.repo.write", "workspace.test"}
+	_, err = r.cases.Assess(ctx, workflowcase.AssessmentRequest{
+		CaseID: c.ID, WorkID: c.CurrentWorkID, RemainingBudget: c.RemainingBudget, ProgressSignature: object.ContentHash,
+		RequireLatestRevision: true, RepairOf: RepairOfCodeReview,
+		Assessment: workflow.Assessment{Verdict: workflow.Continue, Reason: reason, EvidenceIDs: []string{string(object.ID)},
+			Next: &workflow.WorkProposal{Kind: ImplementationWorkKind, RequiredCapabilities: append([]string(nil), caps...), AuthorityCeiling: append([]string(nil), caps...), ProposedActions: append([]string(nil), caps...)}},
+	})
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
