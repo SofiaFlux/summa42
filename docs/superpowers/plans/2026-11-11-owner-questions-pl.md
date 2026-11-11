@@ -4,7 +4,8 @@ Dotyczy: [plan rozwoju](2026-11-11-development-plan.md).
 
 Stan na 11 listopada 2026: Owner odpowiedział na pytania kluczowe w rozmowie.
 Każde pytanie ma poniżej **Decyzję** (odpowiedź Ownera) albo **Przyjęto
-domyślnie** (nie pytano osobno; obowiązuje, dopóki Owner nie zmieni). Zmiana
+domyślnie** (nie pytano osobno; obowiązuje, dopóki Owner nie zmieni). Jedno
+jest otwarte: Q21. Zmiana
 decyzji: popraw wpis i zrób commit.
 
 ## A. Produkt i firma
@@ -82,7 +83,8 @@ Przyjęto domyślnie: tak.
 ## C. Budżet i modele
 
 **Q20.** Limity pieniężne na start?
-Decyzja: 5 USD na case i 20 USD dziennie, do kalibracji po pilotażu.
+Decyzja: 5 USD na case i 20 USD dziennie na cały Kolektyw, do kalibracji po
+pilotażu.
 
 **Q21.** Jakie subskrypcje i dostępy do modeli są dostępne?
 Otwarte. Potrzebne do tabeli cen w M3-T1; do tego czasu obowiązuje lista
@@ -132,10 +134,19 @@ Decyzja: 5 kolejnych; jedna niezgodność zeruje licznik.
 **Q32.** Co system przejmuje sam na start (pierwszy mandat)?
 Decyzja: tylko ryzyko LOW, odwracalne, bez skutku na zewnątrz. Wszystko inne
 jest propozycją.
+Doprecyzowanie po recenzji planu (do potwierdzenia przez Ownera): Wizja
+(art. 7 i 27) mówi, że dowód daje tylko propozycję, a kopertę uprawnień
+powiększa wyłącznie Owner. Dlatego w ramach mandatu system sam przyjmuje tylko
+harmonogramy i szablony zadań dla pracy, która już dziś nie wymaga
+zatwierdzenia. Każda stała delegacja (przejęcie decyzji, którą dotąd
+zatwierdzał Owner), zmiana manifestu i zasilenie budżetu to zawsze propozycja
+wymagająca jednego podpisu Ownera. Szerszy wariant wymagałby zmiany Wizji przez
+Ownera.
 
 **Q33.** Czego nie wolno delegować nigdy?
 Przyjęto domyślnie: polityki, kluczy, listy zatwierdzających, budżetów, plików
-workflow CI oraz samego mechanizmu delegacji i mandatu. Komunikacja z klientami
+workflow CI i definicji pipeline'ów w każdym repozytorium oraz samego
+mechanizmu delegacji i mandatu. Komunikacja z klientami
 i dokumenty finansowe nie są na tej liście (Q11): są poza mandatem na start, a
 Owner może je później delegować osobnym podpisem.
 

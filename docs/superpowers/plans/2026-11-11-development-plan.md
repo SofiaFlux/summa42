@@ -2,7 +2,7 @@
 
 > **For the implementing agent (Gemini Flash or any other model):** read
 > sections 1 to 4 completely before touching code. Work on exactly one task
-> card at a time, in the order given in section 5. Section 3 is binding; a
+> card at a time, in the order given in section 4.1. Section 3 is binding; a
 > change that breaks a rule there is rejected even if its tests pass.
 
 **Date:** 11 November 2026. **Base:** `main` @ `9ad78eb`.
@@ -16,8 +16,8 @@ itself where the Owner granted that in advance.
 **Owner decisions:** the Owner answered the plan's questions on 11 November
 2026; the answers are recorded in
 [Owner questions](2026-11-11-owner-questions-pl.md) and summarized in section
-2.4. Where a card still says `needs Q<n>`, read the answer there; if it is
-recorded as open, do not start the card on a guess.
+2.4. One question is still open (Q21, the list of model subscriptions); M3-T1
+says how to proceed without it.
 
 This plan continues the
 [self-development roadmap](2026-10-07-self-development-roadmap.md) (stages 5 to
@@ -32,7 +32,7 @@ The README table "What runs today" is the source of truth. In short:
 
 | Runs | Library only (constructed, never called by a running path) | Not built |
 | --- | --- | --- |
-| Kernel: Task/Attempt leasing, evidence, policy, approvals, external operations, resource ledger, audit | `internal/company`, `obligation`, `invariant`, `attention`, `board` | Projects (a scope below the Collective) |
+| Kernel: Task/Attempt leasing, evidence, policy, approvals, external operations, resource ledger, audit | `internal/company`, `obligation`, `invariant`, `attention` (constructed in the Box, never called); `internal/board` (not even imported outside its tests) | Projects (a scope below the Collective) |
 | GitHub issue to draft PR, supervised (A1, one case completed) | OCI TEB, MCP adapter and capability Session, context projection compiler | Money budgets, Owner notifications, backup and restore, external watchdog |
 | ADO PR observation and review | | CI observation, merge, issue closure, standing delegation (A2) |
 | Break glass, dead man switch, containment for three signals | | Automation discovery and adoption |
@@ -91,21 +91,30 @@ through a standing delegation. The loop is therefore:
 
 ```text
 observe  ->  detect  ->  shadow  ->  decide  ->  run  ->  watch
-Owner       repeated     record      inside a     as a     any failure or
-actions     pattern,     what it     signed       standing rejection
-and         evidence-    would       mandate:     delegation suspends it
-manual      backed       have done   adopt and    or a     (contracting is
-steps       candidate    and compare notify;      schedule  autonomous)
-                                     outside:
-                                     ask the Owner
+Owner       repeated     record      a routine    as a     any failure or
+actions     pattern,     what it     inside a     schedule rejection
+and         evidence-    would       mandate:     or, once suspends it
+manual      backed       have done   adopt and    signed,  (contracting is
+steps       candidate    and compare notify;      as a     autonomous)
+                                     anything     standing
+                                     else: the    delegation
+                                     Owner signs
 ```
 
-- An **automation mandate** is an Owner-signed, per-Project statement of which
-  classes of automation the Collective may adopt without asking (risk ceiling,
-  reversibility, budget, count per period). Adopting inside a mandate is use of
-  granted authority, not expansion.
-- Everything outside a mandate becomes one decision packet in the Owner inbox,
-  with the evidence, the exact delegation it would create and the way back.
+- An **automation mandate** is an Owner-signed, per-Project standing
+  delegation (Article 27) for one thing: turning a detected routine into a
+  schedule or Task template for work that is already allowed without approval
+  under the Project's existing grants and envelope. Adoption under a mandate
+  creates no authority record. It never creates, widens or reactivates a
+  delegation, a grant, a budget or a manifest entry; those are created only by
+  an Owner signature (Articles 7 and 27: proof earns a proposal, and only the
+  Owner enlarges the envelope).
+- Everything else, in particular every proposed standing delegation, becomes
+  one decision packet in the Owner inbox, with the evidence, the exact record
+  it would create and the way back. The Owner's signature on that packet is
+  what creates it. "Adopts by itself" therefore means: routines inside what the
+  Owner already allowed. Taking over a decision the Owner used to approve
+  always costs one signature, once per class.
 - Detection is deterministic first (counts over recorded Owner actions). A
   model may later suggest candidates; it never adopts.
 
@@ -128,18 +137,18 @@ the first Project and stays the proving ground.
 | Second work source | Azure DevOps work items; milestone M2A adds the full ADO delivery path |
 | Support intake | E-mail and the portal's contact form, which stores requests in the product database; a future API endpoint for data requests uses the same store |
 | Billing | inFakt (sandbox today), already automated inside the product behind a provider abstraction; Summa42 observes it |
-| Customer communication and financial documents | Not sent or issued by Summa42 at the start. Invoicing is expected to become automated later, communication possibly; each needs its own Owner-signed delegation |
+| Customer communication and financial documents | Not sent or issued by Summa42 at the start: a drafted reply is delivered to the Owner, who sends it. Later a send is an external operation of at least MEDIUM risk behind per-operation approval, and doing it without approval needs an Owner-signed delegation. Invoicing stays in the product |
 | Private data and code | Zero-data-retention or local models only |
 | Implementer | Gemini Flash through the `agy` profile; other models through Command Code or opencode. Direct API providers and more harnesses later (M3-T6) |
 | Specs and review | Claude writes the `DESIGN` specs and reviews every pull request |
-| Money | 5 USD per case, 20 USD per day; paid API calls only inside those caps |
+| Money | 5 USD per case, 20 USD per day for the whole Collective; paid API calls only inside those caps |
 | Notifications | Discord webhook first, behind a sender interface |
 | Owner key | Passphrase-encrypted now, behind a signer interface that later admits a hardware key or an SSO-backed signer |
 | Host | A Linux VM with systemd; nothing cloud-specific in the runtime (Azure today, another provider possible) |
 | Backup | Daily, local plus Azure Blob, behind a destination interface |
 | Owner horizon | Seven days |
-| Automation thresholds | Propose after 5 approvals of one class in 30 days with no rejection; 5 agreeing shadow cases before adoption or proposal |
-| First mandate | LOW risk, reversible, no external effect; everything else is proposed |
+| Automation thresholds | Propose after 5 approvals of one class in 30 days with no rejection; 5 consecutive agreeing shadow cases before adoption or proposal |
+| First mandate | Schedules and Task templates for work that is LOW risk, reversible and has no external effect; everything else, including every delegation, is proposed and needs the Owner's signature |
 | Constructors (discussion #136) | An adopted automation is the minimal Constructor v1 |
 
 ### 2.5 Design goal: no runaway agents, no private channels
@@ -163,8 +172,8 @@ Where the running system stands against that goal:
 
 | Threat | Holds today | Gap | Card |
 | --- | --- | --- | --- |
-| A model reads the Owner key, tokens or state | Separate OS users for models and validation; startup probe refuses if a secret is readable | Executors other than models still run as the Box user; Owner key in a file | M4-T4, M9-T1 |
-| A model causes an external effect directly | Models hold no write credentials; effects only through `operations` | Models have unrestricted network access | M9-T7 |
+| A model reads the Owner key, tokens or state | Separate OS users for models and validation; startup probe refuses if a secret is readable | Executors other than models still run as the Box user; Owner key in a file | M4-T4, M1A-T3 |
+| A model causes an external effect directly | The Box's tokens are unreadable to models; effects only through `operations` | Models have unrestricted network access; the model user's home holds copied CLI logins (a Copilot login is a GitHub credential) whose scopes are not audited | M9-T7, M9-T6 |
 | Producer and reviewer coordinate through the filesystem | Validation runs as a third user so candidate code cannot poison the model's configuration | Producer and reviewer are the same OS user with one home; a call can leave files the next call reads | M9-T6 |
 | Producer and reviewer coordinate over the network | none | No egress restriction on model processes | M9-T7 |
 | The producer steers the reviewer through its own output (instructions in a plan, code comment or commit text) | Different models; recorded validation is not treated as proof; the Owner merges | No deterministic check; after M5 a delegation would rely on the reviewer | M9-T8 |
@@ -184,10 +193,10 @@ agents weaker. A current model in an agentic harness can work for hours from
 one prompt, run tools, build, test and iterate until a whole application
 exists. A Summand must be able to do the same.
 
-Today it cannot. Every model call in the pipeline is a single read-only
-question: plan mode, no tools, a handful of turns, an answer as complete-file
-edits in one JSON document, at most 64 files and 256 KiB. The model never runs
-the code it writes. That was the right way to earn A1 on a host without a
+Today it cannot. Every model call in the pipeline is a bounded read-only
+question: the harness profile is `read_only` or `no_tools`, the turns are few,
+and an implementation comes back as complete-file edits in one JSON document,
+at most 64 files and 256 KiB. The model never runs the code it writes. That was the right way to earn A1 on a host without a
 sandbox; it is far below what the same model does in its own harness.
 
 The rule that reconciles 2.5 and 2.6:
@@ -198,9 +207,11 @@ The rule that reconciles 2.5 and 2.6:
 
 - **Inside:** a full agentic harness with write and execute permission, a
   shell, compilers, test runners, a package cache, hours of wall time.
-- **The edge:** no credentials, no route out except the model provider and
-  mediated, logged fetches; the only thing that leaves is a commit that trusted
-  code collects, and usage that settles the budget.
+- **The edge:** no credential inside (the provider credential is added by the
+  egress proxy outside the sandbox), no route out except the model provider and
+  a mediated fetch restricted per Project; the only thing that leaves is a
+  commit that trusted code collects without executing anything the agent
+  wrote, and usage measured at the proxy.
 - **Outside:** unchanged. Independent validation, independent review,
   publication through the commitment boundary, the Owner or a delegation.
 
@@ -225,7 +236,7 @@ the test itself supplied is a defect.
 `cmd/summa42` or `cmd/summa42-box` in the same pull request, with an acceptance
 test over that path. No schema outside
 `internal/state/sqlite/migrations/`. Applied migrations are never edited; add a
-new numbered file (next free number: `00038`).
+new numbered file with the next free number at the time the branch is cut (`00038` at the base commit).
 
 **R4. Never fabricate.** No canned model output, no hard-coded verdict, no
 constant confidence, no matching on phrases from test fixtures, no stub that
@@ -236,7 +247,13 @@ returns success. If something cannot be built as specified, stop and write
 says so explicitly: `docs/VISION.md`, `internal/policy/default_profile.go`,
 `internal/emergency/`, `internal/approvals/`, `internal/identity/`,
 `internal/modelrun/`, `scripts/setup-model-user.sh`, `.github/workflows/`,
-`LICENSE`, `SECURITY.md`. `docs/VISION.md` is never changed by an agent.
+`LICENSE`, `SECURITY.md`, and the guardrails themselves:
+`scripts/check_protected_paths.py`, `Makefile`,
+`tests/acceptance/architecture_test.go`, `internal/securityregression/`,
+`internal/ghtriage/climodel/profile.go`, `AGENTS.md`, `go.mod`, this plan, and
+every CI or pipeline definition file in any repository of any Project
+(`.github/workflows/`, `azure-pipelines*.yml`). `docs/VISION.md` is never
+changed by an agent.
 
 **R6. Authority only narrows.** No change may let a Task, a model process or a
 Project do more than before unless the card is marked `DESIGN` and cites an
@@ -294,7 +311,7 @@ tasks. `agent`: needs an external coding agent working in a checkout.
 | --- | --- | --- | --- |
 | M0 | Guardrails | The rules in section 3 fail CI when broken | none |
 | M1 | A1 at volume | Ten pilot tasks done, repair loop, per-case report, one `serve` command | M0 |
-| M1A | Agentic execution | A Summand works for hours with full tools inside a sandbox; parity with the bare harness is measured | M0, M9-T6 |
+| M1A | Agentic execution | A Summand works for hours with full tools inside a sandbox; parity with the bare harness is measured | M0, M9-T6; M1A-T3 also M2-T3 |
 | M2 | Projects | Several Projects with separate Mission, budget, grants, pause | M0 |
 | M2A | Azure DevOps delivery | Work item to draft pull request in ADO, build observation | M2 |
 | M3 | Continuity | Money budget, notifications, backup and restore, watchdog | M2 |
@@ -304,6 +321,21 @@ tasks. `agent`: needs an external coding agent working in a checkout.
 | M7 | Company OS for the first product | Obligations, operate, support and money functions on real sources | M6 |
 | M8 | Release and self-upgrade (A3) | Supervisor, canary, rollback | M5 |
 | M9 | Containment hardening | Separate reviewer user, model egress allowlist, output hygiene, OCI execution, capability sessions | M9-T6 and M9-T8 right after M0; the rest after M3 |
+
+### 4.1 Execution order
+
+The "Depends" line of a card is authoritative; the table above is a summary.
+Card IDs say which milestone a card belongs to, not when it runs. The order:
+
+1. M0-T1 to M0-T8.
+2. M9-T6, M9-T8 (reviewer independence), M1-T1 to M1-T4, M1A-T1, M1A-T2.
+3. M2-T1 to M2-T7.
+4. M1A-T8, M1A-T3, M1A-T4, M1A-T7, M1A-T6, then M1A-T5.
+5. M2A, M3 (M3-T7 and M3-T8 last), M7-T3.
+6. M4, then M9-T4, M9-T7, M9-T3, M2-T8, M2-T9.
+7. M5, M6, the rest of M7, M8, the rest of M9.
+
+M1-T5 (the pilot tasks) draws `pipeline` cards from every step.
 
 M1 runs in the background from M0 onward: pilot tasks are taken from the
 `pipeline` cards of every milestone. M2 comes before M3 because budgets,
@@ -332,10 +364,13 @@ Done when: both targets pass on `main`; `CONTRIBUTING.md` names them.
 Create: `tests/acceptance/architecture_test.go`.
 `TestEveryInternalPackageHasACaller`: run `go list -deps ./cmd/...` and
 `go list ./internal/...`; fail for any internal package not in the dependency
-list. Allowlist with a written reason per entry: `internal/testutil`,
-`internal/securityregression`. If another package is orphaned at the base
-commit, do not allowlist it silently: list it in the pull request for the
-Owner to decide (park or wire).
+list. Allowlist with a written reason per entry. At the base commit six
+packages are orphaned and all six are decided here: `internal/testutil`,
+`internal/securityregression`, `internal/ghtriage/fakemodel` and
+`internal/modelrun/modelruntest` (test helpers); `internal/board` (until
+M2-T6 wires it; M2-T6 removes the entry); `internal/version` (until M1-T2
+prints it; M1-T2 removes the entry). Any other orphan fails the test; never
+extend the allowlist without a card that says so.
 Done when: the test passes and fails when a new empty package is added.
 
 **M0-T3 `BUILD` `pipeline`: schema gate.**
@@ -350,11 +385,16 @@ Create: `scripts/check_protected_paths.py`, `scripts/test_check_protected_paths.
 Modify: `.github/workflows/ci.yml`.
 The script takes a base ref, lists changed files, and exits non-zero when a
 path from rule R5 changed, unless the pull request carries the label
-`owner-approved-protected`. The list of paths lives in one place in the script.
+`owner-approved-protected`. The list of paths lives in one place in the script
+and is the list of rule R5. CI runs the script from the base ref, never the
+pull request's own copy. The label is a convenience, not the control: any
+identity with write access can set it, so the control is a `CODEOWNERS` entry
+for the same paths plus required Owner review (M0-T5); add the `CODEOWNERS`
+file in this card.
 Tests: changed protected file fails; with label passes; unrelated file passes.
 
-**M0-T5 `OWNER`: repository settings.** Require the CI check on `main`; forbid
-merging without it. Pull request #176 was closed unmerged on the Owner's
+**M0-T5 `OWNER`: repository settings.** Require both CI jobs (`test`,
+`oci-acceptance`) and code-owner review on `main`; forbid merging without them. Pull request #176 was closed unmerged on the Owner's
 decision (Q38); its branch remains.
 
 **M0-T6 `BUILD` `pipeline`: fabrication tripwire.**
@@ -373,6 +413,16 @@ issues, so an issue is opened only when its "Depends" are merged and it is
 meant to run (Q44). `DESIGN` cards whose question is still open start as a
 discussion, not an issue (Q45).
 
+A label named by intake's auto-grant setting gives an issue
+`workspace.repo.write` and `workspace.test` (`internal/ghissue/observe.go`);
+only the Owner applies it, only to `pipeline` cards.
+
+**M0-T8 `OWNER`: confirm the implementer.** The README lists `agy`'s success
+result as unconfirmed. Run one live `summa42-box model-probe` with the `agy`
+profile and the Gemini Flash model as the model user, and one pilot card,
+before relying on it for M1-T5. `agy` refuses prompts over 110000 bytes; keep
+planner context under it.
+
 ### M1. A1 at volume
 
 **M1-T1 `BUILD` `agent`: bounded automatic repair after REVISE.**
@@ -386,15 +436,19 @@ Evidence of the old candidate is never reused for the new one. `BLOCK` still
 holds.
 Tests: `TestReviseStartsBoundedRepair`, `TestRepairCannotReuseOldAcceptance`,
 `TestThirdReviseBlocksCase`, `TestRepairRespectsEnvelope`.
-Done when: an acceptance test drives a case through REVISE then ACCEPT with a
-fake model adapter from `internal/ghtriage/fakemodel`, without any manual
-command. Remove `scripts/requeue-revise.py` and its test in the same change.
+Done when: an acceptance test drives a case through REVISE then ACCEPT without
+any manual command. `internal/ghtriage/fakemodel` only classifies and reviews
+triage; the scripted plan, implementation and verdict answers for this test go
+through the real launcher with the test double in
+`internal/modelrun/modelruntest`, extended there or in `_test.go` files only.
+No scripted answer may exist in non-test code (R4). Remove `scripts/requeue-revise.py` and its test in the same change.
 
 **M1-T2 `BUILD` `pipeline`: case list.**
 Create: `cmd/summa42/cases_cmd.go`, `cmd/summa42/cases_cmd_test.go`; modify
 `cmd/summa42/root.go`. `summa42 cases [--state S]` prints case ID, source,
 object, state, current work, completed steps, last assessment reason, updated
-time. Read-only; reads the store the way `emergency status` does.
+time. `summa42 --version` prints `internal/version` (remove its entry from the
+M0-T2 allowlist). Read-only; reads the store the way `emergency status` does.
 
 **M1-T3 `BUILD` `agent`: per-case report.**
 `summa42 case report <case-id> [--json]`: issue, plan hash, candidate SHA, PR
@@ -411,9 +465,12 @@ supervised goroutines with the existing interval and recovery logic. It adds
 no behavior of its own: it calls the existing `run*` functions. One failing
 loop is restarted with backoff and logged; it does not stop the others. Flags
 are the union of the three commands until M2-T3 replaces them with a Project
-manifest.
+manifest. `serve` is the single coordinator of state transitions and
+publication for a Collective: a second `serve` on the same database refuses to
+start (roadmap stage 5).
 Tests: `TestServeRunsAllLoopsOnce`, `TestServeRestartsFailedLoop`,
-`TestServeStopsOnContextCancel`.
+`TestServeStopsOnContextCancel`, `TestSecondServeRefused`,
+`TestTwoDriversDoNotPublishTwice`.
 
 **M1-T5 `OWNER` + `pipeline`: the nine remaining pilot tasks.** Take the
 `pipeline` cards of this plan in order (M0-T2, M0-T3, M0-T6, M1-T2, then later
@@ -442,6 +499,27 @@ why that is safe there and only there; how the result leaves (trusted code
 reads the workspace's Git history; nothing the agent says about its own result
 counts); limits per Attempt in time, money and disk; what happens to the
 existing one-shot stages (they stay for triage, plan review and code review).
+The spec must also close these, each with a named test:
+
+- Collection never runs Git, hooks or any tool inside the agent's directory as
+  the Box user. The agent has had write access to that `.git`. The workspace is
+  exported from inside the sandbox as a bundle and fetched into a fresh
+  Box-owned repository, checked with `fsck`, before anything reads it.
+- The provider credential is not in the sandbox. The egress proxy adds it to
+  requests to the provider's host and measures usage there.
+- The mediated fetch is containment, not logging: a per-Project domain
+  allowlist, GET only, caps on URL length and rate, refused entirely for
+  private data classes, responses marked as untrusted data.
+- Nothing model-written passes from one Attempt to the next except through Box
+  evidence that went through M9-T8.
+- CI and pipeline definition files are protected in every Project, greenfield
+  included; on Azure DevOps a pushed pipeline file could run with deployment
+  service connections.
+- Freeze, containment, lease expiry and an exhausted budget kill the sandbox;
+  stopping the renewal is not enough.
+- Until the money ledger exists (M3-T2), agentic Attempts run only on prepaid
+  subscription profiles, under a wall-time ceiling enforced outside the
+  sandbox.
 
 **M1A-T2 `BUILD` `agent`: long Attempts.** A lease that an agentic Attempt
 renews by heartbeat (`execution.RenewLease`), with fencing unchanged: a missed
@@ -453,7 +531,10 @@ Tests: `TestHeartbeatKeepsLeaseForHours` (fake clock), `TestMissedHeartbeatExpir
 `TestExpiredAttemptCannotRecordResult`.
 
 **M1A-T3 `BUILD` `agent`: the agentic implement stage.** Depends: M1A-T1
-approved, M1A-T2, M9-T6. A new executor runs a harness profile in agent mode
+approved, M1A-T2, M1A-T8, M2-T3, M9-T6. Split into several pull requests if it
+passes the limit of R8. It changes protected paths
+(`internal/ghtriage/climodel/profile.go`, the CI workflow for the OCI gate);
+Owner review. A new executor runs a harness profile in agent mode
 inside the sandbox on a pinned checkout, with the accepted plan as its task.
 The profile validator accepts write and auto-approve options only for a
 sandboxed call with a proven enforcement level. Trusted code collects the
@@ -464,33 +545,49 @@ and publication are unchanged. The complete-file edit stage stays as the
 fallback where no sandbox exists.
 Tests: `TestAgentCanBuildAndRunTestsInside`, `TestNoCredentialReachableInside`,
 `TestOnlyAllowlistedHostsReachable`, `TestResultIsReadFromGitNotFromAgentClaim`,
-`TestAutoApproveRefusedOutsideSandbox`, and the OCI gate in CI.
+`TestAutoApproveRefusedOutsideSandbox`, `TestHostileGitConfigIsNotExecuted`,
+`TestFreezeKillsSandbox`, `TestPaidProfileRefusedWithoutMoneyLedger`, and the
+OCI gate in CI.
 
 **M1A-T4 `BUILD` `agent`: checkpoints and resume.** Every commit the agent
 makes is captured as checkpoint evidence while it works. After a crash, a lost
-lease or a restart, a new Attempt continues from the last checkpoint with the
-harness session's own notes file, instead of starting again. Old checkpoints
+lease or a restart, a new Attempt continues from the last checkpoint commit
+and its commit messages, instead of starting again. No harness session file
+or other model-written state is carried over outside that evidence. Old checkpoints
 are never accepted as the new Attempt's result.
 Tests: `TestResumeStartsFromLastCheckpoint`, `TestCheckpointOfOldAttemptIsNotAResult`.
 
-**M1A-T5 `BUILD` `agent`: large and greenfield work.** Publication through a
+**M1A-T5 `DESIGN` then `BUILD`: large and greenfield work.** Depends: M1A-T3.
+Three separate build cards after the spec, each with its own tests. Publication through a
 Git push performed by the trusted publisher instead of per-file API calls, so
 the size of a change is bounded by the Project manifest and the budget, not by
 64 files. A Project may be declared greenfield: a new repository with no
-allowed-path restriction inside it. A plan may fan out into child Tasks that
+allowed-path restriction inside it except the protected paths of R5. A plan may fan out into child Tasks that
 run in parallel sandboxes (the single-host form of discussion #138).
 
-**M1A-T6 `BUILD` `agent`: parity benchmark.** A small fixed set of tasks (a bug
+**M1A-T6 `OWNER` with `agent`: parity benchmark.** The Owner starts the runs;
+the results file is generated from `summa42 case report --json`, not written
+by hand. The bare-harness baseline runs in the same sandbox image, never with
+full permissions on the host. A small fixed set of tasks (a bug
 fix, a feature across packages, a new small application from one prompt) run
 twice: with the bare harness, and through Summa42 with the same model and
 budget. Record completion, wall time, cost and Owner actions in
 `docs/superpowers/research/`. Repeat when a model, a harness or the executor
 changes.
 Done when (M1A): through Summa42, one prompt produces a working, tested small
-application in an hours-long unattended run, and the benchmark shows no task
-the bare harness completes that Summa42 cannot.
+application in an hours-long unattended run, and every task the bare harness
+completes and Summa42 does not is listed with its cause. A gap is closed by
+improving the executor, never by relaxing a control.
 
-**M1A-T7 `BUILD` `agent`: new dependency gate.** An agent with full tools will
+**M1A-T8 `BUILD` `agent`: egress proxy for sandboxes and the mediated fetch.**
+Depends: M1A-T1 approved. The sandbox's only network is the existing CONNECT
+proxy. It allows the provider host of the Attempt's profile and injects that
+credential; it serves the mediated fetch under the rules of M1A-T1; it records
+usage and every refused request (a refusal is a rogue signal).
+Tests: `TestSandboxHasNoRouteButProxy`, `TestCredentialInjectedOutsideSandbox`,
+`TestFetchRefusedForPrivateDataClass`, `TestFetchOutsideAllowlistRefused`.
+
+**M1A-T7 `BUILD` `agent`: new dependency gate.** Depends: M1A-T3, M1A-T8. An agent with full tools will
 add libraries. When the collected commits change a dependency manifest or lock
 file (`go.mod`, `package.json`, `requirements*.txt`, `*.csproj` and the like,
 listed as data), the candidate is held with one Owner packet per new
@@ -557,8 +654,10 @@ Owner-signed). Intake uses the Project envelope. `summa42 project pause|resume
 <slug>` is the break glass of one Project: it refuses new leases and new
 external operations for that Project inside the same transactions the
 Collective-wide gate uses (`internal/execution` lease gate, `operations`
-prepare and dispatch). Locate the gate: `grep -rn "CheckLeaseAllowedTx"
-internal/`. This card touches `internal/emergency/` only to add the scoped
+prepare and dispatch). Locate the gates: `grep -rn "CheckLeaseAllowedTx\|CheckExecutionAllowed"
+internal/`. Only the lease gate runs inside a transaction today; the operation
+gate is a plain call. The Project check for operations must be made inside the
+prepare and dispatch transactions, so a pause and a dispatch cannot interleave. This card touches `internal/emergency/` only to add the scoped
 check; mark the pull request for Owner review.
 Tests: `TestPausedProjectRefusesLeaseOtherProjectContinues`,
 `TestProjectCannotSpendBeyondItsEnvelope`,
@@ -567,13 +666,18 @@ Tests: `TestPausedProjectRefusesLeaseOtherProjectContinues`,
 
 **M2-T5 `BUILD` `agent`: serve all Projects fairly.** Depends: M1-T4, M2-T3.
 `serve` without `--project` runs every `ACTIVE` Project that has an applied
-manifest. Order of work across Projects: obligations first, then round-robin,
-so one busy Project cannot starve another (Vision, Article 20).
+manifest. Order of work across Projects: round-robin, so one busy Project cannot starve
+another (Vision, Article 20). Obligations take precedence from M7-T3 on.
 Tests: `TestTwoProjectsBothAdvance`, `TestBusyProjectDoesNotStarveQuietOne`,
 `TestArchivedProjectIsNotServed`.
 
-**M2-T6 `BUILD` `agent`: board wired to intake.** Depends: M2-T2. This is the
-first Company OS block to get a caller; it closes issue #124.
+**M2-T6 `BUILD` `agent`: board wired to intake.** Depends: M2-T2. It closes
+issue #124. The board is the Collective's work queue (issue #124), so it
+becomes a kernel service here, and `docs/COMPANY_OS.md` is updated in the same
+change to say so; the same holds for `internal/attention` in M4-T2. Company
+State, obligations and invariants stay in the profile. Files: locate the
+transitions with `grep -n "Assess(" cmd/summa42-box/*.go internal/ghtriage/*.go`
+and list them in the pull request.
 Intake calls `board.Service.SyncItem` for each observed item; each pipeline
 stage transition calls `MoveCard` with the assessment's evidence IDs.
 `summa42 board [--project <slug>]` prints the columns. A card move never causes
@@ -581,25 +685,30 @@ an external effect.
 Tests: the six acceptance criteria of issue #124, as acceptance tests over the
 real intake and pipeline path with a fake GitHub server.
 
-**M2-T7 `BUILD` `pipeline`: local file inbox.** Depends: M2-T6. Optional,
-small. `$SUMMA42_HOME/projects/<slug>/inbox/`: each Owner-written Markdown file
+**M2-T7 `BUILD` `pipeline`: local file inbox.** Depends: M2-T6. Small. `$SUMMA42_HOME/projects/<slug>/inbox/`: each Owner-written Markdown file
 becomes one card and one case. It gives the Owner a way to hand over work that
 is not an issue or a work item. The connector implements the same interface as
-the GitHub connector in `internal/board/connectors.go`.
+the GitHub connector (interface in `internal/board/types.go`).
 
-**M2-T8 `DESIGN` then `BUILD`: Project memory.** Depends: M2-T2, M9-T3. An
+**M2-T8 `DESIGN` then `BUILD`: Project memory.** Depends: M2-T2, M9-T3, M9-T8,
+M4-T2. An
 agent should not relearn the Project on every Task. Per Project: a generated
 repository map (structure, build and test commands, entry points) refreshed on
 each new base commit; conventions and decisions the Owner wrote or approved;
 findings from earlier cases. All of it is evidence with provenance (Vision,
 Article 10), selected into the prompt by the context projection compiler with
-its hash in the run manifest. What a Summand learned enters memory only through
-the proposal path of M6-T7, never by writing it directly.
+its hash in the run manifest. The repository map is generated by deterministic
+code, not by a model. What a Summand learned enters memory only as an inbox
+packet the Owner approves; a memory item is never adopted under a mandate.
+Every item carries the data class of its source, and an item from a private
+source is never projected into a call to a model without zero data retention
+or into another Project. Model-written items pass M9-T8 first.
 Tests: `TestMapIsRegeneratedOnNewBase`, `TestMemoryItemCitesItsEvidence`,
-`TestSummandCannotWriteMemoryDirectly`, `TestProjectionHashRecorded`.
+`TestSummandCannotWriteMemoryDirectly`, `TestProjectionHashRecorded`,
+`TestMemoryItemNeedsOwnerApproval`, `TestPrivateItemNotProjectedToNonZDRModel`.
 
 **M2-T9 `DESIGN` then `BUILD`: work that is not code.** Depends: M1A-T3,
-M2-T7. A second recipe next to issue-to-pull-request: a Task whose result is an
+M2-T7, M4-T2. A second recipe next to issue-to-pull-request: a Task whose result is an
 artefact (an analysis, a report, a data extract, a document) produced in the
 same sandbox with the same tools, stored as evidence with the sources it used,
 reviewed by the independent reviewer, and delivered to the Owner's inbox. No
@@ -640,7 +749,8 @@ Tests: the ADO equivalents of the publication tests in `internal/ghpublish`.
 **M2A-T4 `BUILD` `agent`: Azure Pipelines observation.** Depends: M2A-T3.
 Read-only, bound to the exact SHA, through the existing `ado.build.status`
 capability; a missing required build is pending, an infrastructure failure does
-not start a repair. Same test list as M5-T2.
+not start a repair. Tests: the CI observer cases listed in card M5-T2,
+written here for ADO (M5-T2 itself is not a dependency).
 
 ### M3. Continuity
 
@@ -649,9 +759,9 @@ model profile (input and output token prices, or a flat subscription marked as
 `PREPAID_QUOTA`). Unknown usage stays exposure and consumes budget. Caps per
 case, per Project per day and per Collective per day, checked before each model
 call. Relation to the existing request-unit envelopes: a second envelope kind,
-not a conversion. Caps: 5 USD per case and 20 USD per day (Q20). The price
-table needs the list of subscriptions and API accesses, which is still open
-(Q21).
+not a conversion. Caps: 5 USD per case and 20 USD per day for the Collective (Q20).
+The list of subscriptions is still open (Q21): proceed with the profiles the
+README lists as confirmed, and keep the price table as data the Owner edits.
 
 **M3-T2 `BUILD` `agent`: money ledger.** Depends: M3-T1 approved. Reservation
 before each model call in `internal/modelrun` callers, settlement from reported
@@ -668,22 +778,33 @@ Events: safe mode begins or is 24 hours away, an approval waits, a case is
 blocked, a budget passes 80 percent, an attempt is contained, a backup fails.
 Sending is an external operation of LOW risk through the existing commitment
 boundary; a lost acknowledgement is reconciled, not blindly resent. The message
-carries identifiers and reasons only, never repository content.
+carries identifiers and reason codes from a closed list only: never repository
+content and never free text a model wrote (a reason written by a model would
+make the webhook a model-controlled way out).
 Tests: `TestEventIsDeliveredOnce`, `TestSenderFailureKeepsOutboxRow`,
 `TestMessageContainsNoPayloadText`, `TestSafeModeWarningFiresBeforeHorizon`.
 
-**M3-T4 `BUILD` `agent`: backup and restore.**
+**M3-T4 `BUILD` `agent`: backup and restore.** Two pull requests: create,
+verify and restore first; push second.
 `summa42 backup create <dir>` uses SQLite `VACUUM INTO` plus a copy of the
 evidence directory and a manifest of hashes; `backup verify <dir>`;
 `backup restore <dir>` only into an empty home. After a restore, every
 operation that was `DISPATCHED` or unknown at backup time is reconciled by
 lookup before any work resumes; nothing is re-dispatched from restored state.
-Keys are not in the backup unless `--include-keys` is given.
+Never in a backup: keys, `config.json` (control token), `github_token`,
+`gh-app.pem`, `discord_auth.json`, webhook and credential files; the list is
+explicit and tested. The manifest of hashes is signed with the Owner key at
+`backup create`, and `restore` refuses a manifest whose signature does not
+verify against the Owner public key given on the command line: a restore from
+a tampered copy could otherwise bring back forged approvals. A pushed backup is
+encrypted on the host before upload; it contains private code and later
+customer text.
 `backup push` copies a verified backup to a remote destination behind a small
 interface; the first destination is Azure Blob (Q27), and the interface must
 not assume Azure so that an S3-compatible store can follow. The push is an
 external operation of LOW risk. Schedule: daily.
-Tests: `TestPushUploadsOnlyVerifiedBackup`, `TestRestoreReconcilesInsteadOfReplaying`, `TestVerifyDetectsCorruptEvidence`,
+Tests: `TestPushUploadsOnlyVerifiedBackup`, `TestPushedBackupIsEncrypted`,
+`TestRestoreRefusesUnsignedManifest`, `TestBackupExcludesEveryCredentialFile`, `TestRestoreReconcilesInsteadOfReplaying`, `TestVerifyDetectsCorruptEvidence`,
 `TestRestoreRefusesNonEmptyHome`, `TestBackupWhileBoxIsWriting`.
 
 **M3-T5 `BUILD` `agent`: watchdog outside the process.** Single-host form of
@@ -692,7 +813,11 @@ Create: `deploy/systemd/summa42-serve.service`, `summa42-watchdog.service`,
 `summa42-watchdog.timer`, `summa42-backup.timer`, `docs/runbook.md`.
 `serve` writes a liveness row every tick. `summa42 watchdog` (a separate short
 process) checks it, checks the last backup age and the safe mode horizon, and
-notifies through M3-T3 directly (it must work when the Box hangs). The watchdog
+notifies through a second, declared path: the same sender called directly,
+without the outbox, because it must work when the Box or the database hangs.
+It sends reason codes only. A watchdog on the same host cannot report a dead
+host, so `serve` also pings an optional external dead-man URL (a healthcheck
+service that alerts when pings stop); the URL comes from a 0600 file. The watchdog
 never restarts the Box itself; systemd does (`Restart=on-failure`). The unit
 files and the runbook assume a plain Linux VM with systemd and nothing specific
 to one cloud (Q28).
@@ -700,13 +825,14 @@ Tests: `TestWatchdogReportsStaleLiveness`, `TestWatchdogReportsOldBackup`.
 Done when: the runbook tells an Owner how to install, start, stop, back up,
 restore and read why a case is blocked, and a second person could follow it.
 
-**M3-T6 `DESIGN` then `BUILD`: direct API model providers.** Depends: M3-T2.
+**M3-T6 `DESIGN` then `BUILD`: direct API model providers.** Depends: M3-T2,
+M1A-T8.
 Today every model runs through a CLI harness profile. Add a profile kind that
 calls a provider API (OpenAI-compatible first; then Anthropic, Azure AI
 Foundry, Vertex, Bedrock as data, not code, where the wire format allows). The
 caller is a small binary run as the model user through `internal/modelrun`, so
-the isolation and the launcher stay the same; the API key lives in the model
-user's home, never in the Box's. Reported token usage settles the money ledger;
+the isolation and the launcher stay the same; the API key is injected by the
+egress proxy (M1A-T8) and is never readable by the model process (R12). Reported token usage settles the money ledger;
 a provider without zero data retention is refused for private data classes.
 New harnesses (for example Pi) remain profile data through the existing
 `model-profile-draft`, `model-probe`, `model-profile-adopt` path.
@@ -715,14 +841,18 @@ New harnesses (for example Pi) remain profile data through the existing
 M1A-T6. The Project manifest maps task classes (triage, plan, small change,
 large change, review, artefact) to an ordered list of model profiles. The order
 is proposed from the parity benchmark and from recorded outcomes
-(`internal/experience` already reorders eligible executors under an Owner
-grant; extend that, do not build a second mechanism). A profile over its quota
+(`internal/experience` already returns one preferred executor kind per task
+class under an Owner grant; pipeline model profiles are not scheduler
+executors, so the spec decides whether to extend that mechanism or route
+profiles separately, and must not end with two that disagree). A profile over its quota
 or cap falls through to the next; the reviewer is never the producer's model;
 private data classes skip profiles without zero data retention.
 Tests: `TestExhaustedProfileFallsThrough`, `TestReviewerNeverEqualsProducer`,
 `TestPrivateDataSkipsNonZDRProfile`, `TestRoutingNeverWidensCapability`.
 
-**M3-T8 `BUILD` `agent`: drills.** Depends: M3-T4, M3-T5. A scheduled,
+**M3-T8 `BUILD` `agent`: drills.** Depends: M3-T4, M3-T5; the runaway drill
+uses only the signals that exist when it is built and gains the egress and
+workspace signals with M9-T7 and M9-T4. A scheduled,
 automatic exercise in a scratch home that never touches live state or real
 providers: restore the latest backup and reconcile; freeze and resume; a
 simulated runaway agent (ungranted capability, denied egress, write outside the
@@ -737,10 +867,14 @@ Tests: `TestDrillNeverTouchesLiveHome`, `TestFailedRestoreDrillNotifies`,
 **M4-T1 `BUILD` `agent`: Owner action record.**
 Every Owner action gets one normalized row (new migration): actor, Project,
 kind (`approve`, `reject`, `block`, `cancel`, `fund`, `apply`, `pause`,
-`heartbeat`, `manual-run`), a class key (provider, descriptor type, recipe
+`heartbeat`, `manual-run`), the key that signed it, a class key (provider, descriptor type, recipe
 stage, reason code), the subject ID and time. Written in the same transaction
 as the action. This is the input of the automation loop (M6); without it the
 loop has nothing to observe.
+A `manual-run` is a hand-started `summa42-box run-*` or maintenance command;
+it is not Owner-signed, so its row is written at process start by the command
+itself and is marked unsigned. Rule D2 reads these rows; rule D1 reads only
+signed ones.
 Tests: one per kind, plus `TestRecordIsWrittenInSameTransaction`.
 
 **M4-T2 `BUILD` `agent`: the inbox.**
@@ -773,24 +907,33 @@ Done when: a test running as the Box user cannot produce a valid Owner
 signature without the passphrase, and the custody mode is shown by `summa42
 status`.
 
-**M4-T5 `DESIGN` then `BUILD`: decisions from a phone.** Depends: M4-T2,
-M4-T4. The inbox and its decisions through Discord instead of a terminal. A
+**M4-T5 `DESIGN`: decisions from a phone.** Depends: M4-T2, M4-T4. No build
+card until the Owner approved the spec. The inbox and its decisions through Discord instead of a terminal. A
 Discord account is an identifier, not a signature (README), so the spec must
 settle where the signing key lives. Recommended shape: a second, registered
 device key with a narrower ceiling than the Owner key (it may approve
 operations up to MEDIUM risk and decide inbox packets; it may not grant
 delegations or mandates, fund envelopes, change policy or lift break glass),
-revocable by the Owner key at any time, with every use recorded.
+revocable by the Owner key at any time, with every use recorded. The spec must
+fix: the private key lives on the phone and never on the host or in the bridge;
+an exact allowlist of packet kinds the device key may decide (not "inbox
+packets" in general, which include proposals and funding); that it cannot
+record a heartbeat or end safe mode (Article 29: only the Owner's return does);
+that its approvals do not count toward rule D1; the policy change this needs
+(the default policy names only the Owner principal), which is a protected path.
 Tests: `TestDeviceKeyCannotGrantDelegation`, `TestRevokedDeviceKeyRefused`,
 `TestUnsignedDiscordMessageDecidesNothing`.
 
 **M4-T6 `DESIGN` then `BUILD`: handing over work in one sentence.** Depends:
-M2-T7, M4-T5. `summa42 ask "<request>" --project <slug>` and the same from
+M2-T7, M4-T5 for the Discord path. `summa42 ask "<request>" --project <slug>` and the same from
 Discord. The request becomes a draft case; a model may ask bounded clarifying
 questions and proposes a plan with scope, budget and what it will not do;
-nothing starts until the Owner confirms with a signature. From there the case
+nothing starts until the Owner confirms with a signature. The request itself
+must be signed before any model sees it (the CLI signs with the Owner key; a
+Discord request needs the device key): an unsigned message spends nothing and
+reaches no model. From there the case
 runs like any other, including an hours-long agentic Attempt (M1A).
-Tests: `TestRequestCreatesDraftNotWork`, `TestWorkStartsOnlyAfterSignedConfirmation`,
+Tests: `TestRequestCreatesDraftNotWork`, `TestUnsignedRequestReachesNoModel`, `TestWorkStartsOnlyAfterSignedConfirmation`,
 `TestDraftShowsBudgetAndScope`.
 
 ### M5. Standing delegation (A2)
@@ -807,21 +950,25 @@ type), constraints (path prefixes, maximum diff size, excluded protected paths,
 risk ceiling), limits per period (count, money), expiry, and the revocation
 path. It is Owner-signed. Policy v3 receives `standing_delegation` as an input
 computed by deterministic code, and allows a MEDIUM-risk operation without a
-per-operation approval only when a valid delegation covers it. Each use is
+per-operation approval only when a valid delegation covers it. Policy keeps
+naming the Owner principal for everything else. Each use is
 recorded and appears in the Owner's digest. Any rejection, failed verification
 or reverted change in the class suspends the delegation automatically. The spec
 must list what can never be delegated (policy, keys, approvers, budgets,
 workflow files, the delegation mechanism itself). Entry condition: M1-T5, M4-T4,
 M9-T6 and M9-T8 done. The spec must state that no delegation or mandate can be
-created, widened or reactivated by anything but an Owner signature.
+created, widened or reactivated by anything but an Owner signature, and that
+the undelegable list includes the mandate mechanism.
 
 **M5-T2 `BUILD` `agent`: CI observation bound to the exact SHA.**
 Read-only. Required checks come from the Project manifest. A missing required
 check is pending, not success. A CI infrastructure failure is distinguished
 from a test failure; only the second starts a repair cycle (M1-T1).
-Tests: the seven observer tests named in the reverted plan
-(`2026-10-16-ci-observation-and-protected-merge.md`, Task 1), written against a
-fake GitHub server, plus `TestInfrastructureFailureDoesNotStartRepair`.
+Tests, against a fake GitHub server: the four CI observer tests of the
+reverted plan (`2026-10-16-ci-observation-and-protected-merge.md`, Task 1:
+success, pending, failure, missing required check), plus
+`TestStaleCheckOnOldHeadIgnored` and `TestInfrastructureFailureDoesNotStartRepair`.
+The three review observer tests of that plan belong to M5-T4.
 
 **M5-T3 `BUILD` `agent`: delegation records and policy v3.** Depends: M5-T1
 approved. Protected paths by design (`internal/policy/default_profile.go`,
@@ -836,7 +983,10 @@ Tests: `TestOperationOutsideDelegationStillNeedsApproval`,
 M5-T3. A merge provider implementing `operations.Provider` with an expected
 head SHA condition; `LookupOutcome` reads the pull request state; a moved base
 that changes the result produces a new candidate and a new verification. The
-issue is closed only after the merge commit is confirmed.
+issue is closed only after the merge commit is confirmed. If branch protection
+requires an approval from an identity other than the pull request's author, use
+an Owner-approved review identity or stay at A1; never weaken protection
+(roadmap stage 6).
 Tests: the five merge-gate tests of roadmap stage 6, plus
 `TestMergeWithoutDelegationWaitsForOwner`.
 Done when (A2): three small changes in the Summa42 Project go from issue to
@@ -860,8 +1010,12 @@ Detection rules for the first version (deterministic, over M4-T1 rows):
 | --- | --- | --- |
 | D1 | The Owner approved the same operation class N times in a window with zero rejections | A standing delegation for that class, with the tightest constraints that cover the observed instances |
 | D2 | The Owner ran the same manual command on a regular cadence | A schedule that creates that Task |
-| D3 | Cases of one class block at the same gate for the same reason, and the Owner unblocks them the same way | A manifest change (grant, limit or allowed path), shown as a diff |
-| D4 | An obligation was fulfilled by hand on time K times | A Task template funded from a named envelope |
+| D3 | Cases of one class block at the same gate for the same reason, and the Owner unblocks them the same way | A manifest change (grant, limit or allowed path), shown as a diff. Proposal only |
+| D4 | An obligation was fulfilled by hand on time K times (needs M7-T3) | A Task template and the funding it would need. Proposal only |
+
+Only D2, and only for work that needs no approval today, can be adopted under
+a mandate. D1, D3 and D4 always end as an Owner-signed packet: a delegation, a
+manifest change and funding are authority.
 
 **M6-T2 `BUILD` `agent`: detector and proposals.** Depends: M6-T1 approved.
 Create `internal/automation/` with a caller in `serve` (one detection pass per
@@ -881,15 +1035,18 @@ Tests: `TestShadowCausesNoEffect` (no operation prepared, no lease taken),
 
 **M6-T4 `BUILD` `agent`: mandate, adoption and suspension.** Depends: M5-T3,
 M6-T3. `summa42 mandate grant|show|revoke --project` (Owner-signed). A
-`PROPOSED` item inside the mandate is adopted by the Collective: the delegation
-or schedule is created with the mandate as its authority source, and a
-notification is sent. Outside the mandate it becomes an inbox packet;
-`summa42 automation approve|reject`. Any failed verification, rejection or
+`PROPOSED` schedule or Task template inside the mandate is adopted by the
+Collective, with the mandate as its authority source, and a notification is
+sent. Adoption never creates a delegation, a grant, funding or a manifest
+change. Everything else becomes an inbox packet; `summa42 automation
+approve|reject` is Owner-signed, and for D1 that signature is what creates the
+delegation. Any failed verification, rejection or
 reverted effect in an adopted automation suspends it without asking.
 Re-activation always needs the Owner.
 Tests: `TestInsideMandateAdoptsAndNotifies`, `TestOutsideMandateWaitsInInbox`,
 `TestAdoptionCannotExceedMandateRiskCeiling`,
-`TestMandateCannotGrantWhatOwnerCouldNotDelegate`,
+`TestAdoptionNeverCreatesDelegation`, `TestManifestChangeIsNeverAdopted`,
+`TestFundingIsNeverAdopted`,
 `TestFailureSuspendsAdoptedAutomation`, `TestSuspendedNeedsOwnerToResume`,
 `TestNoMandateMeansEverythingIsProposed`.
 
@@ -897,13 +1054,15 @@ Tests: `TestInsideMandateAdoptsAndNotifies`, `TestOutsideMandateWaitsInInbox`,
 notification: what was taken over, what is proposed, what was suspended and
 why, Owner actions per Project against the previous period, money spent.
 Done when (M6): on the Summa42 Project, a D1 proposal arises from real Owner
-approvals, passes shadow, and is adopted under a mandate the Owner granted.
+approvals, passes shadow, reaches the inbox and becomes a delegation by the
+Owner's signature; and a D2 schedule for LOW-risk work is adopted under the
+mandate without an Owner action.
 
 **M6-T7 `DESIGN` then `BUILD`: reflection proposals (epic #15).** After a real
 Attempt the Summand may emit a bounded reflection. It is stored as evidence and
 becomes a `CANDIDATE` in the same proposal table, visible through
-`summa42 automation list` and the inbox; promotion uses the same shadow,
-mandate and Owner gate as every other proposal. Nothing a Summand writes
+`summa42 automation list` and the inbox; promotion is by Owner approval only,
+never under a mandate (M2-T8). Nothing a Summand writes
 becomes Collective knowledge directly. Restore from the parked
 `internal/epistemic` only what this path calls, with durable state in a
 migration.
@@ -933,13 +1092,14 @@ server exists for the system (this wires `adapters/mcp` and the capability
 Session into execution; see M9-T2).
 Done when: `docs/connector-guide.md` and one connector built from it exist.
 
-**M7-T3 `BUILD` `agent`: first real obligation.** `summa42 obligation
+**M7-T3 `BUILD` `agent`: first real obligation.** Depends: M2-T5, M3-T2; it
+does not wait for M6. `summa42 obligation
 add|list|fund`; the obligation planner (constructed in `internal/runtime/box.go`)
 gets called from `serve`. The first obligation is the monthly dependency update
 (Q8), in the `summa42` Project first and then per repository of `daas`; it ends
 in an ordinary draft pull request and is funded by the Owner.
 
-**M7-T4 `BUILD`: operate.** Measure first (Q3): per dataset freshness and
+**M7-T4 `DESIGN` then `BUILD`: operate.** Measure first (Q3): per dataset freshness and
 completeness, and availability and error rate of the API and the portal, read
 from Azure monitoring and from the product's own data. No thresholds are
 invented; a measurement becomes an invariant only when the Owner sets its
@@ -948,20 +1108,21 @@ threshold in the Project manifest, and from then a breach raises a case in the
 `internal/invariant` and `internal/company`. Needs from the Owner: read access
 to the monitoring source and the list of datasets.
 
-**M7-T5 `BUILD`: support.** Intake reads the portal's request store (the
+**M7-T5 `DESIGN` then `BUILD`: support.** Intake reads the portal's request store (the
 contact form writes to the product database; a future API endpoint for data
 requests writes to the same store) and the support mailbox, read-only, into the
-board. Triage; a drafted reply is a MEDIUM-risk operation behind approval. Prefer
+board. Triage; a drafted reply is delivered to the Owner's inbox and the Owner
+sends it. Summa42 has no send operation at the start (section 2.4); these
+drafts do not count toward rule D1. Prefer
 a read endpoint of the product's own API over direct database access. Customer
 text is private data: zero-data-retention or local models only.
 
-**M7-T6 `BUILD`: money.** Invoicing already runs inside the product through
+**M7-T6 `DESIGN` then `BUILD`: money.** Invoicing already runs inside the product through
 inFakt behind a provider abstraction; Summa42 does not issue invoices. It
 observes: issued and unpaid invoices, failed automated runs, usage against
 plan, and raises a case on an anomaly. The connector follows the same
-provider-neutral shape as the product's abstraction. A reminder or any other
-write is an external operation of at least MEDIUM risk and needs its own
-Owner-signed delegation (Q11).
+provider-neutral shape as the product's abstraction. There is no write
+operation at the start; when one is added it follows the rule of section 2.4.
 
 **M7-T7 `DESIGN` then `BUILD`: structured Mission and goal proposals (epic
 #12).** The structured Mission is the row `summa42 mission` creates and shows,
@@ -975,7 +1136,10 @@ return.
 Roadmap stage 7, unchanged: a separate `cmd/summa42-supervisor`, a release
 manifest bound to the merged SHA, backup before upgrade (M3-T4), canary with a
 synthetic case, rollback only onto a compatible database, expand-contract
-migrations. Start with a `DESIGN` card. The first product's own deployment is a
+migrations.
+
+**M8-T1 `DESIGN`: supervisor and upgrade spec.** Roadmap stage 7 turned into
+build cards with tests. The first product's own deployment is a
 separate concern: it runs through Azure Pipelines (Q5). Summa42 observes the
 runs (M2A-T4) and later triggers a release as an external operation of at
 least MEDIUM risk behind approval; it does not replace the pipeline.
@@ -988,15 +1152,15 @@ scenario. Nothing is asserted on flags a test double reports about itself.
 
 ### M9. Containment hardening
 
-**M9-T1 `BUILD` `agent`: validation in OCI.** Run validation commands through
+**M9-T1 `DESIGN` then `BUILD`: validation in OCI.** Run validation commands through
 the existing TEB Docker provider instead of the `summa42-validate` user alone,
 when Docker is present; record the enforcement level actually achieved.
 
-**M9-T2 `BUILD` `agent`: capability Sessions in execution.** Wire the MCP
+**M9-T2 `DESIGN` then `BUILD`: capability Sessions in execution.** Wire the MCP
 adapter and capability Session so a Task's `RequiredCapabilities` become the
 only tools its executor can reach.
 
-**M9-T3 `BUILD` `agent`: context projection.** Call the compiler in
+**M9-T3 `DESIGN` then `BUILD`: context projection.** Call the compiler in
 `internal/runmanifest/compiler.go` from the planner and implementer paths and
 record the projection hash in the run manifest.
 
@@ -1008,17 +1172,26 @@ paths, and the second from a periodic audit-chain check in `serve`. Each needs
 an acceptance test over the running path. With M3-T3 and M4-T3 this meets the
 closing criterion of #5.
 
-**M9-T6 `BUILD` `agent`: producer and reviewer are different OS users.**
+**M9-T6 `DESIGN` then `BUILD`: producer and reviewer are different OS users.**
 Section 2.5. Protected paths by design (`internal/modelrun/`,
-`scripts/setup-model-user.sh`); Owner review line by line. Today both roles run
-as the one `--model-user`. Add a required `--review-model-user`
-(`SUMMA42_REVIEW_MODEL_USER`), different from the model user, the validation
-user, the Box user and root; the setup script creates `summa42-review` with its
+`scripts/setup-model-user.sh`); Owner review line by line. The flag
+`--review-model-user` already exists (`registerModelFlags` in
+`cmd/summa42-box/main.go`, called with the prefix `review-model` in
+`ghpipeline.go`); do not add it again. It defaults to `SUMMA42_MODEL_USER`, and
+nothing requires it to differ, so both roles run as one user. The single-stage
+review commands (`run-gh-plan-review`, `run-gh-code-review`, triage review) and
+the fallback reviewers take the reviewer under `--model-user`. Make the
+reviewer user required and distinct everywhere a review runs, with its own
+default `SUMMA42_REVIEW_MODEL_USER`, different from the model user, the
+validation user, the Box user and root; the setup script creates `summa42-review` with its
 own 0700 home and its own copies of the reviewer's CLI logins. The startup
 probe checks, through the same launcher, that neither role can read the other's
 home. Every model call runs in a per-call scratch directory, and after each
-call the Box kills what the call left running and removes the scratch, as it
-already does for validation.
+call the Box kills what that call left running and removes its scratch. Model
+calls run concurrently, so validation's `kill -KILL -1` of the whole user
+cannot be reused; the spec chooses the mechanism (a process group or a cgroup
+per call) and how a survivor is detected. Audit the scopes of the CLI logins
+copied into both homes and drop any that can write to a repository.
 Tests: `TestReviewerCannotReadProducerHome`, `TestProducerCannotReadReviewerHome`,
 `TestSameUserForBothRolesRefused`, `TestNothingSurvivesAModelCall`, and a
 `realhost` test like the existing ones in `internal/repoworkspace`.
@@ -1105,13 +1278,15 @@ authority widen; is every claim in the README true.
 ## 8. What is deliberately not in this plan
 
 Multi-Cube coordination and fleets, PostgreSQL, NATS, Dapr, inter-Collective
-delegation and a full digital twin. None is needed for one Owner, one product
+delegation, a full digital twin, and a web panel (the Owner surface is the
+CLI and Discord). None is needed for one Owner, one product
 and several Projects on one host. The issues and discussions that carry these
 ideas stay open (section 9); each returns when a card needs it.
 
 ## 9. Issues and discussions
 
-State on 11 November 2026: ten open issues, one open pull request, three
+State on 11 November 2026, before this plan's own issues (#178 onward) and
+pull request: ten open issues, one open pull request (#176, since closed), three
 discussions. Each epic was reopened on 10 November with a closing criterion in
 its last comment; the table quotes that criterion in short and names the cards
 that meet it. A card that touches an epic links it (R11).
@@ -1125,7 +1300,7 @@ that meet it. A card that touches an epic links it (R11).
 | #12 Mission and goal research | The structured Mission is the one `summa42 mission` creates; goal proposals reach the Owner through a command | M2-T2 (Mission per Project), M7-T7 | Closable after M7-T7 |
 | #16 Decision engine | One real micro-decision routed through the engine with a working provider and migrated provenance | M9-T5 | Open unless M9-T5 proves a benefit |
 | #11 Digital twin | A scenario run started by a command passes through the real execution and operation services | M8-T2 | Closable after M8-T2 |
-| #17 A2A and inter-Collective contracts | A second Collective exchanges a delegated Task and evidence through the gateway | none | Stays open; outside this plan (Q17) |
+| #17 A2A and inter-Collective contracts | A second Collective exchanges a delegated Task and evidence through the gateway | none | Stays open; outside this plan (section 8) |
 | #3 Semantic control plane over OSS runtimes | none recorded | M9-T1, M9-T2 use existing providers (Docker TEB, MCP) | Stays open as the architecture question |
 | #60 Dapr seam and AgentLedger conformance; pull request #176 | Spike of #3 | none | #176 closed unmerged (Q38); the five conformance patterns are already kernel tests or belong in M8-T2 |
 
