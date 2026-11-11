@@ -96,6 +96,10 @@ code. Example: "why did ingestion of dataset X stop on Tuesday".
   call exists in this Attempt's evidence, and the cited text occurs in the
   recorded result. A claim without a citation is marked as the agent's
   inference. There is no model review.
+- This is the plan's card M2-T9 ("work that is not code") moved earlier, with
+  one difference: M2-T9 has the independent reviewer read the artefact; here
+  the citation check replaces the model review for read-only work. If the
+  Owner prefers the review, it is one more stage in the class's data.
 - The result is delivered to the Owner (M3-T3). It can be the input of a
   later `code` or `operate` Task only as evidence that passed output hygiene
   (M9-T8), like any text one role hands another.

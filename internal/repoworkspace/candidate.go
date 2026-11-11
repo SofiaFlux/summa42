@@ -10,8 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/SofiaFlux/summa42/internal/texthygiene"
 )
 
 type Edit struct {
@@ -43,6 +46,14 @@ func ValidateEdits(allowed []string, edits []Edit) error {
 	for _, e := range edits {
 		if !candidatePath(e.Path) || !permitted[e.Path] || seen[e.Path] || !utf8.ValidString(e.Content) || strings.ContainsRune(e.Content, 0) || (e.Delete && e.Content != "") {
 			return errors.New("edit violates exact owner scope or content contract")
+		}
+		// A changed file is read by the reviewer and the Owner: it must show
+		// what it contains (internal/texthygiene).
+		if err := texthygiene.Check("path of an edit", e.Path); err != nil {
+			return err
+		}
+		if err := texthygiene.Check("edit "+strconv.Quote(e.Path), e.Content); err != nil {
+			return err
 		}
 		seen[e.Path] = true
 		total += len(e.Content)

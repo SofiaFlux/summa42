@@ -17,6 +17,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/execution"
 	"github.com/SofiaFlux/summa42/internal/repoworkspace"
+	"github.com/SofiaFlux/summa42/internal/texthygiene"
 	"github.com/SofiaFlux/summa42/internal/verification"
 	"github.com/SofiaFlux/summa42/internal/workflow"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
@@ -48,6 +49,12 @@ type ImplementationOutput struct {
 
 func (o ImplementationOutput) Validate() error {
 	if err := textLength(o.Summary, 1, 1000); err != nil {
+		return err
+	}
+	if err := texthygiene.Check("implementation summary", o.Summary); err != nil {
+		return err
+	}
+	if err := texthygiene.Check("implementation explanation", o.Explanation); err != nil {
 		return err
 	}
 	paths := make([]string, len(o.Edits))
