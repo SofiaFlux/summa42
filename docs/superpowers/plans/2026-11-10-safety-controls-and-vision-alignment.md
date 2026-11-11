@@ -118,7 +118,8 @@ docs/incidents/2026-10-21-canned-model-reviews.md.
   `TestCloseConcurrentReplay` gate at `-count=600`. `internal/ghtriage` was run
   as an unprivileged user (plain and race). The Docker OCI gate was not run
   here; CI runs it.
-- [ ] Push; draft pull request; reopen affected epics; comment on PR #176.
+- [x] Push; draft pull request #177; epics #5, #11, #12, #15, #16, #17, #18 and
+  #124 reopened with a closing criterion each; comment on PR #176.
 
 ## Decisions
 
