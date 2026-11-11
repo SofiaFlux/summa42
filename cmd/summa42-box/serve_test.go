@@ -211,6 +211,7 @@ func TestServeRefusesBadFlagsBeforeStartingAnything(t *testing.T) {
 		"unknown worker flag":               {"--worker", "--workspace-root", t.TempDir(), "--no-such-flag"},
 		"bad restart delays":                {"--restart-min", "1m", "--restart-max", "1s", "--worker", "--workspace-root", t.TempDir()},
 		"stray argument":                    {"stray", "--worker", "--workspace-root", t.TempDir()},
+		"control with a flag":               {"--control", "--port", "1"},
 	}
 	for name, args := range cases {
 		t.Setenv("SUMMA42_HOME", filepath.Join(t.TempDir(), "no-collective-here"))

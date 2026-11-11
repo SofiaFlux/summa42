@@ -14,13 +14,14 @@ import (
 	"github.com/SofiaFlux/summa42/internal/localconfig"
 )
 
-// summa42-box serve runs intake, the pipeline and the worker in one process
+// summa42-box serve runs the control daemon, intake, the pipeline and the worker in one process
 // (development plan, card M1-T4). It adds no behavior of its own: each loop is
 // the existing run-* command, started with that command's own flags. What
 // serve adds is supervision: a loop that stops is logged and started again
 // with a growing delay, and one loop stopping does not stop the others.
 //
 //	summa42-box serve [--restart-min D] [--restart-max D] \
+//	    --control \
 //	    --intake   <run-gh-intake flags> \
 //	    --pipeline <run-gh-pipeline flags, with --interval> \
 //	    --worker   <run-worker flags>
@@ -42,7 +43,7 @@ type serveLoop struct {
 	run      func(ctx context.Context, args []string) error
 }
 
-var serveMarkers = []string{"--intake", "--pipeline", "--worker"}
+var serveMarkers = []string{"--control", "--intake", "--pipeline", "--worker"}
 
 // splitServeArgs separates serve's own flags from the flags of each section.
 func splitServeArgs(args []string) (own []string, sections map[string][]string, err error) {
@@ -69,13 +70,21 @@ func splitServeArgs(args []string) (own []string, sections map[string][]string, 
 		}
 	}
 	if len(sections) == 0 {
-		return nil, nil, errors.New("serve requires at least one of --intake, --pipeline, --worker, each followed by that command's flags")
+		return nil, nil, errors.New("serve requires at least one of --control, --intake, --pipeline, --worker; the last three are each followed by that command's flags")
 	}
 	return own, sections, nil
 }
 
 func serveLoops(sections map[string][]string) []serveLoop {
 	known := map[string]serveLoop{
+		// The local control daemon: what `summa42 status`, `mission`, `approvals`
+		// and `approve` talk to. It is the Box started without a subcommand.
+		"--control": {name: "control", run: func(ctx context.Context, _ []string) error { return run(ctx) }, validate: func(args []string) error {
+			if len(args) != 0 {
+				return fmt.Errorf("the control daemon takes no flags, got %q", args)
+			}
+			return nil
+		}},
 		"--intake": {name: "intake", run: runGHIntake, validate: func(args []string) error {
 			_, _, err := parseGHIntakeFlags(args)
 			return err
