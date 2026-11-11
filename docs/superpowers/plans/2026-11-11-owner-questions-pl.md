@@ -52,7 +52,11 @@ Decyzja: na początku nie. Faktury na pewno będą zautomatyzowane, komunikacja 
 przyszłości być może też; każde wymaga osobnej, podpisanej delegacji.
 
 **Q12.** Czy prywatne dane i kod mogą trafiać do modeli w chmurze?
-Decyzja: tylko modele z zerową retencją (ZDR) albo lokalne.
+Decyzja (zmieniona 11 listopada 2026 przy specyfikacji piaskownicy): trzy
+klasy danych. Kod publiczny: dowolny model. Kod prywatny (repozytoria
+produktu): może iść do modeli z subskrypcji, także w piaskownicy agentowej.
+Dane klientów (zgłoszenia, rekordy, wszystko z bazy produktu): tylko modele z
+zerową retencją (ZDR) albo lokalne i nigdy w piaskownicy.
 
 ## B. Projekty
 
@@ -237,3 +241,13 @@ pracy jednym zdaniem (M4-T6). Panel webowy nie wchodzi do planu.
 
 Decyzja: tabela luk w izolacji (sekcja 2.5 planu) zostaje w publicznym
 repozytorium; wykonawca kart musi ją znać.
+
+## K. Decyzje do specyfikacji M9-T6 i M1A-T1 (11 listopada 2026)
+
+Decyzje: token dostawcy w kontenerze dozwolony, z osobnym loginem tylko do
+piaskownicy, dla `summa42` i dla kodu `daas`; kod pisze Gemini, recenzuje
+Claude albo Command Code zależnie od złożoności zadania; użytkownik recenzenta
+to `summa42-review`, a zadania sprzed zmiany wytwarza się ponownie; brak
+`hidepid` na hoście to ostrzeżenie, nie odmowa; kontenery w trybie rootless;
+limit jednego przebiegu agenta to 8 godzin; obraz piaskownicy buduje Owner z
+Dockerfile w repozytorium.

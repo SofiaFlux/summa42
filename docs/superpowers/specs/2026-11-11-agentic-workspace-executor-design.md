@@ -1,6 +1,7 @@
 # Agentic workspace executor: full tools inside a sandbox
 
-**Status:** proposed, awaiting the Owner's approval. **Card:** M1A-T1 of the
+**Status:** the Owner answered the questions of section 12 on 11 November
+2026; approval is the merge of this document. **Card:** M1A-T1 of the
 [development plan](../plans/2026-11-11-development-plan.md), sections 2.5 and
 2.6. **Base:** `main` @ `2db7d4a`.
 
@@ -67,7 +68,7 @@ configurable, so rootless Podman works where its command line matches.
 
 A rootful Docker daemon makes the Box user equivalent to root on the host. The
 supported setups are rootless Docker or rootless Podman; with a rootful daemon
-the Box logs a warning at startup and the run manifest records it (question 1
+the Box logs a warning at startup and the run manifest records it (decision 1
 in section 12).
 
 A new named profile, `oci-agentic`, carries every guarantee of
@@ -117,8 +118,8 @@ listener, each a refusal by default:
    lists (for example the Go module proxy, npm, PyPI, NuGet), with a cache.
 3. **Fetch:** `GET` only, to the domains the manifest lists for the Project,
    with caps on URL length, response size and request rate. The response is
-   returned as data. It is refused entirely when the Project's data class is
-   private.
+   returned as data. It is refused entirely for a repository whose data
+   class is not `public` (section 5.1): a URL is a way to carry text out.
 
 Every request and every refusal is recorded. A refusal is a rogue signal on
 the Attempt. The existing CONNECT proxy (`internal/teb/egress_proxy.go`) stays
@@ -152,10 +153,10 @@ What Mode L means, stated plainly:
 - The agent can read that token. Its reach is the provider account: it can
   spend the subscription's quota. It cannot reach a repository, the Box or
   another service, because the network allows nothing else.
-- The host allowlist cannot tell accounts apart, so the agent could send data
-  to the same provider under another account if it obtained one. Therefore a
-  Project whose data class is private may not use Mode L; it uses Mode G with
-  a zero-data-retention provider, or a local model.
+- The host allowlist cannot tell accounts apart, so the agent could send what
+  it can read to the same provider under another account if it obtained one.
+  What it can read is the checkout. The Owner accepted this for code
+  (section 5.1); it is the reason customer data is never inside a sandbox.
 - A login that is also a credential elsewhere is never used in Mode L. Copilot
   is excluded (its login is a GitHub credential).
 - The profile is `PARTIAL`, without the `NO_AMBIENT_CREDENTIALS` guarantee,
@@ -165,6 +166,25 @@ What Mode L means, stated plainly:
   anything else is discarded and the Owner logs in again. That file is the one
   piece of agent-writable state that survives a run; its validation is what
   keeps it from being a channel of any width.
+
+### 5.1 Data classes
+
+Owner decision of 11 November 2026, replacing the earlier single rule
+"private means zero data retention". Every repository and every source in a
+Project manifest carries one of three classes:
+
+| Class | Example | Models | Mode L | Fetch |
+| --- | --- | --- | --- | --- |
+| `public` | the `summa42` repository | any profile | allowed | allowed, per-Project domain list |
+| `private-code` | the product's repositories | subscription profiles allowed; the provider sees the code without a retention guarantee | allowed | refused |
+| `customer-data` | support requests, customer records, anything read from the product's database or production systems | zero-data-retention provider or local model only | refused | refused |
+
+A sandbox never receives `customer-data`: no production credential, no
+database access, no mounted export. A Task that needs such data is not an
+agentic Attempt. If a repository itself contains customer data (fixtures,
+dumps), its class is `customer-data` and the rules of that row apply; the
+collection step's secret scan does not detect this, so the class is the
+Owner's statement in the manifest.
 
 Whether a given harness runs headless in a container in write mode, where its
 token lives and how it refreshes is not knowable from documentation alone.
@@ -199,7 +219,7 @@ Card M1A-T1b is a spike that answers it per harness before M1A-T3 is built.
    lease.
 
 Wall-time ceiling: 8 hours per Attempt by default, set in the manifest
-(question 3). Until the money ledger exists (M3-T2) only profiles marked
+(decision 4). Until the money ledger exists (M3-T2) only profiles marked
 `PREPAID_QUOTA` may run agentic Attempts; a paid profile is refused.
 
 ## 7. Harness in agent mode
@@ -277,7 +297,8 @@ Unchanged and required:
 | --- | --- | --- |
 | Agent reads the Owner key, tokens, state | Nothing of `SUMMA42_HOME` is mounted; no host path but the workspace | `TestNoBoxPathMounted` |
 | Agent reaches a repository or any service directly | No route but the gateway | `TestSandboxHasNoRouteButGateway` |
-| Agent exfiltrates private code | Fetch refused and Mode L refused for private data class | `TestPrivateProjectRefusesLoginMode`, `TestFetchRefusedForPrivateDataClass` |
+| Agent carries private code out | Fetch refused for `private-code`; the remaining path is the provider itself, which the Owner accepted for code | `TestFetchRefusedForNonPublicClass` |
+| Customer data reaches a model without zero data retention | `customer-data` is never mounted in a sandbox and refuses Mode L and every profile without zero data retention | `TestCustomerDataRefusesLoginMode`, `TestCustomerDataSourceNeverMounted` |
 | Agent talks to another agent | Separate network and mount namespace per Attempt; nothing survives a run except the validated token file and Box evidence | `TestTwoSandboxesCannotReachEachOther`, `TestHomeIsFreshEachRun` |
 | Hostile Git configuration runs as the Box | Collection in a container; Box fetches a bundle into its own repository | `TestHostileGitConfigIsNotExecuted` |
 | Agent writes CI definitions that run with deployment secrets | Protected paths checked at collection in every Project | `TestPipelineFileChangeRejectsCandidate` |
@@ -314,16 +335,16 @@ updated in the same pull request.
 M1A-T3a to M1A-T3c touch protected paths (`internal/ghtriage/climodel/profile.go`,
 the CI workflow for new `oci` tests); the Owner reviews them line by line.
 
-## 12. Questions for the Owner
+## 12. Owner decisions (11 November 2026)
 
-1. Container runtime on the new VM. Default: rootless Podman or rootless
-   Docker; a rootful daemon is accepted with a recorded warning.
-2. Mode L for the `summa42` Project, whose code is public. Default: yes, with
-   a login made for sandbox use only. Without it nothing agentic can run on
-   the Owner's current subscriptions.
-3. Wall-time ceiling per Attempt. Default: 8 hours.
-4. The `daas` Project is private. Default: no agentic Attempt there until a
-   Mode G provider with zero data retention or a local model is configured.
-5. Who maintains the sandbox image. Default: the Owner builds it from the
-   Dockerfile in the repository; a later card may let a pipeline case propose
-   changes to that Dockerfile as an ordinary reviewed change.
+1. Container runtime: rootless Podman or rootless Docker is the target on the
+   new VM; a rootful daemon is accepted with a recorded warning.
+2. Mode L with a login made for sandbox use only: yes, for `summa42` and also
+   for the code of the `daas` Project.
+3. Data classes as in section 5.1: code may go to subscription models;
+   customer data stays with zero-data-retention or local models and never
+   enters a sandbox.
+4. Wall-time ceiling per Attempt: 8 hours, set in the manifest.
+5. The Owner builds the sandbox image from the Dockerfile in the repository; a
+   later card may let a pipeline case propose changes to that Dockerfile as an
+   ordinary reviewed change.

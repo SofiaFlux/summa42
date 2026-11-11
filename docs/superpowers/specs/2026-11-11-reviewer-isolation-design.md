@@ -1,6 +1,7 @@
 # Reviewer isolation: producer and reviewer as different OS users
 
-**Status:** proposed, awaiting the Owner's approval. **Card:** M9-T6 of the
+**Status:** the Owner answered the questions of section 8 on 11 November
+2026; approval is the merge of this document. **Card:** M9-T6 of the
 [development plan](../plans/2026-11-11-development-plan.md), sections 2.5 and
 rule R12. **Base:** `main` @ `2db7d4a`.
 
@@ -55,8 +56,8 @@ for containment; this spec adds no claim beyond the checks it tests.
 
 | Role | OS user (default name) | Runs | Holds |
 | --- | --- | --- | --- |
-| Producer | `summa42-model` | triage classification, planning, implementation | producer CLI logins |
-| Reviewer | `summa42-review` (new) | triage review, plan review, code review, fallback reviewers | reviewer CLI logins |
+| Producer | `summa42-model` | triage classification, planning, implementation | Gemini (`agy`), opencode |
+| Reviewer | `summa42-review` (new) | triage review, plan review, code review, fallback reviewers | Claude, Command Code |
 | Validation | `summa42-validate` | candidate code | nothing |
 
 The Copilot executor that reviews human pull requests in Azure DevOps keeps
@@ -175,6 +176,15 @@ role.
 - The setup script offers the reviewer's CLI logins for the reviewer home with
   the same per-file prompt, secret scan and filtering it uses for the producer
   home. Nothing is copied from one role home to the other.
+- A login lives in exactly one role home. A harness whose login is in the
+  reviewer home is refused as a producer profile, and the reverse; the setup
+  script refuses to install the same login file in both.
+- Which reviewer handles a case (Claude for complex work, Command Code for
+  simple work) is model routing by task class, card M3-T7. Until it exists the
+  reviewer is the one configured profile and Command Code is a fallback
+  reviewer; `fallbackConfig` must then accept Claude as a configured reviewer,
+  which removes its "Claude stays out of review" restriction on the Owner's
+  decision.
 - Copilot's login is a GitHub credential. It is never offered for the reviewer
   home.
 - One-time Owner task: list every login file present in each role home and
@@ -193,7 +203,7 @@ The startup probe checks, as each role user, whether it can read
 `/proc/<pid>/cmdline` of a process owned by another user. If it can, the Box
 logs one warning at startup that names the fix (mount `/proc` with
 `hidepid=2`) and continues. It does not refuse: changing a host mount is the
-Owner's decision (question 3 in section 8).
+Owner's decision (decision 3 in section 8).
 
 ## 5. Build cards
 
@@ -206,7 +216,7 @@ Files: `internal/modelrun/modelrun.go` (resolver), `cmd/summa42-box/main.go`
 `ghcode_review.go`, the triage review command, `internal/repoworkspace/validation.go`.
 Tests: `TestReviewUserMustDifferFromProducer`, `TestReviewUserMustDifferFromValidation`,
 `TestReviewUserDefaultsToItsOwnVariable`, `TestSingleStageReviewUsesReviewUserDefault`,
-`TestFallbackReviewerKeepsReviewUser`, `TestReviewerCannotReadProducerHome`,
+`TestFallbackReviewerKeepsReviewUser`, `TestReviewerHarnessRefusedAsProducer`, `TestReviewerCannotReadProducerHome`,
 `TestProducerCannotReadReviewerHome`, `TestValidationCannotReadReviewerHome`
 (the three probe tests use the launcher fakes in `internal/modelrun/modelruntest`).
 
@@ -268,15 +278,14 @@ same user for both roles refuses to start.
 - No change to policy, approvals, the operation boundary or the validation
   user.
 
-## 8. Questions for the Owner
+## 8. Owner decisions (11 November 2026)
 
-1. Reviewer user name `summa42-review`. Default: yes.
-2. Which CLI logins go to the reviewer home. Default: Claude only, because the
-   Owner decided that Claude reviews; the producer home keeps Gemini (`agy`),
-   Command Code and opencode. Note: the fallback reviewer list in
-   `cmd/summa42-box/fallbackreviewers.go` carries the comment that Claude
-   stays out of pipeline review until the Owner decides otherwise; this answer
-   is that decision.
-3. `hidepid=2` on `/proc`. Default: warn, do not refuse; recommend it in the
-   runbook for the new VM.
-4. Cases produced before the change are produced again. Default: accepted.
+1. The reviewer user is `summa42-review`.
+2. Gemini writes; Claude or Command Code reviews, depending on how complex
+   the work is. The reviewer home holds the Claude and Command Code logins,
+   the producer home Gemini and opencode. This lifts the note in
+   `cmd/summa42-box/fallbackreviewers.go` that Claude stays out of pipeline
+   review.
+3. `hidepid=2` on `/proc`: warn and continue; the Owner enables it on the new
+   VM, and the runbook says how.
+4. Cases produced before the change are produced again.
