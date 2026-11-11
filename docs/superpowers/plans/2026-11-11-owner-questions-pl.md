@@ -4,8 +4,7 @@ Dotyczy: [plan rozwoju](2026-11-11-development-plan.md).
 
 Stan na 11 listopada 2026: Owner odpowiedział na pytania kluczowe w rozmowie.
 Każde pytanie ma poniżej **Decyzję** (odpowiedź Ownera) albo **Przyjęto
-domyślnie** (nie pytano osobno; obowiązuje, dopóki Owner nie zmieni). Jedno
-jest otwarte: Q21. Zmiana
+domyślnie** (nie pytano osobno; obowiązuje, dopóki Owner nie zmieni). Zmiana
 decyzji: popraw wpis i zrób commit.
 
 ## A. Produkt i firma
@@ -87,8 +86,10 @@ Decyzja: 5 USD na case i 20 USD dziennie na cały Kolektyw, do kalibracji po
 pilotażu.
 
 **Q21.** Jakie subskrypcje i dostępy do modeli są dostępne?
-Otwarte. Potrzebne do tabeli cen w M3-T1; do tego czasu obowiązuje lista
-potwierdzona w README.
+Decyzja: Gemini przez Antigravity (`agy`), Claude, Copilot, Command Code z
+subskrypcją Go oraz opencode na darmowych limitach i darmowych modelach;
+lokalnie Ollama. Codex nie jest na liście. Nic nie jest dziś płacone za tokeny
+przez API.
 
 **Q22.** Czy wolno używać płatnych modeli przez API?
 Decyzja: tak, w ramach limitów z Q20.

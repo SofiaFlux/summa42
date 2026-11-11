@@ -16,8 +16,7 @@ itself where the Owner granted that in advance.
 **Owner decisions:** the Owner answered the plan's questions on 11 November
 2026; the answers are recorded in
 [Owner questions](2026-11-11-owner-questions-pl.md) and summarized in section
-2.4. One question is still open (Q21, the list of model subscriptions); M3-T1
-says how to proceed without it.
+2.4.
 
 This plan continues the
 [self-development roadmap](2026-10-07-self-development-roadmap.md) (stages 5 to
@@ -141,6 +140,7 @@ the first Project and stays the proving ground.
 | Private data and code | Zero-data-retention or local models only |
 | Implementer | Gemini Flash through the `agy` profile; other models through Command Code or opencode. Direct API providers and more harnesses later (M3-T6) |
 | Specs and review | Claude writes the `DESIGN` specs and reviews every pull request |
+| Model access | Gemini through `agy`, Claude, Copilot, Command Code (Go plan), opencode (free models), Ollama; no per-token API billing today |
 | Money | 5 USD per case, 20 USD per day for the whole Collective; paid API calls only inside those caps |
 | Notifications | Discord webhook first, behind a sender interface |
 | Owner key | Passphrase-encrypted now, behind a signer interface that later admits a hardware key or an SSO-backed signer |
@@ -760,8 +760,10 @@ model profile (input and output token prices, or a flat subscription marked as
 case, per Project per day and per Collective per day, checked before each model
 call. Relation to the existing request-unit envelopes: a second envelope kind,
 not a conversion. Caps: 5 USD per case and 20 USD per day for the Collective (Q20).
-The list of subscriptions is still open (Q21): proceed with the profiles the
-README lists as confirmed, and keep the price table as data the Owner edits.
+Subscriptions (Q21): Gemini through `agy`, Claude, Copilot, Command Code on
+its Go plan, opencode on free models, Ollama locally; nothing is paid per token
+today, so every current profile is `PREPAID_QUOTA` and the price table, kept as
+data the Owner edits, starts with quota limits only.
 
 **M3-T2 `BUILD` `agent`: money ledger.** Depends: M3-T1 approved. Reservation
 before each model call in `internal/modelrun` callers, settlement from reported
