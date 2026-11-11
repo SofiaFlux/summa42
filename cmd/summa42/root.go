@@ -34,6 +34,7 @@ func newRootCommandWithClient(api control.API) *cobra.Command {
 		newPolicyCommand(),
 		newEmergencyCommand(&jsonOutput),
 		newCasesCommand(&jsonOutput),
+		newCaseCommand(&jsonOutput),
 		newStatusCommand(api, &jsonOutput),
 		newMissionCommand(api, &jsonOutput),
 		newTaskCommand(api, &jsonOutput),

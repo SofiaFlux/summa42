@@ -44,6 +44,7 @@ Initialize the local Collective once, start the Box in one terminal, then query 
 | `./bin/summa42 mission create "..."` | Set the first active Mission with an Owner signature; prints its ID for Mission-rooted Tasks. |
 | `./bin/summa42 mission show` | Show the active Mission and its ID. |
 | `./bin/summa42 cases [--state S]` | List workflow cases: state, current work, steps, last assessment. Reads the local database directly; `--json` for JSON. |
+| `./bin/summa42 case report <case-id>` | What one case cost: assessed stages with their evidence, model calls and tokens from the call ledger, wall time, Owner interventions. It counts interventions only from Owner evidence the case cites (a manual block); approvals, rejections and cancels are not counted yet, and the output says so. |
 | `./bin/summa42 --version` | Print the version. |
 | `go test ./... -count=1` | Run the normal Go test suite. |
 
