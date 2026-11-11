@@ -134,7 +134,8 @@ Decyzja: 5 kolejnych; jedna niezgodność zeruje licznik.
 **Q32.** Co system przejmuje sam na start (pierwszy mandat)?
 Decyzja: tylko ryzyko LOW, odwracalne, bez skutku na zewnątrz. Wszystko inne
 jest propozycją.
-Doprecyzowanie po recenzji planu (do potwierdzenia przez Ownera): Wizja
+Doprecyzowanie po recenzji planu (potwierdzone przez Ownera 11 listopada
+2026: rutynę system przyjmuje sam, decyzje po jednym podpisie Ownera): Wizja
 (art. 7 i 27) mówi, że dowód daje tylko propozycję, a kopertę uprawnień
 powiększa wyłącznie Owner. Dlatego w ramach mandatu system sam przyjmuje tylko
 harmonogramy i szablony zadań dla pracy, która już dziś nie wymaga
@@ -230,3 +231,8 @@ Decyzja: do planu dochodzą: pamięć projektu (M2-T8), praca niekodowa (M2-T9),
 bramka nowych zależności (M1A-T7), routing modeli według klasy zadania
 (M3-T7), ćwiczenia awaryjne (M3-T8), decyzje z telefonu (M4-T5) i zlecanie
 pracy jednym zdaniem (M4-T6). Panel webowy nie wchodzi do planu.
+
+## J. Decyzje przy otwarciu PR #184
+
+Decyzja: tabela luk w izolacji (sekcja 2.5 planu) zostaje w publicznym
+repozytorium; wykonawca kart musi ją znać.
