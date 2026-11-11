@@ -188,3 +188,30 @@ tylko przykłady.
 
 **Q42.** W jakim języku dokumenty w repozytorium?
 Domyślnie: angielski; ten plik jest po polsku, bo jest dla Ciebie.
+
+## G. Issues i dyskusje
+
+**Q43.** Dyskusja #136 (Constructors) nie ma decyzji. Czy „przyjęta
+automatyzacja” z M6 (trwała odpowiedzialność zakotwiczona w Ownerze, uśpiona
+do wybudzenia) ma być pierwszą wersją Constructora, czy Constructor to osobny
+byt na później?
+Domyślnie: nie budujemy osobnego bytu; specyfikacja M6-T1 odpowiada na dziewięć
+pytań z dyskusji i rozstrzyga nazwę.
+
+**Q44.** Kto i kiedy zakłada issue dla kart planu, i z jakimi etykietami?
+Domyślnie: Ty (albo ja na Twoje polecenie), partiami per kamień milowy, dopiero
+gdy zależności karty są zmergowane, bo intake podejmuje issue maintainera i
+uruchamia case. Etykiety jak dotąd (`feature`, `sub-issue`, `severity_N`);
+`summa-auto` tylko dla kart w trybie `pipeline`.
+
+**Q45.** Czy nierozstrzygnięte pytania projektowe (karty `DESIGN`) mają
+zaczynać się jako dyskusja, a issue powstaje dopiero po decyzji?
+Domyślnie: tak.
+
+**Q46.** Czy epiki zamykasz wyłącznie Ty, po spełnieniu kryterium z ostatniego
+komentarza?
+Domyślnie: tak; agent pisze `Part of #N`, nigdy `Closes` dla epika.
+
+**Q47.** Dyskusje #137 (Resurrector) i #138 (fleet consensus) dotyczą wielu
+Cube'ów. Czy zostają otwarte jako kierunek?
+Domyślnie: tak; M3-T5 realizuje jednohostową wersję #137, #138 jest poza planem.

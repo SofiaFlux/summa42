@@ -22,7 +22,8 @@ This plan continues the
 [self-development roadmap](2026-10-07-self-development-roadmap.md) (stages 5 to
 7 are milestones M1, M5 and M8 here) and the
 [Company OS profile](../../COMPANY_OS.md) (M7). It does not change
-[the Vision](../../VISION.md).
+[the Vision](../../VISION.md). Section 9 maps every open issue and discussion
+to the cards that serve it.
 
 ## 1. Where the project stands
 
@@ -165,6 +166,14 @@ unprivileged user.
 does not match what the card describes; a test outside the card's packages
 fails; the change would touch a protected path.
 
+**R11. Issues and discussions are the record.** Every card has one GitHub
+issue (M0-T7). The pull request body says `Closes #<card issue>` and, where
+section 9 names one, `Part of #<epic>`. Never write `Closes` or `Fixes` for an
+epic: the Owner closes an epic when its closing criterion in section 9 is met.
+The agent does not open, close, relabel or edit issues and does not post in
+discussions. If a card conflicts with an issue's closing criterion or with an
+open discussion, that is a stop condition (R10).
+
 **Card types.** `BUILD`: implement as written. `DESIGN`: write a spec in
 `docs/superpowers/specs/` and stop; the spec needs the Owner's approval and
 should be written or at least reviewed by a stronger model than the one that
@@ -252,6 +261,14 @@ literal verdict returned unconditionally from a function named `Evaluate`,
 `Review`, `Assess` or `Verdict` (parse with `go/ast`: a function whose body is
 a single `return` of only literals). This is a tripwire, not a proof; say so in
 the test comment.
+
+**M0-T7 `OWNER`: one issue per card.** Before a card is started, an issue
+exists for it: title `<ID>: <card title>`, body is the card text plus allowed
+paths and validation commands, and `Part of #<epic>` where section 9 names one.
+Create them a milestone at a time, not all at once: intake picks up maintainer
+issues, so an issue is opened only when its "Depends" are merged and it is
+meant to run (Q44). `DESIGN` cards whose question is still open start as a
+discussion, not an issue (Q45).
 
 ### M1. A1 at volume
 
@@ -425,7 +442,8 @@ Keys are not in the backup unless `--include-keys` is given.
 Tests: `TestRestoreReconcilesInsteadOfReplaying`, `TestVerifyDetectsCorruptEvidence`,
 `TestRestoreRefusesNonEmptyHome`, `TestBackupWhileBoxIsWriting`.
 
-**M3-T5 `BUILD` `agent`: watchdog outside the process.**
+**M3-T5 `BUILD` `agent`: watchdog outside the process.** Single-host form of
+discussion #137.
 Create: `deploy/systemd/summa42-serve.service`, `summa42-watchdog.service`,
 `summa42-watchdog.timer`, `summa42-backup.timer`, `docs/runbook.md`.
 `serve` writes a liveness row every tick. `summa42 watchdog` (a separate short
@@ -523,7 +541,8 @@ merged without an Owner action, and one change to a protected path waits.
 
 ### M6. Automation loop
 
-**M6-T1 `DESIGN`: automation loop spec.** Settles the proposal record and its
+**M6-T1 `DESIGN`: automation loop spec.** Answers the nine open questions of
+discussion #136 as they apply to adopted automations (section 9). Settles the proposal record and its
 states (`CANDIDATE`, `SHADOW`, `PROPOSED`, `ADOPTED`, `SUSPENDED`, `RETIRED`),
 the detection rules below with their thresholds, the mandate record, the shadow
 comparison, the suspension rules and the digest. It must show, article by
@@ -575,6 +594,15 @@ why, Owner actions per Project against the previous period, money spent.
 Done when (M6): on the Summa42 Project, a D1 proposal arises from real Owner
 approvals, passes shadow, and is adopted under a mandate the Owner granted.
 
+**M6-T7 `DESIGN` then `BUILD`: reflection proposals (epic #15).** After a real
+Attempt the Summand may emit a bounded reflection. It is stored as evidence and
+becomes a `CANDIDATE` in the same proposal table, visible through
+`summa42 automation list` and the inbox; promotion uses the same shadow,
+mandate and Owner gate as every other proposal. Nothing a Summand writes
+becomes Collective knowledge directly. Restore from the parked
+`internal/epistemic` only what this path calls, with durable state in a
+migration.
+
 **M6-T6 `DESIGN`: model-assisted discovery.** Later and optional. A model reads
 sanitized summaries of a Project's sources and suggests candidates that the
 deterministic rules cannot see. Its output is a `CANDIDATE` only and must pass
@@ -617,6 +645,13 @@ delegation for reply classes the Owner always approves unchanged.
 plan. Writes (reminders, invoices) are external operations of at least MEDIUM
 risk and stay outside any mandate until the Owner says otherwise (Q11).
 
+**M7-T7 `DESIGN` then `BUILD`: structured Mission and goal proposals (epic
+#12).** The structured Mission is the row `summa42 mission` creates and shows,
+per Project, not a second model. Goal proposals derived from it reach the
+Owner as inbox packets. Restore from the parked `internal/mission` only what
+this path calls; its oracle (fixed phrases, constant confidence) does not
+return.
+
 ### M8. Release and self-upgrade (A3)
 
 Roadmap stage 7, unchanged: a separate `cmd/summa42-supervisor`, a release
@@ -624,6 +659,12 @@ manifest bound to the merged SHA, backup before upgrade (M3-T4), canary with a
 synthetic case, rollback only onto a compatible database, expand-contract
 migrations. Start with a `DESIGN` card. The first product's own deployment is a
 separate Project using the same supervisor pattern (needs Q5).
+
+**M8-T2 `DESIGN` then `BUILD`: scenario runs (epic #11).** `summa42 scenario
+run <name>` drives a scripted case through the real execution and operation
+services against the fake servers the connectors ship with (M7-T2), including
+lost acknowledgements and restarts. The canary of the supervisor uses one such
+scenario. Nothing is asserted on flags a test double reports about itself.
 
 ### M9. Containment hardening
 
@@ -638,6 +679,21 @@ only tools its executor can reach.
 **M9-T3 `BUILD` `agent`: context projection.** Call the compiler in
 `internal/runmanifest/compiler.go` from the planner and implementer paths and
 record the projection hash in the run manifest.
+
+**M9-T4 `BUILD` `agent`: remaining rogue sensors (epic #5).**
+`ReportSandboxBoundaryViolation` and `ReportAuditTampering` in
+`internal/detection/detector.go` have no caller. Call the first from the
+workspace and validation path when an edit or a command leaves its allowed
+paths, and the second from a periodic audit-chain check in `serve`. Each needs
+an acceptance test over the running path. With M3-T3 and M4-T3 this meets the
+closing criterion of #5.
+
+**M9-T5 `DESIGN` then `BUILD`: one real micro-decision (epic #16).** Route one
+existing decision through a restored `internal/decision` with a working
+provider and provenance in a migrated table. Candidate: classifying a CI
+failure as infrastructure or code (M5-T2), rule provider first. Only if the
+engine makes that decision cheaper or more reliable than the current code;
+otherwise the epic stays open.
 
 Parked spikes return only by the rule in the parked-spikes index: with a
 caller, an acceptance test, and their listed findings resolved.
@@ -654,12 +710,14 @@ You are implementing one task card of the Summa42 development plan.
    If not, stop and say so.
 3. Create branch <id-lowercase>-<short-name> from the latest main.
 4. Write the tests the card names. Run them. Show that they fail.
-5. Implement the minimum that makes them pass. Follow rules R1 to R10.
+5. Implement the minimum that makes them pass. Follow rules R1 to R11.
 6. Run make verify. Paste the real output tail. Do not claim a pass you did
    not see.
 7. Update the README "What runs today" row if the card made something run.
 8. Open a draft pull request titled "<ID>: <card title>". In the description
    list: what changed, what you could not do, every deviation from the card.
+   End it with "Closes #<card issue>" and, if section 9 names an epic for
+   this card, "Part of #<epic>". Never write "Closes" for an epic.
 If anything in the card does not match the code, stop and report. Do not
 guess, do not widen the scope, do not add packages the card does not name.
 ```
@@ -684,7 +742,41 @@ authority widen; is every claim in the README true.
 
 ## 8. What is deliberately not in this plan
 
-Multi-Cube coordination, PostgreSQL, NATS, Dapr, inter-Collective delegation, a
-decision engine, a digital twin, dreaming. None is needed for one Owner, one
-product and several Projects. Each may return when a card in this plan needs
-it.
+Multi-Cube coordination and fleets, PostgreSQL, NATS, Dapr, inter-Collective
+delegation and a full digital twin. None is needed for one Owner, one product
+and several Projects on one host. The issues and discussions that carry these
+ideas stay open (section 9); each returns when a card needs it.
+
+## 9. Issues and discussions
+
+State on 11 November 2026: ten open issues, one open pull request, three
+discussions. Each epic was reopened on 10 November with a closing criterion in
+its last comment; the table quotes that criterion in short and names the cards
+that meet it. A card that touches an epic links it (R11).
+
+| Issue | Closing criterion (short) | Cards | After this plan |
+| --- | --- | --- | --- |
+| #124 Intake and board | Intake creates and updates cards; a command shows Held and Blocked per mission; acceptance test | M2-T6 | Closed by M2-T6 |
+| #5 Rogue detection, quarantine, containment | Every control is called from a running Box or an Owner command, with an acceptance test | M4-T3, M3-T3, M9-T4 | Closable after M9-T4 |
+| #18 Company OS profile | One real, Owner-funded obligation scheduled ahead of discretionary work; one command lists what waits for the Owner | M7-T3, M4-T2 | Closable after M7-T3 |
+| #15 Learning, dreaming, process evolution | Reflection after a real Attempt yields a durable proposal; promotion through an Owner-visible gate | M6-T7 (on the M6 proposal path) | Closable after M6-T7; dreaming stays out |
+| #12 Mission and goal research | The structured Mission is the one `summa42 mission` creates; goal proposals reach the Owner through a command | M2-T2 (Mission per Project), M7-T7 | Closable after M7-T7 |
+| #16 Decision engine | One real micro-decision routed through the engine with a working provider and migrated provenance | M9-T5 | Open unless M9-T5 proves a benefit |
+| #11 Digital twin | A scenario run started by a command passes through the real execution and operation services | M8-T2 | Closable after M8-T2 |
+| #17 A2A and inter-Collective contracts | A second Collective exchanges a delegated Task and evidence through the gateway | none | Stays open; outside this plan (Q17) |
+| #3 Semantic control plane over OSS runtimes | none recorded | M9-T1, M9-T2 use existing providers (Docker TEB, MCP) | Stays open as the architecture question |
+| #60 Dapr seam and AgentLedger conformance; pull request #176 | Spike of #3 | none | Q38: default is to close #176 unmerged and keep the note; the five conformance patterns are already kernel tests or belong in M8-T2 |
+
+Epics #5, #11, #12, #15, #16, #17 and #18 were closed once on code nothing
+called. They are closed again only by the Owner, against the criterion, after
+the acceptance test named in the card exists.
+
+| Discussion | State | Position of this plan |
+| --- | --- | --- |
+| #136 Constructors (pinned) | Exploration; nine open questions, no decision | Not built as a separate entity. An adopted automation (M6) already is a persistent, Owner-anchored responsibility with a ceiling it inherits, dormant until woken, and "no action required" as a valid result. The M6-T1 spec must answer the nine questions as they apply and say whether that record is named Constructor (Q43). The note `docs/architecture/constructors-collective-architecture.md` describes Cubes as stateless nodes of a fleet; that contradicts the single-Cube MVC and is direction only |
+| #137 Resurrector and island recovery | Proposed | M3-T5 is its single-host form: an external watchdog, restart by systemd, notification when the database is unreachable. The signed resurrection contract and cloud drivers wait for multi-Cube |
+| #138 Dynamic fleet consensus and demobilization | Proposed | Outside this plan (multi-Cube). Fan-out of a plan into child Tasks may return with a card when one issue proves too large for a single case |
+
+New design questions go to a discussion first (R11, Q45); a decision reached
+there is recorded in the spec of the `DESIGN` card that uses it, and the spec
+links the discussion.
