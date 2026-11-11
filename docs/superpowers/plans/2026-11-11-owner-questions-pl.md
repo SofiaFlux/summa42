@@ -212,3 +212,10 @@ przez kilka godzin zbudować całą aplikację, Summand ma umieć to samo. Plan
 zapisuje to jako sekcję 2.6 („ograniczaj promień rażenia, nie agenta”) i
 kamień milowy M1A: pełne narzędzia i godziny pracy wewnątrz piaskownicy,
 kontrola na jej krawędzi, pomiar parytetu z gołym harnessem (M1A-T6).
+
+## I. Rozszerzenia wybrane przez Ownera 11 listopada 2026
+
+Decyzja: do planu dochodzą: pamięć projektu (M2-T8), praca niekodowa (M2-T9),
+bramka nowych zależności (M1A-T7), routing modeli według klasy zadania
+(M3-T7), ćwiczenia awaryjne (M3-T8), decyzje z telefonu (M4-T5) i zlecanie
+pracy jednym zdaniem (M4-T6). Panel webowy nie wchodzi do planu.

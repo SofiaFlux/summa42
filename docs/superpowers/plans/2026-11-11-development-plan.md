@@ -490,6 +490,18 @@ Done when (M1A): through Summa42, one prompt produces a working, tested small
 application in an hours-long unattended run, and the benchmark shows no task
 the bare harness completes that Summa42 cannot.
 
+**M1A-T7 `BUILD` `agent`: new dependency gate.** An agent with full tools will
+add libraries. When the collected commits change a dependency manifest or lock
+file (`go.mod`, `package.json`, `requirements*.txt`, `*.csproj` and the like,
+listed as data), the candidate is held with one Owner packet per new
+dependency: name, version, licence, and what the diff uses it for. Licence and
+known-vulnerability data are fetched through the mediated fetch tool; if they
+cannot be fetched the packet says so instead of guessing. Updating an existing
+dependency inside its major version does not hold (that is the monthly
+obligation of M7-T3).
+Tests: `TestNewDependencyHoldsCandidate`, `TestPatchUpdateDoesNotHold`,
+`TestUnknownLicenceIsReportedAsUnknown`.
+
 ### M2. Projects
 
 **M2-T1 `DESIGN`: Project scope spec.**
@@ -574,6 +586,27 @@ small. `$SUMMA42_HOME/projects/<slug>/inbox/`: each Owner-written Markdown file
 becomes one card and one case. It gives the Owner a way to hand over work that
 is not an issue or a work item. The connector implements the same interface as
 the GitHub connector in `internal/board/connectors.go`.
+
+**M2-T8 `DESIGN` then `BUILD`: Project memory.** Depends: M2-T2, M9-T3. An
+agent should not relearn the Project on every Task. Per Project: a generated
+repository map (structure, build and test commands, entry points) refreshed on
+each new base commit; conventions and decisions the Owner wrote or approved;
+findings from earlier cases. All of it is evidence with provenance (Vision,
+Article 10), selected into the prompt by the context projection compiler with
+its hash in the run manifest. What a Summand learned enters memory only through
+the proposal path of M6-T7, never by writing it directly.
+Tests: `TestMapIsRegeneratedOnNewBase`, `TestMemoryItemCitesItsEvidence`,
+`TestSummandCannotWriteMemoryDirectly`, `TestProjectionHashRecorded`.
+
+**M2-T9 `DESIGN` then `BUILD`: work that is not code.** Depends: M1A-T3,
+M2-T7. A second recipe next to issue-to-pull-request: a Task whose result is an
+artefact (an analysis, a report, a data extract, a document) produced in the
+same sandbox with the same tools, stored as evidence with the sources it used,
+reviewed by the independent reviewer, and delivered to the Owner's inbox. No
+external effect unless a separate operation publishes it. This is what lets a
+Project serve the company and not only its repositories.
+Tests: `TestArtefactTaskEndsInInboxNotPullRequest`, `TestArtefactListsItsSources`,
+`TestArtefactTaskCausesNoExternalEffect`.
 
 ### M2A. Azure DevOps delivery
 
@@ -678,6 +711,27 @@ a provider without zero data retention is refused for private data classes.
 New harnesses (for example Pi) remain profile data through the existing
 `model-profile-draft`, `model-probe`, `model-profile-adopt` path.
 
+**M3-T7 `DESIGN` then `BUILD`: model routing by task class.** Depends: M3-T2,
+M1A-T6. The Project manifest maps task classes (triage, plan, small change,
+large change, review, artefact) to an ordered list of model profiles. The order
+is proposed from the parity benchmark and from recorded outcomes
+(`internal/experience` already reorders eligible executors under an Owner
+grant; extend that, do not build a second mechanism). A profile over its quota
+or cap falls through to the next; the reviewer is never the producer's model;
+private data classes skip profiles without zero data retention.
+Tests: `TestExhaustedProfileFallsThrough`, `TestReviewerNeverEqualsProducer`,
+`TestPrivateDataSkipsNonZDRProfile`, `TestRoutingNeverWidensCapability`.
+
+**M3-T8 `BUILD` `agent`: drills.** Depends: M3-T4, M3-T5. A scheduled,
+automatic exercise in a scratch home that never touches live state or real
+providers: restore the latest backup and reconcile; freeze and resume; a
+simulated runaway agent (ungranted capability, denied egress, write outside the
+workspace) that must end contained. Each drill writes a result as evidence and
+a failed drill notifies the Owner. Uses the scenario runner of M8-T2 once it
+exists.
+Tests: `TestDrillNeverTouchesLiveHome`, `TestFailedRestoreDrillNotifies`,
+`TestRunawayDrillEndsContained`.
+
 ### M4. Owner surface
 
 **M4-T1 `BUILD` `agent`: Owner action record.**
@@ -718,6 +772,26 @@ the stored Owner public key.
 Done when: a test running as the Box user cannot produce a valid Owner
 signature without the passphrase, and the custody mode is shown by `summa42
 status`.
+
+**M4-T5 `DESIGN` then `BUILD`: decisions from a phone.** Depends: M4-T2,
+M4-T4. The inbox and its decisions through Discord instead of a terminal. A
+Discord account is an identifier, not a signature (README), so the spec must
+settle where the signing key lives. Recommended shape: a second, registered
+device key with a narrower ceiling than the Owner key (it may approve
+operations up to MEDIUM risk and decide inbox packets; it may not grant
+delegations or mandates, fund envelopes, change policy or lift break glass),
+revocable by the Owner key at any time, with every use recorded.
+Tests: `TestDeviceKeyCannotGrantDelegation`, `TestRevokedDeviceKeyRefused`,
+`TestUnsignedDiscordMessageDecidesNothing`.
+
+**M4-T6 `DESIGN` then `BUILD`: handing over work in one sentence.** Depends:
+M2-T7, M4-T5. `summa42 ask "<request>" --project <slug>` and the same from
+Discord. The request becomes a draft case; a model may ask bounded clarifying
+questions and proposes a plan with scope, budget and what it will not do;
+nothing starts until the Owner confirms with a signature. From there the case
+runs like any other, including an hours-long agentic Attempt (M1A).
+Tests: `TestRequestCreatesDraftNotWork`, `TestWorkStartsOnlyAfterSignedConfirmation`,
+`TestDraftShowsBudgetAndScope`.
 
 ### M5. Standing delegation (A2)
 
