@@ -142,6 +142,41 @@ the first Project and stays the proving ground.
 | First mandate | LOW risk, reversible, no external effect; everything else is proposed |
 | Constructors (discussion #136) | An adopted automation is the minimal Constructor v1 |
 
+### 2.5 Design goal: no runaway agents, no private channels
+
+One of the Owner's founding goals: an agent must not be able to break out and
+do damage, and agents must not be able to coordinate with each other outside
+the Collective's sight. The Vision states it (Articles 6, 9, 17, 18: "no number
+of cooperating agents can collectively acquire a permission that none of them
+received"). The design answer is not to trust detection but to make sure that
+whatever an agent says or does carries no authority by itself:
+
+- An agent's only output is a proposal or evidence, handed to the Box. Every
+  effect goes through policy, approval and the commitment boundary, performed
+  by trusted code that holds the credentials.
+- Agents never address each other. The only path from one model call to
+  another is evidence the Box stored and chose to project into the next prompt.
+- Containment comes first, detection second (epic #5). A missed signal must
+  not be what stands between an agent and damage.
+
+Where the running system stands against that goal:
+
+| Threat | Holds today | Gap | Card |
+| --- | --- | --- | --- |
+| A model reads the Owner key, tokens or state | Separate OS users for models and validation; startup probe refuses if a secret is readable | Executors other than models still run as the Box user; Owner key in a file | M4-T4, M9-T1 |
+| A model causes an external effect directly | Models hold no write credentials; effects only through `operations` | Models have unrestricted network access | M9-T7 |
+| Producer and reviewer coordinate through the filesystem | Validation runs as a third user so candidate code cannot poison the model's configuration | Producer and reviewer are the same OS user with one home; a call can leave files the next call reads | M9-T6 |
+| Producer and reviewer coordinate over the network | none | No egress restriction on model processes | M9-T7 |
+| The producer steers the reviewer through its own output (instructions in a plan, code comment or commit text) | Different models; recorded validation is not treated as proof; the Owner merges | No deterministic check; after M5 a delegation would rely on the reviewer | M9-T8 |
+| Hidden content in output (invisible or bidirectional characters, non-text) | Non-text changes are rejected | Not checked in plans and review text | M9-T8 |
+| An agent widens its own authority | Workflow grants are subset-checked; policy fails closed; contracting only | Delegations and mandates do not exist yet; they must not be creatable by an agent | M5-T1, M6-T1 |
+| A runaway loop spends without limit | Step limit, envelope, no-progress stop, lease expiry | No money cap | M3-T2 |
+| Nobody notices | Break glass, dead man switch, containment for three signals | No notification; two sensors have no caller | M3-T3, M9-T4 |
+
+What cannot be promised: two models that both read the same artefact can
+always pass information through it. The goal is that such a channel carries no
+authority and reaches no secret, not that it cannot exist.
+
 ## 3. Rules for the implementing agent
 
 These are checked in review. Milestone M0 turns most of them into tests.
@@ -202,6 +237,12 @@ The agent does not open, close, relabel or edit issues and does not post in
 discussions. If a card conflicts with an issue's closing criterion or with an
 open discussion, that is a stop condition (R10).
 
+**R12. No agent-to-agent channel.** New code must not let one model call
+reach another, or reach anything outside its sandbox, except as evidence handed
+to the Box. No shared writable directory between roles, no model-held
+credential that can cause an effect, no model output executed or obeyed as an
+instruction. A card that needs an exception is a `DESIGN` card.
+
 **Card types.** `BUILD`: implement as written. `DESIGN`: write a spec in
 `docs/superpowers/specs/` and stop; the spec needs the Owner's approval and
 should be written or at least reviewed by a stronger model than the one that
@@ -225,11 +266,11 @@ tasks. `agent`: needs an external coding agent working in a checkout.
 | M2A | Azure DevOps delivery | Work item to draft pull request in ADO, build observation | M2 |
 | M3 | Continuity | Money budget, notifications, backup and restore, watchdog | M2 |
 | M4 | Owner surface | One inbox; containment and quarantine commands; Owner key out of the Box user's reach | M2, M3 |
-| M5 | Standing delegation (A2) | CI observation, delegation records, protected merge, issue closure | M1, M2A, M4 |
+| M5 | Standing delegation (A2) | CI observation, delegation records, protected merge, issue closure | M1, M2A, M4, M9-T6, M9-T8 |
 | M6 | Automation loop | Detect, shadow, propose, adopt inside a mandate, suspend on failure | M5 |
 | M7 | Company OS for the first product | Obligations, operate, support and money functions on real sources | M6 |
 | M8 | Release and self-upgrade (A3) | Supervisor, canary, rollback | M5 |
-| M9 | Containment hardening | OCI execution for validation and implementation; MCP capability sessions wired | may start after M3 |
+| M9 | Containment hardening | Separate reviewer user, model egress allowlist, output hygiene, OCI execution, capability sessions | M9-T6 and M9-T8 right after M0; the rest after M3 |
 
 M1 runs in the background from M0 onward: pilot tasks are taken from the
 `pipeline` cards of every milestone. M2 comes before M3 because budgets,
@@ -597,8 +638,9 @@ per-operation approval only when a valid delegation covers it. Each use is
 recorded and appears in the Owner's digest. Any rejection, failed verification
 or reverted change in the class suspends the delegation automatically. The spec
 must list what can never be delegated (policy, keys, approvers, budgets,
-workflow files, the delegation mechanism itself). Entry condition: M1-T5 done
-and M4-T4 done.
+workflow files, the delegation mechanism itself). Entry condition: M1-T5, M4-T4,
+M9-T6 and M9-T8 done. The spec must state that no delegation or mandate can be
+created, widened or reactivated by anything but an Owner signature.
 
 **M5-T2 `BUILD` `agent`: CI observation bound to the exact SHA.**
 Read-only. Required checks come from the Project manifest. A missing required
@@ -793,6 +835,43 @@ paths, and the second from a periodic audit-chain check in `serve`. Each needs
 an acceptance test over the running path. With M3-T3 and M4-T3 this meets the
 closing criterion of #5.
 
+**M9-T6 `BUILD` `agent`: producer and reviewer are different OS users.**
+Section 2.5. Protected paths by design (`internal/modelrun/`,
+`scripts/setup-model-user.sh`); Owner review line by line. Today both roles run
+as the one `--model-user`. Add a required `--review-model-user`
+(`SUMMA42_REVIEW_MODEL_USER`), different from the model user, the validation
+user, the Box user and root; the setup script creates `summa42-review` with its
+own 0700 home and its own copies of the reviewer's CLI logins. The startup
+probe checks, through the same launcher, that neither role can read the other's
+home. Every model call runs in a per-call scratch directory, and after each
+call the Box kills what the call left running and removes the scratch, as it
+already does for validation.
+Tests: `TestReviewerCannotReadProducerHome`, `TestProducerCannotReadReviewerHome`,
+`TestSameUserForBothRolesRefused`, `TestNothingSurvivesAModelCall`, and a
+`realhost` test like the existing ones in `internal/repoworkspace`.
+
+**M9-T7 `DESIGN` then `BUILD`: model egress allowlist.** Section 2.5. A model
+process may reach only the endpoints of its own provider. Use the existing
+CONNECT egress proxy (exact allowlisted hosts, validated IPs) and a per-user
+firewall rule on the host so that a model user has no route except the proxy.
+Each profile declares its hosts; a denied connection is a rogue signal on the
+Attempt. Record the enforcement level actually achieved; where the host cannot
+enforce it (for example WSL), say `UNENFORCED` and do not claim more.
+
+**M9-T8 `BUILD` `agent`: output hygiene between roles.** Section 2.5. Before
+any model output is projected into another role's prompt or published: reject
+invisible and bidirectional control characters and non-text content; pass
+producer text to the reviewer only inside a delimited data block that the
+prompt declares to be untrusted; flag text that addresses the reviewer or the
+Owner with instructions (a deterministic pattern list, kept as data) as a
+finding the reviewer must answer and as a rogue signal. This is a tripwire, not
+a proof; say so in the code.
+Tests: `TestBidiAndZeroWidthRejected`, `TestReviewerDirectedInstructionFlagged`,
+`TestProducerTextIsDelimitedAsData`, `TestCleanOutputPasses`.
+
+M9-T6 and M9-T8 are entry conditions of M5: a standing delegation leans on the
+reviewer, so the reviewer's independence has to be real first.
+
 **M9-T5 `DESIGN` then `BUILD`: one real micro-decision (epic #16).** Route one
 existing decision through a restored `internal/decision` with a working
 provider and provenance in a migrated table. Candidate: classifying a CI
@@ -815,7 +894,7 @@ You are implementing one task card of the Summa42 development plan.
    If not, stop and say so.
 3. Create branch <id-lowercase>-<short-name> from the latest main.
 4. Write the tests the card names. Run them. Show that they fail.
-5. Implement the minimum that makes them pass. Follow rules R1 to R11.
+5. Implement the minimum that makes them pass. Follow rules R1 to R12.
 6. Run make verify. Paste the real output tail. Do not claim a pass you did
    not see.
 7. Update the README "What runs today" row if the card made something run.
@@ -839,6 +918,7 @@ authority widen; is every claim in the README true.
 | A weaker model produces plausible code nothing calls | every card | R3, M0-T2, review question 1 |
 | A weaker model weakens a test or a gate to get green | every card | R9, R5, different-model review, required CI |
 | A design decision is taken by the implementer | `DESIGN` cards | Spec approved by the Owner first; stronger model writes or reviews it |
+| Agents coordinate outside the Collective's sight | every milestone with two model roles | Section 2.5, R12, M9-T6 to M9-T8 before any delegation |
 | Delegation or mandate widens authority | M5, M6 | Spec lists the undelegable; suspension is automatic; M4-T4 first |
 | The Owner key is readable by the Box user | M5 onward | M4-T4 is an entry condition of M5 |
 | Projects migration breaks the one running installation | M2-T2 | Upgrade test on a copy of the live database; backup first |
@@ -863,7 +943,7 @@ that meet it. A card that touches an epic links it (R11).
 | Issue | Closing criterion (short) | Cards | After this plan |
 | --- | --- | --- | --- |
 | #124 Intake and board | Intake creates and updates cards; a command shows Held and Blocked per mission; acceptance test | M2-T6 | Closed by M2-T6 |
-| #5 Rogue detection, quarantine, containment | Every control is called from a running Box or an Owner command, with an acceptance test | M4-T3, M3-T3, M9-T4 | Closable after M9-T4 |
+| #5 Rogue detection, quarantine, containment | Every control is called from a running Box or an Owner command, with an acceptance test | M4-T3, M3-T3, M9-T4; M9-T6 to M9-T8 add the signals of section 2.5 | Closable after M9-T4 |
 | #18 Company OS profile | One real, Owner-funded obligation scheduled ahead of discretionary work; one command lists what waits for the Owner | M7-T3, M4-T2 | Closable after M7-T3 |
 | #15 Learning, dreaming, process evolution | Reflection after a real Attempt yields a durable proposal; promotion through an Owner-visible gate | M6-T7 (on the M6 proposal path) | Closable after M6-T7; dreaming stays out |
 | #12 Mission and goal research | The structured Mission is the one `summa42 mission` creates; goal proposals reach the Owner through a command | M2-T2 (Mission per Project), M7-T7 | Closable after M7-T7 |

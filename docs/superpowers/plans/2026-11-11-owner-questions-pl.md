@@ -191,3 +191,17 @@ Przyjęto domyślnie: tak.
 
 **Q47.** Czy dyskusje #137 i #138 zostają otwarte jako kierunek?
 Przyjęto domyślnie: tak; M3-T5 realizuje jednohostową wersję #137.
+
+## H. Cel założycielski (dopisany przez Ownera 11 listopada 2026)
+
+Jednym z celów przy tworzeniu założeń było zapobieganie temu, o czym ostatnio
+głośno: agentom, które się „wyrywają” i sieją spustoszenie, oraz agentom, które
+komunikują się ze sobą w pokrętny sposób poza kontrolą.
+
+Plan zapisuje to jako sekcję 2.5 i regułę R12. Zasada: wynik agenta jest tylko
+propozycją albo dowodem przekazanym Boxowi; agenci nie rozmawiają ze sobą;
+najpierw izolacja, dopiero potem wykrywanie. Luki znalezione przy tej okazji i
+ich karty: producent i recenzent działają dziś jako ten sam użytkownik systemu
+(M9-T6), procesy modeli mają nieograniczoną sieć (M9-T7), nic nie sprawdza
+instrukcji i ukrytych znaków przemycanych w wyniku producenta do recenzenta
+(M9-T8). M9-T6 i M9-T8 są warunkiem wejścia w stałe delegacje (M5).

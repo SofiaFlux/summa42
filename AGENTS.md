@@ -24,6 +24,7 @@ option is not high, say so explicitly and ask.
 ## Development plan
 
 Work is organized by `docs/superpowers/plans/2026-11-11-development-plan.md`. Before
-implementing anything, read its sections 1 to 4. Its section 3 (rules R1 to R11) is
+implementing anything, read its sections 1 to 4. Its section 3 (rules R1 to R12) is
 binding: one task card per branch and draft pull request, tests first, no package or
-table without a caller in `cmd/`, no fabricated results, protected paths need the Owner.
+table without a caller in `cmd/`, no fabricated results, protected paths need the Owner,
+no channel between agents except evidence handed to the Box.
