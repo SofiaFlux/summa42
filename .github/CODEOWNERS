@@ -1,0 +1,29 @@
+# Paths that need the Owner's review (rule R5 of the development plan).
+#
+# This is the control behind scripts/check_protected_paths.py: with "Require
+# review from Code Owners" enabled on main, a pull request that changes one of
+# these paths cannot merge without the Owner's approval. The patterns must stay
+# equal to the list in that script; scripts/test_check_protected_paths.py
+# compares them.
+
+/docs/VISION.md @SofiaFlux
+/internal/policy/default_profile.go @SofiaFlux
+/scripts/setup-model-user.sh @SofiaFlux
+/LICENSE @SofiaFlux
+/SECURITY.md @SofiaFlux
+/scripts/check_protected_paths.py @SofiaFlux
+/Makefile @SofiaFlux
+/tests/acceptance/architecture_test.go @SofiaFlux
+/internal/ghtriage/climodel/profile.go @SofiaFlux
+/AGENTS.md @SofiaFlux
+/go.mod @SofiaFlux
+/docs/superpowers/plans/2026-11-11-development-plan.md @SofiaFlux
+/.github/CODEOWNERS @SofiaFlux
+/internal/emergency/ @SofiaFlux
+/internal/approvals/ @SofiaFlux
+/internal/identity/ @SofiaFlux
+/internal/modelrun/ @SofiaFlux
+/internal/securityregression/ @SofiaFlux
+/.github/workflows/ @SofiaFlux
+**/azure-pipelines*.yml @SofiaFlux
+**/azure-pipelines*.yaml @SofiaFlux
