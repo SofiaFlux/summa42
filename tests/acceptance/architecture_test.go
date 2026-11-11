@@ -1,6 +1,9 @@
 package acceptance_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -271,6 +274,137 @@ func TestMigrationGateDetectsGapsAndDuplicates(t *testing.T) {
 	} {
 		if !strings.Contains(problems, want) {
 			t.Errorf("problems do not mention %q:\n%s", want, problems)
+		}
+	}
+}
+
+// processStartAllowlist names the packages whose non-test code may start an
+// operating system process, each with what it starts. A model or an agent is
+// started only through internal/modelrun, which is where the separate OS
+// user, the isolation probe and the kill of the process group live. A new
+// place that starts processes is a new way around those controls, so it
+// needs a plan card and a line here.
+var processStartAllowlist = map[string]string{
+	"internal/modelrun":      "the launcher: model and validation processes as their dedicated OS users",
+	"internal/repoworkspace": "git, with a fixed argument prefix, for the pinned checkout",
+	"internal/adomcp":        "the Owner-configured Azure DevOps MCP server (read provider)",
+	"internal/adoeffects":    "the Owner-configured Azure DevOps MCP server (protected writes)",
+	"internal/teb":           "the container runtime CLI for the OCI execution boundary",
+	"internal/executors":     "the Owner-configured command executor; runs as the Box user (plan gap, card M4-T4)",
+}
+
+// processStarts returns the line numbers in a Go source file where a process
+// is started: exec.Command, exec.CommandContext, os.StartProcess,
+// syscall.Exec, syscall.ForkExec or syscall.StartProcess, under whatever name
+// the file imports the package.
+func processStarts(t *testing.T, filename string, source []byte) []int {
+	t.Helper()
+	files := token.NewFileSet()
+	parsed, err := parser.ParseFile(files, filename, source, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", filename, err)
+	}
+	starters := map[string]map[string]bool{
+		"os/exec": {"Command": true, "CommandContext": true},
+		"os":      {"StartProcess": true},
+		"syscall": {"Exec": true, "ForkExec": true, "StartProcess": true},
+	}
+	local := map[string]map[string]bool{}
+	for _, spec := range parsed.Imports {
+		path, _ := strconv.Unquote(spec.Path.Value)
+		functions, ok := starters[path]
+		if !ok {
+			continue
+		}
+		name := path[strings.LastIndex(path, "/")+1:]
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		if name == "." {
+			// A dot import hides the package name; count the import itself.
+			return []int{files.Position(spec.Pos()).Line}
+		}
+		local[name] = functions
+	}
+	var lines []int
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if pkg, ok := selector.X.(*ast.Ident); ok && local[pkg.Name][selector.Sel.Name] {
+			lines = append(lines, files.Position(selector.Pos()).Line)
+		}
+		return true
+	})
+	return lines
+}
+
+func TestProcessesStartOnlyFromKnownPackages(t *testing.T) {
+	root := repositoryRoot(t)
+	used := map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		relative, _ := filepath.Rel(root, path)
+		relative = filepath.ToSlash(relative)
+		pkg := relative[:strings.LastIndex(relative, "/")]
+		for _, line := range processStarts(t, relative, source) {
+			if _, ok := processStartAllowlist[pkg]; ok {
+				used[pkg] = true
+				continue
+			}
+			t.Errorf("%s:%d starts a process outside the known packages; start models and agents through internal/modelrun, or add %s to the allowlist under a plan card", relative, line, pkg)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for pkg, reason := range processStartAllowlist {
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("process allowlist entry %s has no written reason", pkg)
+		}
+		if !used[pkg] {
+			t.Errorf("%s is on the process allowlist but starts no process: remove the entry", pkg)
+		}
+	}
+}
+
+func TestProcessStartDetection(t *testing.T) {
+	cases := map[string]struct {
+		source string
+		want   int
+	}{
+		"plain":       {"package p\nimport \"os/exec\"\nfunc f() { exec.Command(\"x\").Run() }", 1},
+		"context":     {"package p\nimport (\"context\"; \"os/exec\")\nfunc f() { exec.CommandContext(context.Background(), \"x\") }", 1},
+		"renamed":     {"package p\nimport run \"os/exec\"\nfunc f() { run.Command(\"x\") }", 1},
+		"as a value":  {"package p\nimport \"os/exec\"\nvar start = exec.Command", 1},
+		"dot import":  {"package p\nimport . \"os/exec\"\nfunc f() { Command(\"x\") }", 1},
+		"os":          {"package p\nimport \"os\"\nfunc f() { os.StartProcess(\"x\", nil, nil) }", 1},
+		"syscall":     {"package p\nimport \"syscall\"\nfunc f() { syscall.ForkExec(\"x\", nil, nil) }", 1},
+		"error type":  {"package p\nimport \"os/exec\"\nfunc f(err error) bool { _, ok := err.(*exec.ExitError); return ok }", 0},
+		"look path":   {"package p\nimport \"os/exec\"\nfunc f() { exec.LookPath(\"x\") }", 0},
+		"other exec":  {"package p\ntype e struct{}\nfunc (e) Command(string) {}\nvar exec e\nfunc f() { exec.Command(\"x\") }", 0},
+		"os no start": {"package p\nimport \"os\"\nfunc f() { os.Getpid() }", 0},
+	}
+	for name, c := range cases {
+		if got := len(processStarts(t, name+".go", []byte(c.source))); got != c.want {
+			t.Errorf("%s: %d process starts found, want %d", name, got, c.want)
 		}
 	}
 }
