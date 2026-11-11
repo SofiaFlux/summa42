@@ -113,7 +113,11 @@ docs/incidents/2026-10-21-canned-model-reviews.md.
 
 ### Task 8: Delivery
 
-- [ ] Validation matrix from CONTRIBUTING.md.
+- [x] Validation matrix from CONTRIBUTING.md: gofmt, vet, build, Python tests,
+  docs check, `go test ./...`, `go test -race ./...`, the SQLite spike, and the
+  `TestCloseConcurrentReplay` gate at `-count=600`. `internal/ghtriage` was run
+  as an unprivileged user (plain and race). The Docker OCI gate was not run
+  here; CI runs it.
 - [ ] Push; draft pull request; reopen affected epics; comment on PR #176.
 
 ## Decisions
