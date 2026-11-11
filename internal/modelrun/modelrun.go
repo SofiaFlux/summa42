@@ -40,6 +40,9 @@ var (
 	killBinary    = "/bin/kill"
 	killAllBinary = "/bin/kill"
 	killGrace     = 10 * time.Second
+	// markerWait bounds how long a cancel waits for the process-group marker
+	// when it has not been read yet.
+	markerWait    = 3 * time.Second
 	shellBinary   = "/bin/sh"
 	defaultPATH   = DefaultPATH
 	defaultLocale = "C.UTF-8"
@@ -267,7 +270,7 @@ func build(ctx context.Context, spec Spec, probed bool) (*Cmd, error) {
 	isolateProcessTree(cmd)
 	local := cmd.Cancel
 	cmd.Cancel = func() error {
-		if pgid := c.pgid.Load(); pgid > 1 {
+		if pgid := c.awaitMarker(); pgid > 1 {
 			c.killModelGroup(pgid)
 		}
 		if local != nil {
@@ -338,6 +341,30 @@ func (c *Cmd) Run() error {
 		return err
 	}
 	return c.Wait()
+}
+
+// awaitMarker returns the model-side process group, waiting up to markerWait
+// for the marker when it has not been read yet. A cancel can arrive between
+// the launcher's start and the moment the Box reads the marker line; reading
+// the marker only once there would skip the model-side kill, and local signals
+// do not cross the uid boundary, so the model would run on until WaitDelay.
+// It returns 0 when the call ended or no marker came in time.
+func (c *Cmd) awaitMarker() int64 {
+	wait := markerWait
+	deadline := time.Now().Add(wait)
+	for {
+		if pgid := c.pgid.Load(); pgid > 1 {
+			return pgid
+		}
+		if !time.Now().Before(deadline) {
+			return 0
+		}
+		select {
+		case <-c.done:
+			return c.pgid.Load()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 }
 
 // killModelGroup signals the model-side process group as the model user:
