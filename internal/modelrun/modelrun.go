@@ -296,6 +296,8 @@ type Cmd struct {
 	done     chan struct{}
 	doneOnce sync.Once
 	filter   *markerFilter
+	// gateErr is set when the gate stopped the running process.
+	gateErr atomic.Pointer[error]
 }
 
 // Start wraps the caller's stderr to strip the pgid marker line.
@@ -306,16 +308,24 @@ func (c *Cmd) Start() error {
 	}
 	c.filter = &markerFilter{dst: dst, found: func(pgid int64) { c.pgid.Store(pgid) }}
 	c.Cmd.Stderr = c.filter
+	if err := checkGateAtStart(context.Background()); err != nil {
+		c.doneOnce.Do(func() { close(c.done) })
+		return err
+	}
 	if err := c.Cmd.Start(); err != nil {
 		c.doneOnce.Do(func() { close(c.done) })
 		return err
 	}
+	go c.watchGate(currentGate(), gateInterval, gateFailureLimit)
 	return nil
 }
 
 func (c *Cmd) Wait() error {
 	err := c.Cmd.Wait()
 	c.doneOnce.Do(func() { close(c.done) })
+	if stopped := c.gateErr.Load(); stopped != nil {
+		err = fmt.Errorf("modelrun: process stopped: %w", *stopped)
+	}
 	if c.filter != nil {
 		c.filter.flush()
 	}

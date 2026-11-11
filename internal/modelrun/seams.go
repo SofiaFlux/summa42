@@ -36,3 +36,11 @@ func SetMarkerWaitForTest(d time.Duration) func() {
 	markerWait = d
 	return func() { markerWait = old }
 }
+
+// SetGateTimingForTest shortens the gate's check interval and returns the
+// restore function.
+func SetGateTimingForTest(interval time.Duration) func() {
+	old := gateInterval
+	gateInterval = interval
+	return func() { gateInterval = old }
+}

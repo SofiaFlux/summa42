@@ -255,7 +255,7 @@ On the autonomy ladder in the [Vision](docs/VISION.md#where-this-leads) the impl
 | GitHub issue intake, triage, plan, plan review, implementation, validation, code review, draft-PR publication | Runs (supervised) |
 | Azure DevOps PR observation, review and reviewer vote | Runs (supervised) |
 | Field feedback collection, sanitization and governed emission | Runs, off by default |
-| Break glass and dead man switch | Run; Owner commands above |
+| Break glass and dead man switch | Run; Owner commands above. Break glass is checked when an Attempt is leased, on every external operation and capability call, and by the model launcher: no model or validation process starts while the Collective is FROZEN, and one that is running is killed within the launcher's 5-second check plus the kill grace. A launcher whose emergency state cannot be read starts nothing |
 | Attempt containment ladder and rogue-signal detection | Run for three signals: ungranted capability, reuse of a revoked session, denied operation. No command clears a contained Attempt |
 | Cube quarantine | Checked on every operation and capability call; no command sets or lifts it |
 | OCI TEB, MCP adapter and capability Session, context projection compiler (`internal/runmanifest`) | Library only: not wired into execution |

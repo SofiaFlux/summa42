@@ -614,6 +614,7 @@ func isolationProbePaths(home string, cfg localconfig.Config, boxHome string) (r
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	registerIsolationProbe()
+	registerEmergencyGate()
 	if len(os.Args) > 1 {
 		if command, ok := subcommands[os.Args[1]]; ok {
 			code := exitStatus(command(ctx, os.Args[2:]), os.Stderr)

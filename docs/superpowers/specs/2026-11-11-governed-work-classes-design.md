@@ -174,7 +174,14 @@ Where Summa42 stands, read from the code at the base commit:
 | Bounded time to stop | A freeze revokes leases | A model process that is already running is not killed; it ends at its own timeout, which is minutes |
 | Sweep for what bypasses the control | `TestProcessesStartOnlyFromKnownPackages` (added with this spec's pull request) fails when a new package starts processes | Static only; it does not look at running processes |
 
-Proposed card (section 9, M9-T9): the launcher takes a gate from its caller.
+**Built on 11 November 2026 at the Owner's instruction** (`internal/modelrun/gate.go`,
+`cmd/summa42-box/emergencygate.go`); the table above describes the state before
+it. What was built follows the card below, with one refinement: a gate that
+cannot answer stops a running process only after three checks in a row, so one
+busy database read does not kill an hour of work, while a definite refusal
+(break glass FROZEN) stops it at the next check.
+
+The card as proposed (section 9, M9-T9): the launcher takes a gate from its caller.
 Before `Start` it asks the gate and refuses on any error. While the process
 runs it asks again at a fixed interval and kills the process group on refusal,
 with the existing kill path. The interval is a constant, default 5 seconds,

@@ -515,3 +515,18 @@ func runOutput(cmd *modelrun.Cmd) ([]byte, error) {
 	err := cmd.Run()
 	return out.Bytes(), err
 }
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// pidFileAlive2 reports at once whether the process in the pid file exists.
+func pidFileAlive2(path string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	return err == nil && syscall.Kill(pid, 0) == nil
+}
