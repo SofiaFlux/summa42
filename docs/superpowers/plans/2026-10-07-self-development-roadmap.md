@@ -1,369 +1,372 @@
-# Summa42: stan projektu i plan dojścia do samodzielnego rozwoju
+# Summa42: project state and the path to self-development
 
-> Dla wykonawcy: realizuj zadania kolejno według Superpowers `executing-plans`. Przed implementacją porównaj aktualny HEAD z bazą tego raportu. Każdy etap wymaga własnej weryfikacji i review. Dokument jest propozycją architektury i kolejności implementacji; nie oznacza uruchomienia autonomii ani przyznania nowych uprawnień.
+> For the implementer: work through the tasks in order, following Superpowers `executing-plans`. Before implementing, compare the current HEAD with the base of this report. Every stage needs its own verification and review. This document proposes an architecture and an order of implementation; it does not start autonomy and it grants no new authority.
 
-**Data:** 7 października 2026. **Baza analizy:** `SofiaFlux/summa42`, `main`, commit `5a633000e849d3f49f5281314a30ebac9e08f73d`.
+**Date:** 7 October 2026. **Base of the analysis:** `SofiaFlux/summa42`, `main`, commit `5a633000e849d3f49f5281314a30ebac9e08f73d`.
 
-**Cel:** Summa42 samodzielnie wybiera pracę z autoryzowanego backlogu, przygotowuje zmianę we własnym repozytorium, testuje ją, uzyskuje niezależne review, obsługuje PR/CI/issues, a następnie — w dopuszczonym zakresie — scala zmianę i wdraża nową wersję z możliwością powrotu.
+**Goal:** Summa42 picks work from an authorized backlog on its own, prepares a change in its own repository, tests it, obtains an independent review, handles the PR, CI and issues, and then, within the permitted scope, merges the change and deploys the new version with a way back.
 
-**Architektura:** jeden Maintainer Collective na istniejącym single-Cube kernelu. Deterministyczny driver prowadzi durable WorkflowCase, modele wykonują ograniczone zadania poznawcze, a osobne komponenty obsługują checkout, testy i skutki zewnętrzne. Istniejące Task/Attempt, fencing, evidence, policy, approvals, resources i External Operations pozostają podstawą.
+**Architecture:** one Maintainer Collective on the existing single-Cube kernel. A deterministic driver runs a durable WorkflowCase, models do bounded cognitive tasks, and separate components handle checkout, tests and external effects. The existing Task/Attempt, fencing, evidence, policy, approvals, resources and External Operations remain the foundation.
 
-**Stack:** Go 1.27, SQLite, istniejąca OPA, Git, GitHub API, istniejący adapter executora; Linux/OCI tam, gdzie potrzebna jest techniczna izolacja.
+**Stack:** Go 1.27, SQLite, the existing OPA, Git, the GitHub API, the existing executor adapter; Linux/OCI where technical isolation is needed.
 
-**Zakres:** analiza i plan. Nie zmieniono kodu, issues, ustawień GitHuba ani wdrożenia.
+**Scope:** analysis and plan. No code, issue, GitHub setting or deployment was changed.
 
-## Aktualizacja implementacji — 8 października 2026
+## Implementation update — 8 October 2026
 
-PR #19 dostarczył pierwszą podstawę executor eligibility. Otwarty draft PR #20 rozwija nadzorowane przygotowanie źródeł i review planu, lokalną implementację z rzeczywistymi testami, niezależne review kandydata oraz chronioną publikację dokładnego commita jako branch i draft PR. Publikacja wymaga osobnych uprawnień Case, korzysta z dwóch ExternalOperation slots, zachowuje zgody właściciela i nie ponawia niepewnych zapisów. Zobacz [plan publikacji](2026-10-08-github-publication.md).
+PR #19 delivered the first foundation of executor eligibility. The open draft PR #20 extends it with supervised source preparation and plan review, local implementation with real tests, independent candidate review, and protected publication of the exact commit as a branch and a draft PR. Publication needs separate Case grants, uses two ExternalOperation slots, keeps the Owner's approvals and does not retry uncertain writes. See the [publication plan](2026-10-08-github-publication.md).
 
-To nadal komendy nadzorowane, a nie automatycznie złożony worker. Dziś Summa nie uczestniczy w pracy ani publikacji na żywo. Następny etap to niezależny od implementera obserwator wyników CI przypisanych do dokładnego candidate SHA, z trwałym evidence i weryfikacją publikacji. Dopiero później ograniczona naprawa po review/CI, owner-approved merge oraz obsługa stanu issues. PR #20 pozostaje draft; etap publikacji nie przyznaje prawa do merge ani zamykania issues.
+These are still supervised commands, not an automatically composed worker. Today Summa takes no part in live work or publication. The next stage is an observer of CI results, independent of the implementer and bound to the exact candidate SHA, with durable evidence and verification of the publication. Only after that come bounded repair after review/CI, owner-approved merge and handling of issue state. PR #20 stays a draft; the publication stage grants no right to merge or to close issues.
 
-Pierwotna analiza poniżej opisuje stan na wskazanej bazie i pozostaje historycznym punktem odniesienia.
+The original analysis below describes the state at the stated base and remains the historical reference.
 
-## Aktualizacja — 10 listopada 2026
+## Update — 10 November 2026
 
-Przegląd całego repozytorium (`main` @ `c3d5454`) i zmiana opisana w
-[specyfikacji](../specs/2026-11-10-safety-controls-and-vision-alignment-design.md).
+A review of the whole repository (`main` @ `c3d5454`) and the change described
+in the
+[specification](../specs/2026-11-10-safety-controls-and-vision-alignment-design.md).
 
-**Gdzie jesteśmy na drabinie A0–A3.** A1 jest osiągnięte w jednym przypadku od
-remediacji z 21 października: issue #115 → PR #131, 10 dni i co najmniej sześć
-interwencji właściciela. A2 zostało wycofane 21 października. A3 nie zaczęto.
-Warunek z etapu 6 („10 małych zadań pilota A1") ma stan 1 z 10.
+**Where we are on the A0–A3 ladder.** A1 has been reached in one case since the
+21 October remediation: issue #115 → PR #131, ten days and at least six Owner
+interventions. A2 was reverted on 21 October. A3 has not been started. The
+condition from stage 6 ("10 small A1 pilot tasks") stands at 1 of 10.
 
-**Co się stało między 6 a 10 listopada.** Do `main` weszło 29 commitów i około
-25,6 tys. linii spoza pipeline'u, czyli w trybie A0. Część zamykała epiki
-„Post-MVC" kodem, którego nie woła żadna działająca ścieżka. Ten kod jest teraz
-zaparkowany poza `main`; indeks z commitami i komendami przywracania jest w
+**What happened between 6 and 10 November.** 29 commits and about 25,600 lines
+entered `main` from outside the pipeline, that is, in A0 mode. Some of them
+closed "Post-MVC" epics with code that no running path calls. That code is now
+parked outside `main`; the index with commits and restore commands is in
 [parked spikes](../research/2026-11-10-parked-spikes.md).
 
-**Co naprawiono.** Dead man switch ma horyzont ustawiany przez właściciela
-(domyślnie 7 dni) zamiast 10 lease'ów; break glass zamyka leasing i zostawia
-ślad w `execution_events`; oba są dostępne jako `summa42 emergency …` z
-podpisem właściciela. Rewizję issue przesuwa tylko komentarz maintainera.
+**What was fixed.** The dead man switch has a horizon set by the Owner (seven
+days by default) instead of ten leases; break glass closes leasing and leaves a
+trail in `execution_events`; both are available as `summa42 emergency …` with
+the Owner's signature. An issue's revision moves only on a maintainer's comment
+or a change of the issue's content.
 
-**Wizja.** `docs/VISION.md` dostało sekcję o celu, artykuły 27–29 i siódme
-pytanie. Usunięto z niej opis blue-green z przekazaniem `control.sock`, dodany
-przez PR #23: był szczegółem implementacji i stał w sprzeczności z etapem 7
-poniżej (osobny supervisor; działający Box nie podmienia własnego binarium).
-Tekst jest w historii pod `c3d5454`.
+**Vision.** `docs/VISION.md` gained a section on the destination, articles
+27–29 and a seventh question. The description of a blue-green handover of
+`control.sock`, added by PR #23, was removed from it: it was an implementation
+detail and contradicted stage 7 below (a separate supervisor; a running Box does
+not replace its own binary). The text is in history at `c3d5454`.
 
-**Kolejność dalej** (bez zmiany etapów poniżej, tylko ich porządek wejścia):
+**Order from here** (the stages below are unchanged, only the order in which
+they are entered):
 
-1. Wymagany check CI na `main` i brak merge'a bez zielonego CI (ustawienie
-   repozytorium, po stronie właściciela).
-2. Dziewięć pozostałych małych zadań A1 przez pipeline, z pomiarem interwencji
-   i kosztu na zadanie (sekcja 9).
-3. Ciągłość (artykuł 28 wizji): budżet w walucie, powiadomienia do właściciela,
-   testowany backup i restore, watchdog poza procesem.
-4. Etap 6 (A2), potem etap 7 (A3).
-5. Profil [Company OS](../../COMPANY_OS.md): pierwsze podpięcie obligacji do
-   schedulera.
+1. A required CI check on `main` and no merge without green CI (a repository
+   setting, on the Owner's side).
+2. The nine remaining small A1 tasks through the pipeline, measuring
+   interventions and cost per task (section 9).
+3. Continuity (Vision, Article 28): a budget in a currency, notifications to the
+   Owner, tested backup and restore, a watchdog outside the process.
+4. Stage 6 (A2), then stage 7 (A3).
+5. The [Company OS](../../COMPANY_OS.md) profile: the first wiring of obligations
+   into the scheduler.
 
-Nowy pakiet wchodzi do `main` dopiero z wywołaniem w działającym Boxie i testem
-akceptacyjnym tej ścieżki.
+A new package enters `main` only together with a call from a running Box and an
+acceptance test over that path.
 
-## 1. Wniosek
+## 1. Conclusion
 
-Summa42 ma już znaczną część mechaniki sterowania i trwałości. Najbliższa przeszkoda jest konkretna: przepływ GitHuba dochodzi do planu i propozycji `github.issue.plan.review`, po czym nie ma executora i kontraktu routingu pozwalającego kontynuować. Kolejne brakujące elementy to przygotowanie repozytorium, wykonanie i niezależna weryfikacja zmiany, publikacja PR oraz powrót wyników CI/review do workflow.
+Summa42 already has a large part of its control and durability mechanics. The nearest obstacle is concrete: the GitHub flow reaches a plan and a `github.issue.plan.review` proposal, and then there is no executor and no routing contract to continue. The next missing pieces are repository preparation, executing and independently verifying a change, publishing a PR, and feeding CI/review results back into the workflow.
 
-Najkrótsza droga to domknięcie jednego cyklu developerskiego. Company OS, A2A, distributed runtime, autonomiczne pozyskiwanie providerów i rozbudowane dreaming nie są warunkami pierwszego samodzielnie przygotowanego PR.
+The shortest path is to close one development cycle. Company OS, A2A, a distributed runtime, autonomous provider acquisition and elaborate dreaming are not conditions for the first independently prepared PR.
 
-Rekomendowany pierwszy poziom: Summa42 przygotowuje zweryfikowany PR i obsługuje poprawki, a właściciel zatwierdza merge. Docelowy poziom: owner-approved polityka pozwala samodzielnie scalać określone klasy zmian; osobny supervisor wdraża sprawdzony build. Człowiek zajmuje się wyjątkami i kierunkiem, zamiast każdym krokiem pracy.
+Recommended first level: Summa42 prepares a verified PR and handles fixes, and the Owner approves the merge. Target level: an owner-approved policy lets it merge named classes of change on its own; a separate supervisor deploys the verified build. The human deals with exceptions and direction instead of every step of the work.
 
-## 2. Co potwierdziłem
+## 2. What I confirmed
 
-| Obszar | Stan na badanym HEAD | Znaczenie |
+| Area | State at the examined HEAD | Meaning |
 |---|---|---|
-| Kernel | Task/Attempt, leases/fencing, evidence, acceptance, approvals, operations, resources, run manifests | Podstawa do trwałego procesu już istnieje. |
-| Worker | `internal/scheduler/worker.go`, `run-worker` | Potrafi wykonywać zarejestrowane executory. README nadal twierdzi, że worker nie startuje. |
-| GitHub intake | `internal/ghissue`, `run-gh-intake` | Czyta otwarte issues, filtruje autorów/assignees/labels, zapisuje rewizje i cases. Klient udostępnia GET, nie writes. |
-| Triage | `internal/ghtriage` | Reguły → ograniczona klasyfikacja modelem → deterministyczny disposition. Large/unknown scope prowadzi do needs-human. |
-| Review triage | `ghtriage.Reviewer` | Sprawdza strukturę, zgodność stanu i plausibility klasyfikacji. Nie jest review planu ani kodu. |
-| Planner | `ghtriage.Planner`, `run-gh-plan` | Zapisuje plan jako evidence i proponuje `github.issue.plan.review`; nie materializuje następnego Tasku. |
-| Plan | `ghtriage.PlanInput/PlanOutput` | Snapshot issue + decision, summary i 1–8 kroków. Brak jawnego snapshotu kodu, base SHA, zakresu plików i kontraktu testów. |
-| Executor kodujący | `internal/executors/codex.go` | Adapter istnieje. Badana kompozycja `run-worker` rejestruje triage/Copilot/ADO publish; nie podpina Codexa jako implementera issue. |
-| Workspace | `Worker.executeAttempt` | Tworzy katalog Attemptu przez `MkdirAll`. Nie wykonuje checkoutu repozytorium. |
-| Writes GitHuba | `feedbackgithub` | Istnieje chronione tworzenie sanitized feedback issue. Brak ogólnego cyklu branch/push/PR/review/merge dla samorozwoju. |
-| ADO | `adoreview`, `adoeffects` | Są wzorce drivera, publishera i final verifiera. Można wykorzystać semantykę, lecz provider GitHuba wymaga własnej implementacji. |
-| CI | Run `36696570907` dla badanego SHA | Zielone test, race, vet, build, bootstrap smoke, SQLite spike oraz OCI acceptance. |
-| Repo | Publiczne, tylko branch `main`, protected=true, auto_merge=false | Brak otwartych PR. Szczegóły branch protection niedostępne dla integracji: 403. Lista rulesets jest pusta. |
-| Backlog | 12 otwartych issues, wszystkie bez labels i assignees | Backlog zawiera głównie duże kierunki; nie jest jeszcze kolejką małych wykonalnych zadań. |
+| Kernel | Task/Attempt, leases/fencing, evidence, acceptance, approvals, operations, resources, run manifests | The foundation for a durable process already exists. |
+| Worker | `internal/scheduler/worker.go`, `run-worker` | Can run registered executors. The README still claims the worker does not start. |
+| GitHub intake | `internal/ghissue`, `run-gh-intake` | Reads open issues, filters authors/assignees/labels, records revisions and cases. The client exposes GET, no writes. |
+| Triage | `internal/ghtriage` | Rules → bounded classification by a model → deterministic disposition. Large/unknown scope leads to needs-human. |
+| Triage review | `ghtriage.Reviewer` | Checks structure, state consistency and plausibility of the classification. It is not a review of the plan or the code. |
+| Planner | `ghtriage.Planner`, `run-gh-plan` | Records the plan as evidence and proposes `github.issue.plan.review`; does not materialize the next Task. |
+| Plan | `ghtriage.PlanInput/PlanOutput` | Issue snapshot + decision, summary and 1–8 steps. No explicit code snapshot, base SHA, file scope or test contract. |
+| Coding executor | `internal/executors/codex.go` | The adapter exists. The examined `run-worker` composition registers triage/Copilot/ADO publish; it does not wire Codex as the issue implementer. |
+| Workspace | `Worker.executeAttempt` | Creates the Attempt directory with `MkdirAll`. Does not check out the repository. |
+| GitHub writes | `feedbackgithub` | Protected creation of a sanitized feedback issue exists. No general branch/push/PR/review/merge cycle for self-development. |
+| ADO | `adoreview`, `adoeffects` | Patterns for a driver, a publisher and a final verifier exist. The semantics can be reused, but the GitHub provider needs its own implementation. |
+| CI | Run `36696570907` for the examined SHA | Green test, race, vet, build, bootstrap smoke, SQLite spike and OCI acceptance. |
+| Repo | Public, only branch `main`, protected=true, auto_merge=false | No open PR. Branch protection details are not available to the integration: 403. The ruleset list is empty. |
+| Backlog | 12 open issues, all without labels and assignees | The backlog holds mostly large directions; it is not yet a queue of small executable tasks. |
 
-PR #6 i #7 zostały scalone 22 września. Dawna informacja o niewykonanym CI w ich opisach nie opisuje obecnego HEAD: najnowszy sprawdzony run na main zakończył się sukcesem 30 września.
+PR #6 and #7 were merged on 22 September. The old note in their descriptions about CI not having run does not describe the current HEAD: the latest checked run on main succeeded on 30 September.
 
-**Granice dowodu:** przeanalizowałem kod, dokumenty, backlog, PR i wyniki GitHub Actions. Nie uruchamiałem Summa42 na Twoim serwerze, modelu ani rzeczywistym repozytorium roboczym. Zielone CI potwierdza obecny test suite; nie dowodzi działania przyszłego cyklu issue → kod → PR → merge. Nie wykonywałem lokalnie całej macierzy Go.
+**Limits of the evidence:** I analyzed the code, documents, backlog, PRs and GitHub Actions results. I did not run Summa42 on your server, with a model or on a real working repository. Green CI confirms the current test suite; it does not prove that a future issue → code → PR → merge cycle works. I did not run the whole Go matrix locally.
 
-## 3. Luki, które muszą wejść do planu
+## 3. Gaps the plan must cover
 
-### P0 — sterowanie, izolacja i rozliczenie
+### P0 — control, isolation and accounting
 
-1. **Routing nie jest twardą kwalifikacją executora.** Worker przekazuje do `ChooseExecutor` wszystkie registry kinds. `TaskClassRouting` działa jako preferencja, a fallback jest alfabetyczny. Dla przyszłego workflow brak właściwego executora musi blokować pracę, a nie uruchamiać inny. Ocena capabilities powinna być per executor i Task.
-2. **Capacity zawyża deklarowany poziom enforcement.** `workerCapacity` przypisuje ENFORCED wszystkim registry kinds. Nie dowodzi to technicznego containmentu procesu. Istniejący Codex adapter rozróżnia PARTIAL/ENFORCED; scheduler powinien konsumować rzeczywistą ocenę danego executora i jego capabilities.
-3. **Wywołania modelu nie mają jednolitego cyklu.** Planner i reviewer wywołują model bez zwykłego wykonania przez worker. `climodel.Adapter` dziedziczy środowisko procesu i nie ustawia kontrolowanego workspace. Read-only capability w metadanych nie jest dowodem, że uruchomiony CLI nie ma narzędzi, sieci lub ambient credentials.
-4. **Usage nie jest pełnym rozliczeniem.** Codex parser zwraca token usage, ale worker zapisuje evidence i CompletionManifest, bez rozliczenia tego Usage. Planner CLI też nie zwraca canonical usage. Workflow RemainingBudget nie należy interpretować jako USD bez udokumentowanego przeliczenia.
-5. **Lease i długość pracy.** Domyślny lease to 5 minut, a Worker ogranicza całe wykonanie tym czasem. Implementacja/testy potrzebują świadomego timeoutu albo odnowienia lease z zachowaniem fencing. Samo ustawienie bardzo długiego lease utrudnia wykrycie porzuconej pracy.
-6. **Limit workflow.** Intake domyślnie ustawia MaxSteps=3. Pełny cykl review/implementacji/poprawek wymaga większego, nadal ograniczonego budżetu kroków.
+1. **Routing is not a hard executor qualification.** The Worker passes all registry kinds to `ChooseExecutor`. `TaskClassRouting` acts as a preference, and the fallback is alphabetical. For the future workflow a missing matching executor must block the work, not start another one. Capabilities should be assessed per executor and per Task.
+2. **Capacity overstates the declared enforcement level.** `workerCapacity` assigns ENFORCED to all registry kinds. That does not prove technical containment of the process. The existing Codex adapter distinguishes PARTIAL/ENFORCED; the scheduler should consume the real assessment of the given executor and its capabilities.
+3. **Model calls have no uniform lifecycle.** The planner and the reviewer call the model outside ordinary worker execution. `climodel.Adapter` inherits the process environment and sets no controlled workspace. A read-only capability in metadata is not proof that the started CLI has no tools, network or ambient credentials.
+4. **Usage is not full accounting.** The Codex parser returns token usage, but the worker records evidence and a CompletionManifest without settling that Usage. The planner CLI returns no canonical usage either. Workflow RemainingBudget must not be read as USD without a documented conversion.
+5. **Lease and length of work.** The default lease is 5 minutes, and the Worker bounds the whole execution by it. Implementation and tests need a deliberate timeout or lease renewal that preserves fencing. Simply setting a very long lease makes abandoned work harder to detect.
+6. **Workflow limit.** Intake sets MaxSteps=3 by default. A full review/implementation/fix cycle needs a larger, still bounded, step budget.
 
-Powyższe są stwierdzeniami o badanej ścieżce kodu i ryzykach jej rozszerzenia. Nie twierdzę, że zaobserwowałem naruszenie containmentu albo nieautoryzowany write w działającym środowisku.
+The above are statements about the examined code path and the risks of extending it. I do not claim to have observed a containment breach or an unauthorized write in a running environment.
 
-### P1 — brakujące wykonanie
+### P1 — missing execution
 
-- Plan jest oparty na issue, bez jawnie dostarczonego kontekstu repozytorium. To wystarcza do szkicu; nie do autoryzacji implementacji.
-- Brakuje review planu, materializacji implementation Task i powiązania patcha z zaakceptowanym planem.
-- Brakuje niezależnego uruchomienia testów dla dokładnego candidate SHA i code review tego samego diffu.
-- Brakuje protected GitHub writes i odczytu PR/checks/review threads jako nowego wejścia procesu.
-- Komendy intake/worker/driver/reviewer/planner są osobnymi trybami; nie ma kompletnego supervised maintainera, który sam prowadzi cały cykl.
+- The plan is based on the issue, without explicitly supplied repository context. That is enough for a draft; not for authorizing an implementation.
+- Plan review, materialization of an implementation Task and binding of the patch to the accepted plan are missing.
+- An independent test run for the exact candidate SHA and a code review of the same diff are missing.
+- Protected GitHub writes and reading PR/checks/review threads as new process input are missing.
+- The intake/worker/driver/reviewer/planner commands are separate modes; there is no complete supervised maintainer that runs the whole cycle by itself.
 
-### P2 — autonomia po pierwszym PR
+### P2 — autonomy after the first PR
 
-- Obecny filtr intake wymaga autora z listy maintainerów. Bot tworzący własne issues potrzebuje jawnego endorsement/provenance; samo dopisanie wszystkich autorów do allowlisty byłoby zbyt szerokie.
-- `updated_at` issue jest dziś revision ID. Komentarze i labels utrzymaniowe bota mogą zmieniać tę rewizję. Potrzebny jest content/spec fingerprint odróżniający zmianę wymagania od własnej aktualizacji statusu.
-- Brakuje zewnętrznego supervisora nowej wersji Boxa, canary i sprawdzonego rollbacku, również dla zmian schematu SQLite.
+- The current intake filter requires an author from the maintainer list. A bot creating its own issues needs explicit endorsement/provenance; adding all authors to the allowlist would be too broad.
+- An issue's `updated_at` is the revision ID today. The bot's maintenance comments and labels can change that revision. A content/spec fingerprint is needed that tells a changed requirement from the bot's own status update.
+- An external supervisor of the new Box version, a canary and a verified rollback are missing, also for SQLite schema changes.
 
-## 4. Decyzje architektoniczne
+## 4. Architecture decisions
 
-Rozważyłem trzy drogi:
+I considered three paths:
 
-| Droga | Zaleta | Koszt/ograniczenie | Decyzja |
+| Path | Advantage | Cost/limitation | Decision |
 |---|---|---|---|
-| Agent CLI steruje wszystkim przez shell i gh | Najszybszy demonstrator | Obchodzi canonical operations, recovery, authority i rozliczenie | Może służyć do ręcznego bootstrapu pod nadzorem; nie jako docelowy maintainer. |
-| Maintainer workflow na obecnym kernelu | Wykorzystuje istniejącą trwałość i governance | Trzeba zbudować brakujące adaptery i kontrakty | **Rekomendowane.** |
-| Najpierw pełny Company OS/distributed swarm | Duży zakres przyszłych możliwości | Opóźnia pierwszy użyteczny cykl i zwiększa liczbę zależności | Poza krytyczną ścieżką. |
+| An agent CLI drives everything through the shell and gh | The fastest demonstrator | Bypasses canonical operations, recovery, authority and accounting | May serve for a manual bootstrap under supervision; not as the target maintainer. |
+| A maintainer workflow on the current kernel | Uses the existing durability and governance | The missing adapters and contracts have to be built | **Recommended.** |
+| A full Company OS/distributed swarm first | A wide range of future capabilities | Delays the first useful cycle and adds dependencies | Off the critical path. |
 
-Wybrany podział odpowiedzialności:
+The chosen division of responsibility:
 
-- **Driver:** wybiera następny dozwolony krok na podstawie canonical evidence i stanu.
-- **Planner/implementer/reviewer:** role poznawcze; początkowo wykonywane sekwencyjnie, z osobnymi kontekstami. Niezależne review nie musi oznaczać innego dostawcy, lecz nie korzysta z niezweryfikowanego zapewnienia autora o poprawności.
-- **Workspace i test runner:** deterministyczne przygotowanie repozytorium i sprawdzenie wyniku.
-- **GitHub publisher:** przeprowadza dokładnie określone skutki przez External Operations. Model nie dostaje tokenu do push/merge.
-- **Supervisor:** poza procesem rozwijanego Boxa; aktywuje wersję i przywraca poprzednią.
+- **Driver:** picks the next permitted step from canonical evidence and state.
+- **Planner/implementer/reviewer:** cognitive roles; run sequentially at first, with separate contexts. Independent review does not have to mean another provider, but it does not rely on the author's unverified assurance of correctness.
+- **Workspace and test runner:** deterministic preparation of the repository and checking of the result.
+- **GitHub publisher:** carries out exactly specified effects through External Operations. The model gets no token for push/merge.
+- **Supervisor:** outside the process of the Box being developed; activates a version and restores the previous one.
 
-Nie budować nowego frameworka agentów. Najpierw użyć jednego już dostępnego executora. Adapter Claude lub kolejny provider jest niezależnym rozszerzeniem, jeśli będzie potrzebny do Twojego sposobu pracy.
+Do not build a new agent framework. Use one already available executor first. A Claude adapter or another provider is an independent extension if your way of working needs it.
 
-## 5. Kontrakt pracy
+## 5. Work contract
 
-Każde zadanie implementacyjne wiąże:
+Every implementation task binds:
 
 `repo + issue + spec_fingerprint + plan_hash + base_sha + allowed_paths + acceptance_commands + budget_envelope + policy_version`.
 
-Artefakt implementacji wiąże:
+An implementation artifact binds:
 
 `task_id + attempt_id + fence + base_sha + candidate_sha + diff_hash + changed_paths`.
 
-Weryfikacja wiąże:
+Verification binds:
 
 `candidate_sha + test_configuration_hash + command_results + reviewer_verdict + unresolved_findings`.
 
-Zmiana SHA lub wymagań unieważnia odpowiednie zatwierdzenie. Sam wynik modelu CLEAN, stdout „tests pass”, poprawny JSON albo exit code 0 nie wystarczają do Task acceptance.
+A change of SHA or of the requirements invalidates the corresponding approval. A model's CLEAN verdict, a stdout "tests pass", valid JSON or exit code 0 are not enough for Task acceptance.
 
-**Przepływ docelowy:** obserwacja issue → kwalifikacja → checkout i kontekst → plan → review planu → implementacja → deterministyczne testy → niezależne code review → poprawki w limitach → push/PR → odczyt CI/review → merge gate → scalenie → zamknięcie issue → opcjonalne wdrożenie i feedback.
+**Target flow:** observe the issue → qualify → checkout and context → plan → plan review → implementation → deterministic tests → independent code review → fixes within limits → push/PR → read CI/review → merge gate → merge → close the issue → optional deployment and feedback.
 
-Praca z Gitem oznacza: izolowany checkout na konkretnym SHA, walidację diffu, commity, publikację branch/PR, aktualizację branch na podstawie konkretnego remote SHA, obsługę konfliktów i archiwizację. Żadnego bezwarunkowego force-push, pisania bezpośrednio na main lub automatycznego resetowania cudzej pracy.
+Working with Git means: an isolated checkout at a specific SHA, diff validation, commits, publication of a branch/PR, updating a branch against a specific remote SHA, conflict handling and archiving. No unconditional force-push, no writing directly to main, no automatic reset of someone else's work.
 
-## 6. Globalne ograniczenia i progi autonomii
+## 6. Global constraints and autonomy thresholds
 
-**A0 — bootstrap:** zewnętrzny agent implementuje brakujące części; Summa42 jeszcze nie potrafi wykonać ich samodzielnie.
+**A0 — bootstrap:** an external agent implements the missing parts; Summa42 cannot yet do them itself.
 
-**A1 — issue → zweryfikowany PR:** samodzielna realizacja zadania i poprawki; człowiek zatwierdza merge. To pierwszy kamień milowy.
+**A1 — issue → verified PR:** the task and its fixes are carried out independently; a human approves the merge. This is the first milestone.
 
-**A2 — policy merge:** właściciel uprzednio zatwierdza klasy zmian, ścieżki, koszty i gates. Tylko dopuszczone zmiany mogą być scalane samodzielnie. Branch protection nadal obowiązuje.
+**A2 — policy merge:** the Owner approves classes of change, paths, costs and gates in advance. Only permitted changes may be merged independently. Branch protection still applies.
 
-**A3 — self-upgrade:** osobny supervisor wdraża zweryfikowane wydanie; health-check/canary oraz rollback. To drugi, osobny problem po source-code self-development.
+**A3 — self-upgrade:** a separate supervisor deploys a verified release; health check/canary and rollback. This is a second, separate problem after source-code self-development.
 
-Na pierwszy pilot proponuję:
+For the first pilot I propose:
 
-- Jedno repo `SofiaFlux/summa42`, jeden aktywny development case; pozostałe mogą czekać w backlogu.
-- Pozytywny wybór kolejki przez `summa:ready`, wstrzymanie przez `summa:hold`; labels są projekcją, canonical grant pozostaje w Summa42.
-- MaxSteps=24 na development case; najwyżej 2 ponowienia błędu infrastrukturalnego danego kroku i 3 cykle napraw po findings. Wszystko ograniczone wspólnym budżetem.
-- Proponowany początkowy limit API: 5 USD na case i 20 USD dziennie. To ustawienia pilota do kalibracji, nie oszacowanie kosztu pracy. Internal monetary ledger w integer micro-USD; nieznane zużycie pozostaje exposure. Przy subskrypcji osobno mierzyć zużycie/quota; nie udawać kosztu 0.
-- Egzekwować limit czasu i kosztu przed kolejnym wywołaniem. Jeśli provider nie umożliwia twardego capu, jawnie deklarować enforceability i rezerwować konserwatywną ekspozycję.
-- Początkowo ścieżki owner keys, policy/authority, approvers, spending configuration, deployment credentials i branch protection wymagają właściciela. Zmiany wykonania GitHub Actions również do osobnego review przed A2.
-- Agent może zgłosić potrzebę szerszego scope; nie może przyznać go sam sobie. Brak postępu, nieznany outcome i niespełnione gates mają widoczny powód oraz termin następnego działania.
+- One repo, `SofiaFlux/summa42`, and one active development case; the rest can wait in the backlog.
+- Positive queue selection through `summa:ready`, hold through `summa:hold`; labels are a projection, the canonical grant stays in Summa42.
+- MaxSteps=24 per development case; at most 2 retries of an infrastructure error in a given step and 3 repair cycles after findings. All bounded by a shared budget.
+- Proposed initial API limit: 5 USD per case and 20 USD a day. These are pilot settings for calibration, not an estimate of the cost of the work. An internal monetary ledger in integer micro-USD; unknown usage stays exposure. With a subscription, measure usage/quota separately; do not pretend the cost is 0.
+- Enforce the time and cost limit before the next call. If the provider offers no hard cap, declare enforceability explicitly and reserve a conservative exposure.
+- At first the paths for owner keys, policy/authority, approvers, spending configuration, deployment credentials and branch protection require the Owner. Changes to GitHub Actions execution also go to a separate review before A2.
+- The agent may report that it needs a wider scope; it may not grant it to itself. Lack of progress, an unknown outcome and unmet gates have a visible reason and a time of the next action.
 
-## 7. Plan wykonania — niezależnie odbierane etapy
+## 7. Execution plan — independently accepted stages
 
-Każdy pakiet realizować: test odtwarzający wymaganie → potwierdzenie FAIL → minimalna implementacja → PASS → review → commit. Nazwy nowych plików i komponentów poniżej są propozycją do implementacji, nie opisem istniejącego kodu. Etapy wymagają szczegółowego speca ograniczonego do ich zakresu, bez ponownego projektowania całego kernela.
+Carry out every package as: a test reproducing the requirement → confirm FAIL → minimal implementation → PASS → review → commit. The names of new files and components below are a proposal for implementation, not a description of existing code. The stages need a detailed spec limited to their scope, without redesigning the whole kernel.
 
-### Etap 0: aktualny obraz systemu i kolejka pilota
+### Stage 0: a current picture of the system and the pilot queue
 
-**Pliki:** `README.md`, nowy `docs/maintainer-runbook.md`, `cmd/summa42-box/main.go` tylko w zakresie dokumentowania istniejących trybów.
+**Files:** `README.md`, a new `docs/maintainer-runbook.md`, `cmd/summa42-box/main.go` only as far as documenting existing modes.
 
-- [ ] Uzupełnić README o istniejące komendy worker/intake/triage/review/plan oraz dokładny punkt zakończenia obecnego przepływu.
-- [ ] Zestawić konfigurację modelu, repo, grantów, resource envelope i wymagane uprawnienia bez ujawniania credentials.
-- [ ] Wybrać 3–5 małych zadań pilota: dokumentacja obecnych komend, mały bug z reprodukcją i testem, drobna poprawa CLI. Duże issues rozbić na child issues o jednym rezultacie i jawnych zależnościach.
-- [ ] W runbooku podać start/stop/status, backup i odczyt powodu zablokowania case. Sprawdzić GitHub App oraz faktyczne required checks/reviews w ustawieniach administracyjnych, do których ta integracja nie ma dostępu.
+- [ ] Add the existing worker/intake/triage/review/plan commands to the README, and the exact point where the current flow ends.
+- [ ] List the configuration of the model, repo, grants, resource envelope and the required permissions without revealing credentials.
+- [ ] Choose 3–5 small pilot tasks: documentation of the current commands, a small bug with a reproduction and a test, a minor CLI improvement. Split large issues into child issues with one result and explicit dependencies.
+- [ ] In the runbook give start/stop/status, backup, and how to read why a case is blocked. Check the GitHub App and the actual required checks/reviews in the administrative settings this integration cannot access.
 
-**Odbiór:** drugi operator potrafi wskazać, jakie komponenty rzeczywiście uruchamia dana komenda i czego jeszcze nie robi. Kolejka zawiera mierzalne, małe zadania.
+**Acceptance:** a second operator can say which components a given command really starts and what it does not do yet. The queue holds measurable, small tasks.
 
-### Etap 1: twardy kontrakt executora i rozliczanie
+### Stage 1: a hard executor contract and accounting
 
-**Zmienić:** `internal/scheduler/worker.go`, `service.go`, `routing.go`, `internal/executors/executor.go`, `internal/resources/service.go`, `cmd/summa42-box/main.go`.
+**Change:** `internal/scheduler/worker.go`, `service.go`, `routing.go`, `internal/executors/executor.go`, `internal/resources/service.go`, `cmd/summa42-box/main.go`.
 
-**Dodać:** `internal/scheduler/eligibility.go`, `internal/executors/accounting.go` oraz odpowiadające testy.
+**Add:** `internal/scheduler/eligibility.go`, `internal/executors/accounting.go` and the corresponding tests.
 
-- [ ] Zdefiniować descriptor executora: obsługiwane TaskClass, semantic capabilities, faktyczny enforcement i koszt/usage contract. Eligibility wyliczać dla konkretnego Tasku przed preferencją i Lease.
-- [ ] Brak pasującego executora ma zwracać unschedulable z powodem. Nie wybierać alfabetycznego fallbacku dla klasy wymagającej jawnego kontraktu.
-- [ ] Capacity pochodzi z assessmentu konkretnego executora; Partially enforced proces nie staje się ENFORCED przez samo wpisanie do registry.
-- [ ] Wszystkie produkcyjne wywołania triage/planning/review podpiąć pod governed wykonanie: resource reservation, Attempt provenance, timeout, cancellation, usage settlement. Komendy manualne mogą pozostać narzędziami diagnostycznymi.
-- [ ] Zapewnić kontrolowane środowisko/CWD/tool access dla model adaptera i brak Owner key/GitHub write token w procesie poznawczym.
-- [ ] Wprowadzić odnowienie lease lub deterministyczny podział długiej pracy; cancellation obejmuje cały process tree. Stary fence nie może opublikować wyniku.
+- [ ] Define an executor descriptor: supported TaskClass, semantic capabilities, actual enforcement and the cost/usage contract. Compute eligibility for the specific Task before preference and Lease.
+- [ ] A missing matching executor returns unschedulable with a reason. Do not pick an alphabetical fallback for a class that requires an explicit contract.
+- [ ] Capacity comes from the assessment of the specific executor; a partially enforced process does not become ENFORCED by being entered in the registry.
+- [ ] Put all production triage/planning/review calls under governed execution: resource reservation, Attempt provenance, timeout, cancellation, usage settlement. Manual commands may remain as diagnostic tools.
+- [ ] Provide a controlled environment/CWD/tool access for the model adapter and no Owner key/GitHub write token in the cognitive process.
+- [ ] Introduce lease renewal or a deterministic split of long work; cancellation covers the whole process tree. An old fence must not publish a result.
 
-**Testy:** `TestMissingExecutorBlocksClass`, `TestPartialExecutorCannotSatisfyEnforcedTask`, `TestUsageSettledOnceAfterRestart`, `TestUnknownUsageRetainsExposure`, `TestExpiredFenceCannotPublish`, `TestModelCannotReadOwnerMaterial`.
+**Tests:** `TestMissingExecutorBlocksClass`, `TestPartialExecutorCannotSatisfyEnforcedTask`, `TestUsageSettledOnceAfterRestart`, `TestUnknownUsageRetainsExposure`, `TestExpiredFenceCannotPublish`, `TestModelCannotReadOwnerMaterial`.
 
-**Weryfikacja:** `GOCACHE=/tmp/summa42-full-go-cache go test ./internal/scheduler ./internal/executors ./internal/resources ./cmd/summa42-box -count=1 -timeout 5m`; wynik PASS. Dodatkowo acceptance containmentu w docelowym środowisku, bo same mocks nie dowodzą izolacji.
+**Verification:** `GOCACHE=/tmp/summa42-full-go-cache go test ./internal/scheduler ./internal/executors ./internal/resources ./cmd/summa42-box -count=1 -timeout 5m`; result PASS. In addition, containment acceptance in the target environment, because mocks alone do not prove isolation.
 
-**Odbiór:** zadanie nigdy nie trafia do niewłaściwego executora, a model calls nie obchodzą budżetu i trwałości.
+**Acceptance:** a task never reaches the wrong executor, and model calls do not bypass the budget or durability.
 
-### Etap 2: repo snapshot, plan review i implementation handoff
+### Stage 2: repo snapshot, plan review and implementation handoff
 
-**Zmienić:** `internal/ghtriage/plan.go`, `planner.go`, `planning.go`, `internal/workflowcase/materialize.go`.
+**Change:** `internal/ghtriage/plan.go`, `planner.go`, `planning.go`, `internal/workflowcase/materialize.go`.
 
-**Dodać:** `internal/workspace/git.go`, `manifest.go`, `internal/maintainer/plan_review.go`, `contracts.go` i testy.
+**Add:** `internal/workspace/git.go`, `manifest.go`, `internal/maintainer/plan_review.go`, `contracts.go` and tests.
 
-- [ ] Workspace przygotowuje izolowany checkout na base SHA; źródłowa kopia repo nie jest współdzielonym katalogiem zapisu między Attempts. Repo URL pochodzi z zatwierdzonej konfiguracji.
-- [ ] Dostarczyć plannerowi jawny context manifest: HEAD, AGENTS, relewantne pliki i testy, dokumenty wymagań/dependencies oraz limit rozmiaru. Wersjonować i hashować ten input.
-- [ ] Dodać plan schema v2 z base SHA, scope/allowed paths, acceptance commands i krokami. Zachować możliwość czytania starych evidence v1; nie modyfikować ich.
-- [ ] Zaimplementować `github.issue.plan.review`: niezależny review modelu plus deterministyczne sprawdzenie scope/grant/budget/komend; wyniki ACCEPT, REVISE, BLOCK z evidence.
-- [ ] ACCEPT materializuje `github.issue.implement` przez istniejący WorkflowCase contract, tylko dla aktualnej rewizji i właściwego plan_hash. Review planu nie jest nowym źródłem uprawnień.
-- [ ] Jawnie podnieść limity development recipe; nie zmieniać globalnie limitów innych recipes.
+- [ ] The workspace prepares an isolated checkout at the base SHA; the source copy of the repo is not a write directory shared between Attempts. The repo URL comes from approved configuration.
+- [ ] Give the planner an explicit context manifest: HEAD, AGENTS, relevant files and tests, requirement/dependency documents and a size limit. Version and hash this input.
+- [ ] Add plan schema v2 with the base SHA, scope/allowed paths, acceptance commands and steps. Keep the ability to read old v1 evidence; do not modify it.
+- [ ] Implement `github.issue.plan.review`: an independent model review plus a deterministic check of scope/grant/budget/commands; outcomes ACCEPT, REVISE, BLOCK with evidence.
+- [ ] ACCEPT materializes `github.issue.implement` through the existing WorkflowCase contract, only for the current revision and the right plan_hash. Plan review is not a new source of authority.
+- [ ] Raise the limits of the development recipe explicitly; do not change the limits of other recipes globally.
 
-**Testy:** `TestCheckoutPinnedToBaseSHA`, `TestPlanReviewRejectsScopeExpansion`, `TestPlanV1RemainsReadable`, `TestNewIssueSpecInvalidatesHandoff`, `TestMissingPlanReviewerDoesNotMaterializeImplementation`.
+**Tests:** `TestCheckoutPinnedToBaseSHA`, `TestPlanReviewRejectsScopeExpansion`, `TestPlanV1RemainsReadable`, `TestNewIssueSpecInvalidatesHandoff`, `TestMissingPlanReviewerDoesNotMaterializeImplementation`.
 
-**Weryfikacja:** testy `./internal/workspace ./internal/ghtriage/... ./internal/maintainer ./internal/workflowcase`, count=1, timeout 5m.
+**Verification:** tests of `./internal/workspace ./internal/ghtriage/... ./internal/maintainer ./internal/workflowcase`, count=1, timeout 5m.
 
-**Odbiór:** zaakceptowany, code-grounded plan tworzy dokładnie jedno implementation work; powtórny tick/restart nie tworzy duplikatu.
+**Acceptance:** an accepted, code-grounded plan creates exactly one implementation work; a repeated tick/restart creates no duplicate.
 
-### Etap 3: implementacja, niezależne testy i code review
+### Stage 3: implementation, independent tests and code review
 
-**Zmienić:** `internal/executors/codex.go`, `internal/scheduler/worker.go` tylko przez nowe jawne kontrakty.
+**Change:** `internal/executors/codex.go`, `internal/scheduler/worker.go` only through new explicit contracts.
 
-**Dodać:** `internal/maintainer/implement.go`, `verify.go`, `code_review.go`, `repair.go`, `internal/workspace/diff.go`, `tests/acceptance/maintainer_development_test.go`.
+**Add:** `internal/maintainer/implement.go`, `verify.go`, `code_review.go`, `repair.go`, `internal/workspace/diff.go`, `tests/acceptance/maintainer_development_test.go`.
 
-- [ ] Podpiąć implementera do task registry/routing. Objective zawiera zaakceptowany plan, a Payload/context przekazuje hash-bound snapshot i kryteria; nie polegać na samym ogólnym codexPrompt.
-- [ ] Agent zmienia pliki lokalnie bez zewnętrznych write credentials. Zaufany wrapper zbiera i waliduje diff: allowed paths, symlinks, submodules, rozmiar, secrets oraz zgodność base SHA. Tworzy immutable candidate artifact/commit.
-- [ ] Weryfikator przygotowuje świeży checkout candidate SHA i sam uruchamia zatwierdzone testy. Repozytorium z agentowym kodem testowym jest wykonywalnym wejściem: runner nie ma Owner keys, GitHub write token ani innych ambient credentials.
-- [ ] Review code czyta exact diff/base/candidate oraz wyniki testów. Findings muszą wskazywać plik, powód i evidence; UNCERTAIN blokuje acceptance.
-- [ ] Repair tworzy nowy Attempt na nowym kandydacie; test/review evidence starego SHA nie jest przenoszone jako zatwierdzenie nowego. Po 3 cyklach albo braku postępu praca blokuje się z diagnozą.
+- [ ] Wire the implementer into the task registry/routing. The Objective contains the accepted plan, and the Payload/context carries the hash-bound snapshot and criteria; do not rely on the general codexPrompt alone.
+- [ ] The agent changes files locally without external write credentials. A trusted wrapper collects and validates the diff: allowed paths, symlinks, submodules, size, secrets and agreement with the base SHA. It creates an immutable candidate artifact/commit.
+- [ ] The verifier prepares a fresh checkout of the candidate SHA and runs the approved tests itself. A repository with agent-written test code is executable input: the runner has no Owner keys, GitHub write token or other ambient credentials.
+- [ ] Code review reads the exact diff/base/candidate and the test results. Findings must name the file, the reason and the evidence; UNCERTAIN blocks acceptance.
+- [ ] Repair creates a new Attempt on a new candidate; test/review evidence of the old SHA is not carried over as approval of the new one. After 3 cycles or no progress the work blocks with a diagnosis.
 
-**Testy:** `TestOutOfScopePatchRejected`, `TestAgentTestsPassClaimIgnored`, `TestReviewBoundToCandidateSHA`, `TestRepairCannotReuseOldAcceptance`, `TestNoProgressStopsWithinBudget`, `TestTestRunnerHasNoPublisherCredentials`.
+**Tests:** `TestOutOfScopePatchRejected`, `TestAgentTestsPassClaimIgnored`, `TestReviewBoundToCandidateSHA`, `TestRepairCannotReuseOldAcceptance`, `TestNoProgressStopsWithinBudget`, `TestTestRunnerHasNoPublisherCredentials`.
 
-**Weryfikacja:** package tests maintainer/workspace/executors oraz acceptance. Dla zmian Go pełne `go test`, `go test -race`, `go vet`, `go build`; dla zmian kernela również istniejące persistence/OCI gates.
+**Verification:** package tests of maintainer/workspace/executors and acceptance. For Go changes the full `go test`, `go test -race`, `go vet`, `go build`; for kernel changes also the existing persistence/OCI gates.
 
-**Odbiór:** realny model poprawia mały reprodukowalny bug, niezależny runner potwierdza regresję i suite, reviewer ocenia ten sam candidate SHA. Na tym etapie istnieje zweryfikowana lokalna zmiana.
+**Acceptance:** a real model fixes a small reproducible bug, an independent runner confirms the regression test and the suite, and a reviewer assesses the same candidate SHA. At this stage a verified local change exists.
 
-### Etap 4: protected GitHub publisher i milestone A1
+### Stage 4: protected GitHub publisher and milestone A1
 
-**Dodać:** `internal/githubeffects/client.go`, `provider.go`, `intents.go`, `reconcile.go`, `internal/maintainer/publish.go`, `pr_observer.go` i testy.
+**Add:** `internal/githubeffects/client.go`, `provider.go`, `intents.go`, `reconcile.go`, `internal/maintainer/publish.go`, `pr_observer.go` and tests.
 
-**Wykorzystać:** `internal/operations.Provider`, stable effect slots, reservations i LookupOutcome; wzorce `feedbackgithub` i `adoeffects`.
+**Use:** `internal/operations.Provider`, stable effect slots, reservations and LookupOutcome; the `feedbackgithub` and `adoeffects` patterns.
 
-- [ ] Udostępnić typed effects: utworzenie branch/ref, publikacja wskazanego candidate commit, utworzenie/aktualizacja PR, komentarz statusowy, labels i zamknięcie issue. Każdy effect ma osobny capability i canonical intent.
-- [ ] Publisher sprawdza repo, prefix branch, base/candidate SHA i dowody acceptance; token pozostaje w zaufanym komponencie. Ewentualny Git transport jest kontrolowany przez publishera, nie shell modelu.
-- [ ] Ref update wymaga expected remote SHA. Obiekt/blob publication można deduplikować po content hash; widoczny effect branch/PR wymaga odczytu i reconciliation po niepewnym wyniku.
-- [ ] PR zawiera issue linkage, opis zachowania, candidate SHA, test/review evidence i ograniczenia. Odczytywać checks, reviews, threads, branch state oraz merge status.
-- [ ] Findings/failed CI wracają do ograniczonego repair workflow. Błąd infrastruktury CI rozróżniać od regresji kodu; nie naprawiać kodu na podstawie samego timeoutu runnera.
-- [ ] Własne status comments/labels nie powodują bez końca nowego triage/planning. Spec fingerprint uwzględnia zmianę wymagań i autoryzowane decyzje, nie każde dotknięcie updated_at.
+- [ ] Expose typed effects: creating a branch/ref, publishing the named candidate commit, creating/updating a PR, a status comment, labels and closing an issue. Every effect has its own capability and canonical intent.
+- [ ] The publisher checks the repo, the branch prefix, the base/candidate SHA and the acceptance evidence; the token stays in the trusted component. Any Git transport is controlled by the publisher, not by the model's shell.
+- [ ] A ref update requires the expected remote SHA. Object/blob publication can be deduplicated by content hash; a visible branch/PR effect requires a read and reconciliation after an uncertain result.
+- [ ] The PR contains the issue linkage, a description of the behavior, the candidate SHA, test/review evidence and limitations. Read checks, reviews, threads, branch state and merge status.
+- [ ] Findings/failed CI return to a bounded repair workflow. Tell a CI infrastructure error from a code regression; do not repair code on the strength of a runner timeout alone.
+- [ ] The bot's own status comments/labels do not cause endless new triage/planning. The spec fingerprint covers a change of requirements and authorized decisions, not every touch of updated_at.
 
-**Testy:** `TestPRCreateTimeoutReconcilesWithoutDuplicate`, `TestPushRequiresExpectedRemoteSHA`, `TestCommentUpdateDoesNotRestartImplementation`, `TestChangedRequirementInvalidatesCandidate`, `TestFailedCIProducesBoundedRepair`, `TestIssueNotClosedBeforeVerifiedDelivery`.
+**Tests:** `TestPRCreateTimeoutReconcilesWithoutDuplicate`, `TestPushRequiresExpectedRemoteSHA`, `TestCommentUpdateDoesNotRestartImplementation`, `TestChangedRequirementInvalidatesCandidate`, `TestFailedCIProducesBoundedRepair`, `TestIssueNotClosedBeforeVerifiedDelivery`.
 
-**Odbiór A1:** od jednego owner-endorsed issue do zweryfikowanego PR z CI i obsługą co najmniej jednego cyklu findings → repair. Restart pomiędzy push a zapisem wyniku nie tworzy drugiego PR ani drugiego skutku.
+**Acceptance of A1:** from one owner-endorsed issue to a verified PR with CI and at least one findings → repair cycle handled. A restart between the push and the recording of the result creates no second PR and no second effect.
 
-### Etap 5: jeden supervised maintainer i backlog management
+### Stage 5: one supervised maintainer and backlog management
 
-**Dodać:** `internal/maintainer/driver.go`, `recipe.go`, `intake.go`, `status.go`, osobny `cmd/summa42-box/maintainer_cmd.go`, `docs/maintainer-runbook.md`.
+**Add:** `internal/maintainer/driver.go`, `recipe.go`, `intake.go`, `status.go`, a separate `cmd/summa42-box/maintainer_cmd.go`, `docs/maintainer-runbook.md`.
 
-**Zmienić:** `internal/ghissue` i istniejące control/status tylko w potrzebnym zakresie; trzymać nowy CLI poza dalszym rozrostem `main.go`.
+**Change:** `internal/ghissue` and the existing control/status only as far as needed; keep the new CLI out of further growth of `main.go`.
 
-- [ ] `run-maintainer` prowadzi wszystkie etapy przez canonical transitions. Każdy tick ma trwały powód następnego działania; scheduler nie zależy od ręcznego odpalania 5 komend.
-- [ ] Zapewnić jednego koordynatora state transitions/publishing dla danego Collective. Executor może działać osobno; nie zakładać, że dowolne procesy otwierające tę samą SQLite automatycznie zapewniają single-writer orchestration.
-- [ ] Heartbeat/status pokazuje active case, step, candidate SHA, budżet, exposure, blocked reason i następny retry. Pause wstrzymuje nowe work; stop anuluje procesy i odbiera zdolność dalszego dispatch.
-- [ ] Kwalifikacja backlogu: ready + endorsement + dependencies + dopuszczony scope; rekomendowane priorytety: reprodukowalne bugi, brakujące tests/gates, małe funkcje, refactor powiązany z zadaniem.
-- [ ] Summa może rozbić duże issue, wykryć duplicate i utworzyć propozycję child issue. Auto-created work staje się wykonywalne tylko według zatwierdzonego generatora/polityki, z provenance i w granicach allowlisty. Autor-bot sam w sobie nie nadaje uprawnień.
-- [ ] Ograniczyć polling/backoff, obsłużyć GitHub rate limit, PR zamknięty ręcznie, issue closed/reopened, konflikt base i równoległą zmianę człowieka. Labels są projekcją, nie źródłem prawdy.
+- [ ] `run-maintainer` runs all stages through canonical transitions. Every tick has a durable reason for the next action; the scheduler does not depend on firing 5 commands by hand.
+- [ ] Ensure one coordinator of state transitions/publishing per Collective. An executor may run separately; do not assume that arbitrary processes opening the same SQLite automatically give single-writer orchestration.
+- [ ] Heartbeat/status shows the active case, step, candidate SHA, budget, exposure, blocked reason and next retry. Pause holds new work; stop cancels processes and removes the ability to dispatch further.
+- [ ] Backlog qualification: ready + endorsement + dependencies + permitted scope; recommended priorities: reproducible bugs, missing tests/gates, small features, refactoring tied to a task.
+- [ ] Summa may split a large issue, detect a duplicate and create a child-issue proposal. Auto-created work becomes executable only under an approved generator/policy, with provenance and within the allowlist. A bot author by itself confers no authority.
+- [ ] Bound polling/backoff, handle the GitHub rate limit, a PR closed by hand, an issue closed/reopened, a base conflict and a parallel human change. Labels are a projection, not the source of truth.
 
-**Testy:** restart przy każdym przejściu; `TestTwoDriversDoNotPublishTwice`, `TestUnendorsedBotIssueNotExecuted`, `TestHumanEditSupersedesPlan`, `TestClosedIssueStopsPendingWork`, `TestRateLimitBackoff`, `TestPausePreventsNewDispatch`.
+**Tests:** a restart at every transition; `TestTwoDriversDoNotPublishTwice`, `TestUnendorsedBotIssueNotExecuted`, `TestHumanEditSupersedesPlan`, `TestClosedIssueStopsPendingWork`, `TestRateLimitBackoff`, `TestPausePreventsNewDispatch`.
 
-**Odbiór:** 24–48 godzin pilota bez ręcznego przepychania etapów, z jawnym raportem wszystkich interwencji. Następnie 7 dni dogfoodingu dla kalibracji kosztu i blokad.
+**Acceptance:** 24–48 hours of the pilot without pushing stages along by hand, with an explicit report of every intervention. Then 7 days of dogfooding to calibrate cost and blocks.
 
-### Etap 6: policy merge, milestone A2
+### Stage 6: policy merge, milestone A2
 
-**Dodać:** `internal/maintainer/merge_gate.go`, typed merge effect w `githubeffects`, osobny owner-approved policy profile i testy.
+**Add:** `internal/maintainer/merge_gate.go`, a typed merge effect in `githubeffects`, a separate owner-approved policy profile and tests.
 
-- [ ] Wykonać 10 małych zadań pilota A1; żadne nie może zostać zaakceptowane z pominięciem wymaganych gates. Rejestrować interwencje, koszty i reopen/regressions.
-- [ ] Gate wymaga aktualnego candidate SHA, zielonych required checks, review tego SHA, rozwiązanych blokujących findings, aktualnego planu/polityki, dozwolonych ścieżek i braku unknown external effects.
-- [ ] Merge wykonuje GitHub provider z warunkiem expected head SHA. Jeśli main przesunął się i wpływa to na wynik, aktualizacja branch generuje nowy candidate oraz ponowną weryfikację; nie odziedzicza starego CLEAN.
-- [ ] Potwierdzić merge commit i relację do planu/candidate. Issue zamykać po potwierdzonej dostawie zgodnie z jego acceptance, nie po samym wysłaniu requestu merge.
-- [ ] Uwzględnić faktyczne branch protection. Jeśli wymagany approval musi pochodzić od innego konta/principal niż autor PR, użyć zatwierdzonego review identity albo pozostać przy A1; nie osłabiać ochrony dla obejścia limitu.
+- [ ] Carry out 10 small A1 pilot tasks; none may be accepted by skipping the required gates. Record interventions, costs and reopens/regressions.
+- [ ] The gate requires the current candidate SHA, green required checks, a review of that SHA, resolved blocking findings, a current plan/policy, permitted paths and no unknown external effects.
+- [ ] The merge is done by the GitHub provider with an expected head SHA condition. If main has moved and that affects the result, the branch update produces a new candidate and a new verification; it does not inherit the old CLEAN.
+- [ ] Confirm the merge commit and its relation to the plan/candidate. Close the issue after confirmed delivery according to its acceptance, not after merely sending the merge request.
+- [ ] Take the actual branch protection into account. If the required approval must come from an account/principal other than the PR author, use an approved review identity or stay at A1; do not weaken protection to get around the limit.
 
-**Testy:** `TestNewHeadInvalidatesMergeApproval`, `TestPendingOrMissingRequiredCheckBlocksMerge`, `TestUnresolvedReviewBlocksMerge`, `TestMergeTimeoutReconcilesCommit`, `TestProtectedPathNeedsOwner`.
+**Tests:** `TestNewHeadInvalidatesMergeApproval`, `TestPendingOrMissingRequiredCheckBlocksMerge`, `TestUnresolvedReviewBlocksMerge`, `TestMergeTimeoutReconcilesCommit`, `TestProtectedPathNeedsOwner`.
 
-**Odbiór A2:** trzy małe, dozwolone zmiany przechodzą pełny cykl bez interwencji w rutynowych krokach; zmiana chroniona poprawnie czeka na właściciela.
+**Acceptance of A2:** three small, permitted changes pass the full cycle without intervention in the routine steps; a protected change correctly waits for the Owner.
 
-### Etap 7: self-upgrade, milestone A3
+### Stage 7: self-upgrade, milestone A3
 
-**Dodać:** osobny `cmd/summa42-supervisor`, `internal/upgrade/manifest.go`, `health.go`, `rollback.go`, `docs/upgrade-runbook.md`.
+**Add:** a separate `cmd/summa42-supervisor`, `internal/upgrade/manifest.go`, `health.go`, `rollback.go`, `docs/upgrade-runbook.md`.
 
-- [ ] Build/release z dokładnego merged SHA ma hash oraz deklarowany zakres zgodności DB/config. Running Box nie nadpisuje własnego binarium podczas pracy.
-- [ ] Supervisor zatrzymuje nowe leases, kończy albo anuluje aktywne Attempts i uzgadnia unknown effects przed zmianą wersji; stan work pozostaje trwały.
-- [ ] Backup SQLite wykonać przez wspierany snapshot/backup przy prawidłowej obsłudze WAL. Test upgrade i restore prowadzić na kopii z aktywnymi tasks i operations.
-- [ ] Canary sprawdza startup, policy provenance, odczyt danych, scheduling i prosty synthetic case. Nie tylko odpowiedź status endpoint.
-- [ ] Przy błędzie uruchomić poprzedni build wyłącznie na zgodnej bazie. Nie odtwarzać starej DB po zewnętrznych skutkach nowej wersji bez reconciliation: mogłoby to odtworzyć już wykonane operacje.
-- [ ] Dla breaking migrations wymagać owner-reviewed migration/rollback planu. Preferować kompatybilne expand-contract migrations, aby binary rollback nie wymagał cofania historii operations.
+- [ ] A build/release from the exact merged SHA has a hash and a declared DB/config compatibility range. A running Box does not overwrite its own binary while it works.
+- [ ] The supervisor stops new leases, finishes or cancels active Attempts and reconciles unknown effects before changing the version; work state stays durable.
+- [ ] Back up SQLite through a supported snapshot/backup with correct WAL handling. Run the upgrade and restore test on a copy with active tasks and operations.
+- [ ] The canary checks startup, policy provenance, reading data, scheduling and a simple synthetic case. Not only the response of the status endpoint.
+- [ ] On failure start the previous build only on a compatible database. Do not restore an old DB after the new version's external effects without reconciliation: that could replay operations already performed.
+- [ ] For breaking migrations require an owner-reviewed migration/rollback plan. Prefer compatible expand-contract migrations so that a binary rollback does not require rewinding the history of operations.
 
-**Testy:** `TestBadBuildRollsBackBeforeEffects`, `TestRollbackDoesNotReplayPublishedPR`, `TestMigrationIncompatibilityBlocksUpgrade`, `TestUpgradePreservesPendingCases`, `TestSupervisorSurvivesBoxFailure`.
+**Tests:** `TestBadBuildRollsBackBeforeEffects`, `TestRollbackDoesNotReplayPublishedPR`, `TestMigrationIncompatibilityBlocksUpgrade`, `TestUpgradePreservesPendingCases`, `TestSupervisorSurvivesBoxFailure`.
 
-**Odbiór A3:** Summa wdraża własną dozwoloną zmianę, wykonuje następne zadanie na nowej wersji i przechodzi kontrolowany test awarii/rollbacku bez utraty canonical state i bez duplikowania skutków.
+**Acceptance of A3:** Summa deploys its own permitted change, performs the next task on the new version and passes a controlled failure/rollback test without losing canonical state and without duplicating effects.
 
-## 8. Powiązanie z obecnymi issues
+## 8. Relation to the current issues
 
-| Issue | Decyzja dla samorozwoju |
+| Issue | Decision for self-development |
 |---|---|
-| #1 field dogfooding | Duża część kodu jest już na main. Zweryfikować acceptance criteria i live smoke przed aktualizacją statusu; wykorzystać obserwacje do backlogu. Nie zakładać automatycznie pełnego zamknięcia. |
-| #14 Summand vocabulary | Kandydat na mały docs pilot po ścisłym ograniczeniu scope. Sam rename nie jest dowodem zdolności do implementacji buga. |
-| #4 replay/regression | Wyciągnąć minimalny wycinek: odtwarzanie i failure/restart harness jednego maintainer workflow. Pełny replay system może poczekać. |
-| #5 rogue containment | Potrzebne minimum pause/stop/revoke/credential separation w pilocie; pełna warstwa rogue detection później. |
-| #15 learning/dreaming | Zacząć od wynik → evidence → propozycja issue. Automatyczne zmiany procesu/polityki wymagają osobnych gates; pełne dreaming po działającym cyklu. |
-| #12 intent compiler | Tymczasowo structured issue contract i prosta dekompozycja. Nie budować pełnego compiler przed pierwszym PR. |
-| #2 capability discovery | Nie na krytycznej ścieżce. Wybrać istniejącego executora; acquisition nowych narzędzi nie jest warunkiem działania. |
-| #3 OSS/control plane | Zachować architekturę i oceniać konkretne zależności według potrzeby; nie robić rewrite w ramach bootstrapu. |
-| #11 DTU | Deterministyczne fake providers i failure injection wystarczą na pierwszy cykl. |
-| #16 decision engine | Obecne reguły + model interfaces wystarczą; future engine może zastąpić konkretną rolę. |
-| #17 A2A, #18 Company OS | Poza etapami 0–7. Maintainer Collective może działać bez profilu Company OS. |
+| #1 field dogfooding | Much of the code is already on main. Verify the acceptance criteria and a live smoke before updating the status; use the observations for the backlog. Do not assume full closure automatically. |
+| #14 Summand vocabulary | A candidate for a small docs pilot after strictly limiting its scope. A rename alone is not proof of the ability to implement a bug fix. |
+| #4 replay/regression | Extract the minimal slice: a replay and failure/restart harness for one maintainer workflow. A full replay system can wait. |
+| #5 rogue containment | The pilot needs the minimum of pause/stop/revoke/credential separation; the full rogue detection layer later. |
+| #15 learning/dreaming | Start with result → evidence → issue proposal. Automatic changes of process/policy need separate gates; full dreaming after a working cycle. |
+| #12 intent compiler | For now a structured issue contract and simple decomposition. Do not build a full compiler before the first PR. |
+| #2 capability discovery | Not on the critical path. Choose an existing executor; acquisition of new tools is not a condition of operation. |
+| #3 OSS/control plane | Keep the architecture and assess specific dependencies as needed; do not rewrite as part of the bootstrap. |
+| #11 DTU | Deterministic fake providers and failure injection are enough for the first cycle. |
+| #16 decision engine | The current rules + model interfaces are enough; a future engine may replace a specific role. |
+| #17 A2A, #18 Company OS | Outside stages 0–7. A Maintainer Collective can work without the Company OS profile. |
 
-Proponowany nowy epic: **Maintainer Collective — bounded issue-to-release self-development**. Child work odpowiada etapom 1–7, z zależnościami; do gotowej kolejki wpuszczać dopiero małe zadania mające działające prerequisites. Nie tworzyłem tych issues w tej analizie.
+Proposed new epic: **Maintainer Collective — bounded issue-to-release self-development**. The child work corresponds to stages 1–7, with dependencies; let only small tasks with working prerequisites into the ready queue. I did not create these issues in this analysis.
 
-## 9. Kryteria sukcesu i raport operacyjny
+## 9. Success criteria and the operational report
 
-Minimum raportu po każdym case: issue/plan/candidate/PR/merge SHA, test i review evidence, koszt zmierzony i unknown exposure, retries, czas oczekiwania oraz liczba i powód interwencji człowieka.
+The minimum report after every case: issue/plan/candidate/PR/merge SHA, test and review evidence, measured cost and unknown exposure, retries, waiting time, and the number and reason of human interventions.
 
-Mierzyć:
+Measure:
 
-- odsetek autoryzowanych małych issues zakończonych zweryfikowanym PR;
-- odsetek zmian scalonych i niewymagających reopen/regression;
-- interwencje właściciela na zadanie, rozdzielone na decyzje produktowe i techniczne przepychanie procesu;
-- koszt na zaakceptowaną zmianę, również wszystkich nieudanych Attempts;
-- duplicate external effects — docelowo 0;
-- blocked cases bez powodu lub następnego działania — docelowo 0;
-- liczbę bounded repairs i powtarzanych findings.
+- the share of authorized small issues that end in a verified PR;
+- the share of changes merged and not needing a reopen/regression fix;
+- Owner interventions per task, split into product decisions and technical pushing of the process;
+- cost per accepted change, including all failed Attempts;
+- duplicate external effects — target 0;
+- blocked cases without a reason or a next action — target 0;
+- the number of bounded repairs and repeated findings.
 
-Deklaracja „Summa42 rozwija Summa42” jest uzasadniona na A1 dla tworzenia zmian/PR. Deklaracja „sama utrzymuje repo i własne wydania” wymaga A2 oraz A3. Wizja około godziny obsługi miesięcznie potrzebuje dłuższego okresu stabilnej eksploatacji; 7-dniowy pilot nie jest takim dowodem.
+The statement "Summa42 develops Summa42" is justified at A1 for producing changes/PRs. The statement "it maintains the repo and its own releases by itself" requires A2 and A3. The vision of about an hour of attention a month needs a longer period of stable operation; a 7-day pilot is not such evidence.
 
-## 10. Główne miejsca do review
+## 10. Main places to review
 
-1. Stare SHA/revision/fence próbujące zatwierdzić lub opublikować nowszy rezultat — etap 1/2/3/6.
-2. Timeout po wykonanym skutku zewnętrznym — etap 4/6/7: odczyt i reconciliation zamiast blind retry.
-3. Model/test runner dziedziczący authority lub credentials — etap 1/3.
-4. Własne komentarze, labels i bot-generated issues powodujące pętle lub niezamierzone autoryzacje — etap 4/5.
-5. Upgrade/rollback DB odtwarzający wykonane wcześniej efekty — etap 7.
+1. An old SHA/revision/fence trying to approve or publish a newer result — stages 1/2/3/6.
+2. A timeout after an external effect was performed — stages 4/6/7: read and reconcile instead of a blind retry.
+3. A model/test runner inheriting authority or credentials — stages 1/3.
+4. The bot's own comments, labels and bot-generated issues causing loops or unintended authorizations — stages 4/5.
+5. A DB upgrade/rollback replaying effects performed earlier — stage 7.
 
-Nie poszerzać coverage „na wszelki wypadek”: każdy test powinien odtwarzać konkretny warunek kontraktu lub ryzyko wymienione powyżej.
+Do not widen coverage "just in case": every test should reproduce a specific contract condition or a risk named above.
 
-## 11. Źródła i odtwarzalność analizy
+## 11. Sources and reproducibility of the analysis
 
-Wszystkie ścieżki źródłowe z sekcji 2–3 czytano na bazowym SHA. Repozytorium: https://github.com/SofiaFlux/summa42/tree/5a633000e849d3f49f5281314a30ebac9e08f73d
+All source paths in sections 2–3 were read at the base SHA. Repository: https://github.com/SofiaFlux/summa42/tree/5a633000e849d3f49f5281314a30ebac9e08f73d
 
-- CI i kroki obu jobs: https://github.com/SofiaFlux/summa42/actions/runs/36696570907
-- Planner i istniejąca decyzja o zatrzymaniu handoff: https://github.com/SofiaFlux/summa42/blob/5a633000e849d3f49f5281314a30ebac9e08f73d/docs/superpowers/plans/2026-09-29-github-issue-planner.md
+- CI and the steps of both jobs: https://github.com/SofiaFlux/summa42/actions/runs/36696570907
+- The planner and the existing decision to stop at the handoff: https://github.com/SofiaFlux/summa42/blob/5a633000e849d3f49f5281314a30ebac9e08f73d/docs/superpowers/plans/2026-09-29-github-issue-planner.md
 - Planner contract: https://github.com/SofiaFlux/summa42/blob/5a633000e849d3f49f5281314a30ebac9e08f73d/internal/ghtriage/plan.go
 - Worker/workspace: https://github.com/SofiaFlux/summa42/blob/5a633000e849d3f49f5281314a30ebac9e08f73d/internal/scheduler/worker.go
 - Startup/routing/capacity: https://github.com/SofiaFlux/summa42/blob/5a633000e849d3f49f5281314a30ebac9e08f73d/cmd/summa42-box/main.go
@@ -372,4 +375,4 @@ Wszystkie ścieżki źródłowe z sekcji 2–3 czytano na bazowym SHA. Repozytor
 - External-operation contract: https://github.com/SofiaFlux/summa42/blob/5a633000e849d3f49f5281314a30ebac9e08f73d/internal/operations/provider.go
 - Backlog: https://github.com/SofiaFlux/summa42/issues
 
-**Następne konkretne zadanie:** etap 1 — hard executor eligibility, rzeczywista capacity i accounting — równolegle z dokumentacyjnym uporządkowaniem etapu 0 tylko jeśli wykonawcy mają niezależny zakres plików. Następnie etap 2 domyka obecny `github.issue.plan.review`. Pierwsze uruchomienie zewnętrznych GitHub writes następuje dopiero po odbiorze tych kontraktów i lokalnego cyklu z etapu 3.
+**Next concrete task:** stage 1 — hard executor eligibility, real capacity and accounting — in parallel with the documentation clean-up of stage 0 only if the implementers have independent file scopes. Then stage 2 closes the current `github.issue.plan.review`. The first run of external GitHub writes comes only after these contracts and the local cycle from stage 3 are accepted.
