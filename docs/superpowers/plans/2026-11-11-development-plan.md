@@ -207,9 +207,10 @@ The rule that reconciles 2.5 and 2.6:
 
 - **Inside:** a full agentic harness with write and execute permission, a
   shell, compilers, test runners, a package cache, hours of wall time.
-- **The edge:** no credential inside (the provider credential is added by the
-  egress proxy outside the sandbox), no route out except the model provider and
-  a mediated fetch restricted per Project; the only thing that leaves is a
+- **The edge:** no route out except a Box-side gateway (model provider,
+  package registries, a fetch restricted per Project); the provider credential
+  stays outside where the harness allows it, and where it does not, a
+  provider-only login inside is declared and limited to non-private Projects; the only thing that leaves is a
   commit that trusted code collects without executing anything the agent
   wrote, and usage measured at the proxy.
 - **Outside:** unchanged. Independent validation, independent review,
@@ -488,38 +489,22 @@ It reuses what exists: the TEB Docker provider (`internal/teb`), the launcher
 (`internal/modelrun`), `execution.RenewLease`, the pinned checkout
 (`internal/repoworkspace`), the Codex and Copilot executor adapters.
 
-**M1A-T1 `DESIGN`: agentic workspace executor spec.** Settles: the sandbox
-(an OCI container per Attempt through the TEB Docker provider: non-root, no
-credentials, no container socket, writable workspace and caches only; and what
-is offered, at which enforcement level, on a host without Docker); what is in
-the image (toolchains per Project manifest); network (model provider endpoint,
-a package registry path, a mediated fetch tool whose requests are logged as
-evidence; nothing else); how the harness is started in write mode inside and
-why that is safe there and only there; how the result leaves (trusted code
-reads the workspace's Git history; nothing the agent says about its own result
-counts); limits per Attempt in time, money and disk; what happens to the
-existing one-shot stages (they stay for triage, plan review and code review).
-The spec must also close these, each with a named test:
+**M1A-T1 `DESIGN`: agentic workspace executor spec.** Written:
+[agentic workspace executor](../specs/2026-11-11-agentic-workspace-executor-design.md).
+It is binding for every M1A card once the Owner approved it, and its section 11
+splits M1A-T3 and M1A-T8 into smaller cards (M1A-T3a to T3c, M1A-T8a and T8b)
+and adds the harness spike M1A-T1b. Where a card below and the spec differ, the
+spec wins. In short: one hardened container per Attempt; a Box-side gateway as
+the only network; two credential modes (credential at the gateway, or a
+provider-only login inside for subscription harnesses, never for private
+Projects); collection through a separate no-network container into a fresh
+Box-owned repository; one Box-authored candidate commit.
 
-- Collection never runs Git, hooks or any tool inside the agent's directory as
-  the Box user. The agent has had write access to that `.git`. The workspace is
-  exported from inside the sandbox as a bundle and fetched into a fresh
-  Box-owned repository, checked with `fsck`, before anything reads it.
-- The provider credential is not in the sandbox. The egress proxy adds it to
-  requests to the provider's host and measures usage there.
-- The mediated fetch is containment, not logging: a per-Project domain
-  allowlist, GET only, caps on URL length and rate, refused entirely for
-  private data classes, responses marked as untrusted data.
-- Nothing model-written passes from one Attempt to the next except through Box
-  evidence that went through M9-T8.
-- CI and pipeline definition files are protected in every Project, greenfield
-  included; on Azure DevOps a pushed pipeline file could run with deployment
-  service connections.
-- Freeze, containment, lease expiry and an exhausted budget kill the sandbox;
-  stopping the renewal is not enough.
-- Until the money ledger exists (M3-T2), agentic Attempts run only on prepaid
-  subscription profiles, under a wall-time ceiling enforced outside the
-  sandbox.
+**M1A-T1b `OWNER` with `agent`: harness spike.** Depends: M1A-T1 approved. For
+`agy`, Claude, Command Code and opencode: does it run headless in the sandbox
+image in write mode, which credential mode does it need, where does its token
+live, how does it refresh. Needs the Owner's logins. Result in
+`docs/superpowers/research/`; it decides which harness M1A-T3c builds first.
 
 **M1A-T2 `BUILD` `agent`: long Attempts.** A lease that an agentic Attempt
 renews by heartbeat (`execution.RenewLease`), with fencing unchanged: a missed
@@ -579,12 +564,13 @@ application in an hours-long unattended run, and every task the bare harness
 completes and Summa42 does not is listed with its cause. A gap is closed by
 improving the executor, never by relaxing a control.
 
-**M1A-T8 `BUILD` `agent`: egress proxy for sandboxes and the mediated fetch.**
-Depends: M1A-T1 approved. The sandbox's only network is the existing CONNECT
-proxy. It allows the provider host of the Attempt's profile and injects that
-credential; it serves the mediated fetch under the rules of M1A-T1; it records
-usage and every refused request (a refusal is a rogue signal).
-Tests: `TestSandboxHasNoRouteButProxy`, `TestCredentialInjectedOutsideSandbox`,
+**M1A-T8 `BUILD` `agent`: gateway for sandboxes.** Depends: M1A-T1 approved.
+Two cards (spec section 11). The sandbox's only network is a Box-side gateway:
+a registry mirror and a restricted fetch (T8a), and a provider gateway that
+adds the credential outside the sandbox for harnesses that accept a base URL
+(T8b). The existing CONNECT proxy is its outbound side. It records every
+request and every refusal (a refusal is a rogue signal).
+Tests: `TestSandboxHasNoRouteButGateway`, `TestCredentialAddedOutsideSandbox`,
 `TestFetchRefusedForPrivateDataClass`, `TestFetchOutsideAllowlistRefused`.
 
 **M1A-T7 `BUILD` `agent`: new dependency gate.** Depends: M1A-T3, M1A-T8. An agent with full tools will
@@ -833,8 +819,8 @@ Today every model runs through a CLI harness profile. Add a profile kind that
 calls a provider API (OpenAI-compatible first; then Anthropic, Azure AI
 Foundry, Vertex, Bedrock as data, not code, where the wire format allows). The
 caller is a small binary run as the model user through `internal/modelrun`, so
-the isolation and the launcher stay the same; the API key is injected by the
-egress proxy (M1A-T8) and is never readable by the model process (R12). Reported token usage settles the money ledger;
+the isolation and the launcher stay the same; the API key is added by the
+provider gateway (M1A-T8b) and is never readable by the model process (R12). Reported token usage settles the money ledger;
 a provider without zero data retention is refused for private data classes.
 New harnesses (for example Pi) remain profile data through the existing
 `model-profile-draft`, `model-probe`, `model-profile-adopt` path.
@@ -1175,28 +1161,18 @@ an acceptance test over the running path. With M3-T3 and M4-T3 this meets the
 closing criterion of #5.
 
 **M9-T6 `DESIGN` then `BUILD`: producer and reviewer are different OS users.**
-Section 2.5. Protected paths by design (`internal/modelrun/`,
-`scripts/setup-model-user.sh`); Owner review line by line. The flag
-`--review-model-user` already exists (`registerModelFlags` in
-`cmd/summa42-box/main.go`, called with the prefix `review-model` in
-`ghpipeline.go`); do not add it again. It defaults to `SUMMA42_MODEL_USER`, and
-nothing requires it to differ, so both roles run as one user. The single-stage
-review commands (`run-gh-plan-review`, `run-gh-code-review`, triage review) and
-the fallback reviewers take the reviewer under `--model-user`. Make the
-reviewer user required and distinct everywhere a review runs, with its own
-default `SUMMA42_REVIEW_MODEL_USER`, different from the model user, the
-validation user, the Box user and root; the setup script creates `summa42-review` with its
-own 0700 home and its own copies of the reviewer's CLI logins. The startup
-probe checks, through the same launcher, that neither role can read the other's
-home. Every model call runs in a per-call scratch directory, and after each
-call the Box kills what that call left running and removes its scratch. Model
-calls run concurrently, so validation's `kill -KILL -1` of the whole user
-cannot be reused; the spec chooses the mechanism (a process group or a cgroup
-per call) and how a survivor is detected. Audit the scopes of the CLI logins
-copied into both homes and drop any that can write to a repository.
-Tests: `TestReviewerCannotReadProducerHome`, `TestProducerCannotReadReviewerHome`,
-`TestSameUserForBothRolesRefused`, `TestNothingSurvivesAModelCall`, and a
-`realhost` test like the existing ones in `internal/repoworkspace`.
+Section 2.5. Spec written:
+[reviewer isolation](../specs/2026-11-11-reviewer-isolation-design.md). It is
+binding once the Owner approved it and splits the work into five cards, M9-T6a
+to M9-T6e, each one pull request on protected paths (`internal/modelrun/`,
+`scripts/setup-model-user.sh`), reviewed by the Owner line by line. In short:
+the flag `--review-model-user` already exists and must not be added again; it
+gets its own default (`SUMMA42_REVIEW_MODEL_USER`) and must differ from the
+producer and validation users; every model call records the OS user it ran as,
+and a review refuses when the work it reviews was produced as its own user;
+the role homes are mutually unreadable; nothing a call started survives it;
+the CLI settings a model could change for the next call are checked before
+each call.
 
 **M9-T7 `DESIGN` then `BUILD`: model egress allowlist.** Section 2.5. A model
 process may reach only the endpoints of its own provider. Use the existing
