@@ -205,3 +205,10 @@ ich karty: producent i recenzent działają dziś jako ten sam użytkownik syste
 (M9-T6), procesy modeli mają nieograniczoną sieć (M9-T7), nic nie sprawdza
 instrukcji i ukrytych znaków przemycanych w wyniku producenta do recenzenta
 (M9-T8). M9-T6 i M9-T8 są warunkiem wejścia w stałe delegacje (M5).
+
+Drugi cel, równoważący pierwszy: zabezpieczenia nie mogą zmniejszać możliwości
+agentów. Skoro współczesny model w swoim harnessie potrafi z jednego promptu
+przez kilka godzin zbudować całą aplikację, Summand ma umieć to samo. Plan
+zapisuje to jako sekcję 2.6 („ograniczaj promień rażenia, nie agenta”) i
+kamień milowy M1A: pełne narzędzia i godziny pracy wewnątrz piaskownicy,
+kontrola na jej krawędzi, pomiar parytetu z gołym harnessem (M1A-T6).

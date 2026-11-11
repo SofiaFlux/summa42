@@ -177,6 +177,38 @@ What cannot be promised: two models that both read the same artefact can
 always pass information through it. The goal is that such a channel carries no
 authority and reaches no secret, not that it cannot exist.
 
+### 2.6 Design goal: full capability inside the boundary
+
+The second founding goal balances the first: governance must not make the
+agents weaker. A current model in an agentic harness can work for hours from
+one prompt, run tools, build, test and iterate until a whole application
+exists. A Summand must be able to do the same.
+
+Today it cannot. Every model call in the pipeline is a single read-only
+question: plan mode, no tools, a handful of turns, an answer as complete-file
+edits in one JSON document, at most 64 files and 256 KiB. The model never runs
+the code it writes. That was the right way to earn A1 on a host without a
+sandbox; it is far below what the same model does in its own harness.
+
+The rule that reconciles 2.5 and 2.6:
+
+> Constrain the blast radius, not the agent. Inside its sandbox a Summand has
+> every tool and as much time as its budget allows. At the edge of the sandbox
+> everything is governed.
+
+- **Inside:** a full agentic harness with write and execute permission, a
+  shell, compilers, test runners, a package cache, hours of wall time.
+- **The edge:** no credentials, no route out except the model provider and
+  mediated, logged fetches; the only thing that leaves is a commit that trusted
+  code collects, and usage that settles the budget.
+- **Outside:** unchanged. Independent validation, independent review,
+  publication through the commitment boundary, the Owner or a delegation.
+
+Auto-approve options that the harness profiles refuse today (rule in
+`internal/ghtriage/climodel/profile.go`) become legal exactly when the call
+runs in a sandbox whose enforcement level is proven, and never otherwise.
+Milestone M1A builds this.
+
 ## 3. Rules for the implementing agent
 
 These are checked in review. Milestone M0 turns most of them into tests.
@@ -262,6 +294,7 @@ tasks. `agent`: needs an external coding agent working in a checkout.
 | --- | --- | --- | --- |
 | M0 | Guardrails | The rules in section 3 fail CI when broken | none |
 | M1 | A1 at volume | Ten pilot tasks done, repair loop, per-case report, one `serve` command | M0 |
+| M1A | Agentic execution | A Summand works for hours with full tools inside a sandbox; parity with the bare harness is measured | M0, M9-T6 |
 | M2 | Projects | Several Projects with separate Mission, budget, grants, pause | M0 |
 | M2A | Azure DevOps delivery | Work item to draft pull request in ADO, build observation | M2 |
 | M3 | Continuity | Money budget, notifications, backup and restore, watchdog | M2 |
@@ -390,6 +423,72 @@ each in `docs/superpowers/research/2026-11-pilot-results.md`: interventions,
 cost, wall time, repair cycles.
 Done when: ten cases reached a merged pull request with no skipped gate, and
 the median of Owner interventions per case is known.
+
+### M1A. Agentic execution
+
+Section 2.6. This milestone decides how much the system can do; do it early.
+It reuses what exists: the TEB Docker provider (`internal/teb`), the launcher
+(`internal/modelrun`), `execution.RenewLease`, the pinned checkout
+(`internal/repoworkspace`), the Codex and Copilot executor adapters.
+
+**M1A-T1 `DESIGN`: agentic workspace executor spec.** Settles: the sandbox
+(an OCI container per Attempt through the TEB Docker provider: non-root, no
+credentials, no container socket, writable workspace and caches only; and what
+is offered, at which enforcement level, on a host without Docker); what is in
+the image (toolchains per Project manifest); network (model provider endpoint,
+a package registry path, a mediated fetch tool whose requests are logged as
+evidence; nothing else); how the harness is started in write mode inside and
+why that is safe there and only there; how the result leaves (trusted code
+reads the workspace's Git history; nothing the agent says about its own result
+counts); limits per Attempt in time, money and disk; what happens to the
+existing one-shot stages (they stay for triage, plan review and code review).
+
+**M1A-T2 `BUILD` `agent`: long Attempts.** A lease that an agentic Attempt
+renews by heartbeat (`execution.RenewLease`), with fencing unchanged: a missed
+heartbeat expires the lease, break glass and containment still revoke it at
+once, and a revoked or expired Attempt cannot record a result. Budget is
+checked at every renewal, so a run stops when its envelope is spent.
+Tests: `TestHeartbeatKeepsLeaseForHours` (fake clock), `TestMissedHeartbeatExpires`,
+`TestFreezeStopsRenewal`, `TestRenewalRefusedWhenEnvelopeSpent`,
+`TestExpiredAttemptCannotRecordResult`.
+
+**M1A-T3 `BUILD` `agent`: the agentic implement stage.** Depends: M1A-T1
+approved, M1A-T2, M9-T6. A new executor runs a harness profile in agent mode
+inside the sandbox on a pinned checkout, with the accepted plan as its task.
+The profile validator accepts write and auto-approve options only for a
+sandboxed call with a proven enforcement level. Trusted code collects the
+commits, checks them against the Project's rules (protected paths, secrets,
+size limits from the manifest, not the fixed 64 files) and records the
+candidate exactly as the current implement stage does. Validation, code review
+and publication are unchanged. The complete-file edit stage stays as the
+fallback where no sandbox exists.
+Tests: `TestAgentCanBuildAndRunTestsInside`, `TestNoCredentialReachableInside`,
+`TestOnlyAllowlistedHostsReachable`, `TestResultIsReadFromGitNotFromAgentClaim`,
+`TestAutoApproveRefusedOutsideSandbox`, and the OCI gate in CI.
+
+**M1A-T4 `BUILD` `agent`: checkpoints and resume.** Every commit the agent
+makes is captured as checkpoint evidence while it works. After a crash, a lost
+lease or a restart, a new Attempt continues from the last checkpoint with the
+harness session's own notes file, instead of starting again. Old checkpoints
+are never accepted as the new Attempt's result.
+Tests: `TestResumeStartsFromLastCheckpoint`, `TestCheckpointOfOldAttemptIsNotAResult`.
+
+**M1A-T5 `BUILD` `agent`: large and greenfield work.** Publication through a
+Git push performed by the trusted publisher instead of per-file API calls, so
+the size of a change is bounded by the Project manifest and the budget, not by
+64 files. A Project may be declared greenfield: a new repository with no
+allowed-path restriction inside it. A plan may fan out into child Tasks that
+run in parallel sandboxes (the single-host form of discussion #138).
+
+**M1A-T6 `BUILD` `agent`: parity benchmark.** A small fixed set of tasks (a bug
+fix, a feature across packages, a new small application from one prompt) run
+twice: with the bare harness, and through Summa42 with the same model and
+budget. Record completion, wall time, cost and Owner actions in
+`docs/superpowers/research/`. Repeat when a model, a harness or the executor
+changes.
+Done when (M1A): through Summa42, one prompt produces a working, tested small
+application in an hours-long unattended run, and the benchmark shows no task
+the bare harness completes that Summa42 cannot.
 
 ### M2. Projects
 
@@ -855,7 +954,9 @@ process may reach only the endpoints of its own provider. Use the existing
 CONNECT egress proxy (exact allowlisted hosts, validated IPs) and a per-user
 firewall rule on the host so that a model user has no route except the proxy.
 Each profile declares its hosts; a denied connection is a rogue signal on the
-Attempt. Record the enforcement level actually achieved; where the host cannot
+Attempt. The allowlist must not cost capability (section 2.6): package
+registries are reachable through a cache or mirror path, and web research goes
+through a mediated fetch tool whose requests are logged as evidence. Record the enforcement level actually achieved; where the host cannot
 enforce it (for example WSL), say `UNENFORCED` and do not claim more.
 
 **M9-T8 `BUILD` `agent`: output hygiene between roles.** Section 2.5. Before
@@ -918,6 +1019,7 @@ authority widen; is every claim in the README true.
 | A weaker model produces plausible code nothing calls | every card | R3, M0-T2, review question 1 |
 | A weaker model weakens a test or a gate to get green | every card | R9, R5, different-model review, required CI |
 | A design decision is taken by the implementer | `DESIGN` cards | Spec approved by the Owner first; stronger model writes or reviews it |
+| Governance makes the agents weaker than their bare harness | M1 to M9 | Section 2.6, milestone M1A, parity benchmark M1A-T6 repeated on every change |
 | Agents coordinate outside the Collective's sight | every milestone with two model roles | Section 2.5, R12, M9-T6 to M9-T8 before any delegation |
 | Delegation or mandate widens authority | M5, M6 | Spec lists the undelegable; suspension is automatic; M4-T4 first |
 | The Owner key is readable by the Box user | M5 onward | M4-T4 is an entry condition of M5 |
@@ -961,7 +1063,7 @@ the acceptance test named in the card exists.
 | --- | --- | --- |
 | #136 Constructors (pinned) | Exploration; nine open questions, no decision | Decided (Q43): an adopted automation (M6) is the minimal Constructor v1: a persistent, Owner-anchored responsibility with a ceiling it inherits, dormant until woken, with "no action required" as a valid result. The M6-T1 spec answers the nine questions as they apply; the Owner records the decision in the discussion. The note `docs/architecture/constructors-collective-architecture.md` describes Cubes as stateless nodes of a fleet; that contradicts the single-Cube MVC and is direction only |
 | #137 Resurrector and island recovery | Proposed | M3-T5 is its single-host form: an external watchdog, restart by systemd, notification when the database is unreachable. The signed resurrection contract and cloud drivers wait for multi-Cube |
-| #138 Dynamic fleet consensus and demobilization | Proposed | Outside this plan (multi-Cube). Fan-out of a plan into child Tasks may return with a card when one issue proves too large for a single case |
+| #138 Dynamic fleet consensus and demobilization | Proposed | Fleets are outside this plan (multi-Cube). Its useful core, a plan fanning out into child Tasks that run in parallel, is M1A-T5 on one host |
 
 New design questions go to a discussion first (R11, Q45); a decision reached
 there is recorded in the spec of the `DESIGN` card that uses it, and the spec
