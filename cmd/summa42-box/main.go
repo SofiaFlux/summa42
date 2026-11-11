@@ -544,6 +544,7 @@ func verifyPolicySetSignature(ctx context.Context, db *sql.DB, ownerID domain.ID
 
 // subcommands maps each run-* name (and its run-repo-* alias) to its command.
 var subcommands = map[string]func(context.Context, []string) error{
+	"serve":                  runServe,
 	"run-worker":             runWorker,
 	"run-observer":           runObserver,
 	"run-gh-intake":          runGHIntake,
