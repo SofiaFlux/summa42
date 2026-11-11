@@ -28,10 +28,11 @@ def github_anchor(heading: str) -> str:
 
 
 def markdown_anchors(path: Path) -> set[str]:
-    """Validate fences and return the unique anchors declared by Markdown headings."""
+    """Validate fences and return the anchors GitHub derives from the Markdown headings."""
     fence: str | None = None
     anchors: set[str] = set()
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    repeats: dict[str, int] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
         fence_match = FENCE_RE.match(line)
         if fence_match:
             delimiter = fence_match.group(1)
@@ -45,9 +46,12 @@ def markdown_anchors(path: Path) -> set[str]:
         heading_match = HEADING_RE.match(line)
         if not heading_match:
             continue
-        anchor = github_anchor(heading_match.group(1))
-        if anchor in anchors:
-            raise ValidationError(f"{path}:{line_number}: duplicate heading anchor #{anchor}")
+        base = github_anchor(heading_match.group(1))
+        anchor = base
+        # GitHub numbers a repeated heading: #name, #name-1, #name-2, ...
+        while anchor in anchors:
+            repeats[base] = repeats.get(base, 0) + 1
+            anchor = f"{base}-{repeats[base]}"
         anchors.add(anchor)
     if fence is not None:
         raise ValidationError(f"{path}: unmatched fenced-code delimiter")

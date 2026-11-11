@@ -42,33 +42,33 @@ export SUMMA42_HOME=/the/path/printed/above
 
 A new package enters `main` together with a caller on a running path (a command or the Box) and a test over that path. A spike without a caller belongs in a research note or on a branch; `docs/superpowers/research/2026-11-10-parked-spikes.md` lists the ones parked so far and how to restore them.
 
-Keep each change focused, explain its behavior and boundaries, and add or update tests for changed behavior. Run the relevant focused tests while working, then run the documented validation matrix before requesting review.
+Keep each change focused, explain its behavior and boundaries, and add or update tests for changed behavior. Run the relevant focused tests while working, then run `make verify` before requesting review.
 
 Do not commit `SUMMA42_HOME`, keys, bearer tokens, SQLite databases, raw evidence, or credentials. Redact logs and examples before sharing them.
 
-## Validation matrix
+## Validation
 
-Run these checks from the repository root:
+Two `make` targets run the checks from the repository root:
 
 ```bash
-test -z "$(gofmt -l .)"
-python3 -m unittest discover -s scripts -p 'test_*.py'
-python3 scripts/verify_docs.py README.md CONTRIBUTING.md
-go test ./... -count=1
-go test -race ./... -count=1 -timeout 45m
-go vet ./...
-go build ./cmd/summa42 ./cmd/summa42-box
-python3 docs/superpowers/research/spikes/2026-09-14-sqlite-persistence-spike.py
+make verify-fast   # while working
+make verify        # before opening a pull request
 ```
 
-CI enforces the formatting check (`gofmt -l`), the Python tests, the race run with a 45-minute timeout, vet and the build.
+`make verify-fast` runs the formatting check (`gofmt -l .` must print nothing), `go vet ./...`, `go build ./cmd/...` and `go test ./... -count=1`.
+
+`make verify` runs `verify-fast` and then the Python unit tests (`python3 -m unittest discover -s scripts -p 'test_*.py'`), `scripts/verify_docs.py` on every tracked Markdown file, `go test -race ./... -count=1 -timeout 45m` and `python3 docs/superpowers/research/spikes/2026-09-14-sqlite-persistence-spike.py`.
+
+Both use `GOCACHE=/tmp/summa42-full-go-cache` unless `GOCACHE` is already set. Run them as an unprivileged user: the `internal/ghtriage` tests refuse to run as root.
+
+CI runs the same checks, plus a smoke run of the local bootstrap and control path.
 
 On Linux with Docker available, also run the OCI bypass/capability acceptance profile. That gate must not be replaced with a unit-test-only approximation.
 
 ## Pull-request checklist
 
 - [ ] The change is focused and its scope is described.
-- [ ] Relevant tests were added or updated and the validation matrix was run as applicable.
+- [ ] Relevant tests were added or updated and `make verify` was run.
 - [ ] Documentation reflects user-visible behavior and limits.
 - [ ] The change contains no secrets, personal data, raw local state, or unredacted evidence.
 - [ ] Suspected vulnerabilities are reported through [SECURITY.md](SECURITY.md), not a pull request.
