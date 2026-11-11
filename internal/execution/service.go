@@ -47,11 +47,24 @@ type AttemptStartRecorder interface {
 	RecordAttemptStartInTx(context.Context, *sql.Tx, domain.Attempt, domain.Task) error
 }
 
+// LeaseGate can refuse new Attempt leases, for example while the Owner's break
+// glass is FROZEN. It runs inside the leasing transaction, so a freeze and a
+// lease cannot interleave.
+type LeaseGate interface {
+	CheckLeaseAllowedTx(ctx context.Context, tx *sql.Tx) error
+}
+
 type Service struct {
 	store          *state.Store
 	clock          clock.Clock
 	purpose        *purpose.Service
 	startRecorders []AttemptStartRecorder
+	leaseGate      LeaseGate
+}
+
+// SetLeaseGate installs the gate every StartAttempt consults. Nil removes it.
+func (s *Service) SetLeaseGate(gate LeaseGate) {
+	s.leaseGate = gate
 }
 
 func New(store *state.Store, clk clock.Clock, purposes *purpose.Service, recorders ...AttemptStartRecorder) *Service {
@@ -186,6 +199,11 @@ func (s *Service) StartAttempt(ctx context.Context, taskID domain.ID, executorKi
 	}
 
 	err := s.store.WithTx(ctx, func(tx *sql.Tx) error {
+		if s.leaseGate != nil {
+			if err := s.leaseGate.CheckLeaseAllowedTx(ctx, tx); err != nil {
+				return err
+			}
+		}
 		var taskState domain.TaskState
 		var fence int64
 		if err := tx.QueryRowContext(ctx,
@@ -261,33 +279,92 @@ func (s *Service) RevokeLease(ctx context.Context, attemptID domain.ID) error {
 	}
 	now := s.clock.Now().UTC()
 	return s.store.WithTx(ctx, func(tx *sql.Tx) error {
-		var taskID domain.ID
-		var leaseState domain.LeaseState
-		if err := tx.QueryRowContext(ctx,
-			`SELECT task_id, lease_state FROM attempts WHERE attempt_id = ?`, attemptID,
-		).Scan(&taskID, &leaseState); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return domain.ErrStaleAttempt
-			}
-			return err
-		}
-		if leaseState != domain.LeaseActive {
-			return nil
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE attempts SET lease_state = ?, state = ?, completed_at = ? WHERE attempt_id = ?`,
-			domain.LeaseRevoked, domain.AttemptCancelled, formatTime(now), attemptID,
-		); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE tasks SET state = CASE WHEN current_attempt_id = ? AND state = ? THEN ? ELSE state END, updated_at = ? WHERE task_id = ?`,
-			attemptID, domain.TaskExecuting, domain.TaskEligible, formatTime(now), taskID,
-		); err != nil {
-			return err
-		}
-		return appendEvent(ctx, tx, taskID, attemptID, "LEASE_REVOKED", now)
+		return RevokeLeaseTx(ctx, tx, attemptID, now, "")
 	})
+}
+
+// RevokeLeaseTx revokes one Attempt's ACTIVE lease inside the caller's
+// transaction, returns its Task to ELIGIBLE when that Attempt is current, and
+// appends a LEASE_REVOKED event carrying reason. A lease that is no longer
+// ACTIVE is left alone.
+func RevokeLeaseTx(ctx context.Context, tx *sql.Tx, attemptID domain.ID, now time.Time, reason string) error {
+	if tx == nil {
+		return errors.New("SQL transaction is required")
+	}
+	var taskID domain.ID
+	var leaseState domain.LeaseState
+	if err := tx.QueryRowContext(ctx,
+		`SELECT task_id, lease_state FROM attempts WHERE attempt_id = ?`, attemptID,
+	).Scan(&taskID, &leaseState); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.ErrStaleAttempt
+		}
+		return err
+	}
+	if leaseState != domain.LeaseActive {
+		return nil
+	}
+	now = now.UTC()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE attempts SET lease_state = ?, state = ?, completed_at = ? WHERE attempt_id = ?`,
+		domain.LeaseRevoked, domain.AttemptCancelled, formatTime(now), attemptID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE tasks SET state = CASE WHEN current_attempt_id = ? AND state = ? THEN ? ELSE state END, updated_at = ? WHERE task_id = ?`,
+		attemptID, domain.TaskExecuting, domain.TaskEligible, formatTime(now), taskID,
+	); err != nil {
+		return err
+	}
+	details := "{}"
+	if reason = strings.TrimSpace(reason); reason != "" {
+		encoded, err := json.Marshal(map[string]string{"reason": reason})
+		if err != nil {
+			return err
+		}
+		details = string(encoded)
+	}
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO execution_events(event_id, task_id, attempt_id, event_type, details_json, created_at) VALUES (?, ?, ?, 'LEASE_REVOKED', ?, ?)`,
+		domain.NewID("event"), taskID, attemptID, details, formatTime(now),
+	)
+	return err
+}
+
+// RevokeActiveLeasesTx revokes every ACTIVE lease inside the caller's
+// transaction and reports how many it revoked. Emergency controls use it so a
+// freeze leaves the same execution trail as any other revocation.
+func RevokeActiveLeasesTx(ctx context.Context, tx *sql.Tx, now time.Time, reason string) (int, error) {
+	if tx == nil {
+		return 0, errors.New("SQL transaction is required")
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT attempt_id FROM attempts WHERE lease_state = ? ORDER BY attempt_id`, domain.LeaseActive)
+	if err != nil {
+		return 0, err
+	}
+	var attemptIDs []domain.ID
+	for rows.Next() {
+		var attemptID domain.ID
+		if err := rows.Scan(&attemptID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		attemptIDs = append(attemptIDs, attemptID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	for _, attemptID := range attemptIDs {
+		if err := RevokeLeaseTx(ctx, tx, attemptID, now, reason); err != nil {
+			return 0, fmt.Errorf("revoke lease of %s: %w", attemptID, err)
+		}
+	}
+	return len(attemptIDs), nil
 }
 
 func (s *Service) GuardAttempt(ctx context.Context, tx *sql.Tx, attemptID domain.ID, allowedTaskStates ...domain.TaskState) (GuardedAttempt, error) {

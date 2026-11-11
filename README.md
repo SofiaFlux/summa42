@@ -3,8 +3,11 @@
 Summa42 is an experimental local-first agent orchestration runtime. The project distinguishes the runtime (Summa42 / Cube / Box) from the **Summand** (the task-scoped cognitive worker). The current **Minimal Viable Collective (MVC)** is intentionally one Cube: one trusted Box daemon owns canonical state, policy, authority checks, scheduling semantics, external-operation commit boundaries, verification, memory, audit and resource accounting.
 
 Read [the Vision](docs/VISION.md) for the durable Collective this MVC is meant
-to validate, and the [design specification](docs/superpowers/specs/2026-09-14-summa42-design.md)
-for the detailed technical model.
+to validate and where it is meant to lead, the
+[Company OS profile](docs/COMPANY_OS.md) for the optional layer above the
+kernel, and the [design specification](docs/superpowers/specs/2026-09-14-summa42-design.md)
+for the detailed technical model. [What runs today](#what-runs-today) separates
+what a running Box executes from what exists only as a library.
 
 > **Experimental status:** Summa42 is local-first, single-Cube software under active development. It is not production-ready and must not be used for unmanaged consequential workloads. Run it only where you can review its authority, policy, evidence, and containment boundaries.
 
@@ -154,7 +157,7 @@ The publication Task stays `AWAITING_VERIFICATION` and the case moves to `READY_
 
 ### Automated GitHub pipeline
 
-`run-gh-intake` observes issues and creates cases; it stays a separate command. `--once` runs a single observe pass; otherwise it polls. `--grant-capability` and `--grant-action` define what each case is granted (each `--grant-action` must also be a `--grant-capability`, and `github.issue.read` is required). `--bot-login` names the GitHub App login whose comments must not create new issue revisions. Prefer `--credential-file` over the deprecated `SUMMA42_GITHUB_TOKEN_FILE`.
+`run-gh-intake` observes issues and creates cases; it stays a separate command. `--once` runs a single observe pass; otherwise it polls. `--grant-capability` and `--grant-action` define what each case is granted (each `--grant-action` must also be a `--grant-capability`, and `github.issue.read` is required). `--bot-login` names the GitHub App login whose comments must not create new issue revisions. Once an issue has a recorded revision, a new one is opened only when a `--maintainer` login comments on it or its content changes (title, body, labels, assignees). A comment by anyone else, a deleted comment or a reference from another issue moves GitHub's `updated_at` but not the revision. To send an issue through again, a maintainer comments on it or edits it; reopening alone does not. Prefer `--credential-file` over the deprecated `SUMMA42_GITHUB_TOKEN_FILE`.
 
 `run-gh-pipeline` replaces the former reconciler. It advances the mission's cases through triage, plan, plan review, implementation, code review and draft-PR publication, either once (`--once`) or repeatedly (`--interval`):
 
@@ -182,7 +185,7 @@ Every `run-gh-*` command also has a `run-repo-*` alias (for example `run-repo-pi
 ### Operational notes
 
 - Several `summa42-box` processes may share one local SQLite database (`_txlock=immediate`); recovery runs at worker start and on every pipeline tick.
-- Validation runs as the `summa42-validate` user with a private module cache inside its scratch directory, a persistent Go build cache in that user's home, and a per-command timeout of 10 minutes by default (see above).
+- Validation runs as the `summa42-validate` user with a private module cache and a per-run Go build cache, both inside its scratch directory and removed with it, and a per-command timeout of 10 minutes by default (see above).
 - Git source preparation uses `GIT_NO_LAZY_FETCH=1`.
 - Supervised publication always creates **draft** pull requests. Nothing in Summa42 marks them ready or merges them.
 - Native execution (including model wrappers) is UNENFORCED. The OCI TEB egress/containment and the MCP adapter/capability Session are primitives that are not wired into execution.
@@ -211,6 +214,48 @@ Steps 3–6 and the probe check of step 8 are automated (as the Box owner, after
 8. Probe negative control: `chmod 0755 ~/.summa42 ~/.summa42/keys` temporarily, then confirm the next model command refuses with "user ... can read". Restore 0700 afterwards. Repeat with `chmod 0755 /var/lib/summa42-model` and a validation run.
 9. `sudo -l -U "$USER"` shows only `(summa42-model)` and `(summa42-validate)`. As the Box user, `sudo -n -u root true` fails.
 
+
+## Emergency controls
+
+The Owner has two controls that do not depend on a running Box. Like `summa42 policy upgrade` they write the local state directly, so they work when only `run-*` workers are running or when the Box hangs. Every change is signed with the Owner key, checked against the Owner's stored public key, accepted only within five minutes of signing, and recorded once in an immutable audit trail together with its signature.
+
+| Command | Effect |
+| --- | --- |
+| `summa42 emergency status` | Show the break glass state, the dead man switch state, the last Owner heartbeat and when safe mode would begin. |
+| `summa42 emergency freeze --reason "..."` | Break glass: revoke every active Attempt lease and capability session and refuse new ones. Each revoked lease gets a `LEASE_REVOKED` execution event. |
+| `summa42 emergency resume --reason "..."` | Lift break glass. Revoked Attempts stay revoked; their Tasks are ELIGIBLE again. |
+| `summa42 emergency heartbeat [--timeout 168h]` | Record that the Owner is present. `--timeout` sets the Owner horizon. |
+
+**Break glass** refuses new Attempt leases inside the leasing transaction and refuses the prepare and dispatch of external operations and every capability call. It does not signal processes: a model or validation command that is already running ends by its own timeout, and whatever it then tries to record or commit is refused.
+
+**Dead man switch.** The Owner horizon is how long the Collective works without a heartbeat. The default is seven days. It is the Owner's setting: it does not depend on lease durations, and starting a process never changes it. Past the horizon the Collective is in safe mode: no new Attempt leases and no new external operations, while expired-lease recovery and read-only reconciliation of operations already in flight continue. `summa42 emergency heartbeat` ends safe mode.
+
+Upgrading from a version that derived the timeout from the lease duration: the migration sets the horizon to seven days, clears a safe mode that the derived timeout caused, and counts the upgrade as a heartbeat.
+
+Limits to know:
+
+- With `LOCAL_DEV_FILE` custody the Owner key is in `~/.summa42`, so a native executor running as the Box user could sign these commands. Model and validation processes run as other OS users and cannot read the key.
+- Nothing notifies the Owner when safe mode begins. Run `summa42 emergency status` or watch for stages failing with "safe mode".
+- There are no commands yet to quarantine a Cube or to clear an Attempt's contained state; both exist only as library calls.
+
+## What runs today
+
+On the autonomy ladder in the [Vision](docs/VISION.md#where-this-leads) the implementation is at **A1**: it takes a maintainer's GitHub issue to a draft pull request, and the Owner approves each publication and merges. Since the 2026-10-21 remediation one issue has completed that path (#115, pull request #131). A2 (merge under a standing delegation) was implemented once and reverted on 2026-10-21; A3 is not started.
+
+| Area | State |
+| --- | --- |
+| Task/Attempt leasing and fencing, external-operation boundary, approvals, policy, resource ledger, evidence, verification, audit | Runs |
+| GitHub issue intake, triage, plan, plan review, implementation, validation, code review, draft-PR publication | Runs (supervised) |
+| Azure DevOps PR observation, review and reviewer vote | Runs (supervised) |
+| Field feedback collection, sanitization and governed emission | Runs, off by default |
+| Break glass and dead man switch | Run; Owner commands above |
+| Attempt containment ladder and rogue-signal detection | Run for three signals: ungranted capability, reuse of a revoked session, denied operation. No command clears a contained Attempt |
+| Cube quarantine | Checked on every operation and capability call; no command sets or lifts it |
+| OCI TEB, MCP adapter and capability Session, context projection compiler (`internal/runmanifest`) | Library only: not wired into execution |
+| Company OS: `internal/company`, `obligation`, `invariant`, `attention`, `board` | Library only: constructed or present, never called by a running path. See [Company OS](docs/COMPANY_OS.md) |
+| Mission/goal research, decision engine, digital twin, replay, learning, inter-Collective delegation, OpenShell and MAF adapters | Parked, not on `main`. See [parked spikes](docs/superpowers/research/2026-11-10-parked-spikes.md) |
+
+Not built at all: budgets in a currency, notifications to the Owner, backup and restore, a watchdog outside the process, CI observation, merge, issue closure, self-upgrade.
 
 ## What is authoritative
 

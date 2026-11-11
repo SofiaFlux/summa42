@@ -201,6 +201,16 @@ func TestTerminateRevokesLeasesCapabilitySessionsAndCreatesInvestigationTask(t *
 		t.Fatalf("expected lease_state REVOKED, got %s", leaseState)
 	}
 
+	// 2b. The revocation is on the execution trail, with the signal that caused it
+	var revocationDetails string
+	err = store.DB().QueryRow(`SELECT details_json FROM execution_events WHERE attempt_id = ? AND event_type = 'LEASE_REVOKED'`, attemptID).Scan(&revocationDetails)
+	if err != nil {
+		t.Fatalf("containment left no LEASE_REVOKED execution event: %v", err)
+	}
+	if revocationDetails != `{"reason":"containment:unauthorized_credential_synthesis"}` {
+		t.Fatalf("revocation details = %s, want the containment signal", revocationDetails)
+	}
+
 	// 3. Verify capability session is revoked
 	var revokedAt string
 	err = store.DB().QueryRow(`SELECT revoked_at FROM capability_sessions WHERE attempt_id = ?`, attemptID).Scan(&revokedAt)
@@ -222,6 +232,15 @@ func TestTerminateRevokesLeasesCapabilitySessionsAndCreatesInvestigationTask(t *
 	}
 	if invPurpose != "RECOVERY" || invState != "ELIGIBLE" {
 		t.Fatalf("expected purpose RECOVERY and state ELIGIBLE, got %s / %s", invPurpose, invState)
+	}
+	// The investigation Task's authority ceiling names the capabilities it requires
+	var invRequired, invCeiling string
+	err = store.DB().QueryRow(`SELECT required_capabilities_json, authority_ceiling_json FROM tasks WHERE task_id = ?`, rec.InvestigationTaskID).Scan(&invRequired, &invCeiling)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invRequired != invCeiling {
+		t.Fatalf("investigation Task requires %s but its authority ceiling is %s", invRequired, invCeiling)
 	}
 	_ = invObjective
 

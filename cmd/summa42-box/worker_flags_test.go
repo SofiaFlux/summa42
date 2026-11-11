@@ -121,7 +121,7 @@ func TestFeedbackTokenFilePrefersFlagOverDeprecatedEnv(t *testing.T) {
 
 func TestGHIntakeCredentialFilePreferredOverEnv(t *testing.T) {
 	t.Setenv("SUMMA42_GITHUB_TOKEN_FILE", "/env")
-	if got := ghIntakeClientConfig("o/r", "", "/flag").TokenFile; got != "/flag" {
+	if got := ghIntakeClientConfig("o/r", "", "/flag", nil).TokenFile; got != "/flag" {
 		t.Fatalf("token file = %q, want /flag", got)
 	}
 }
@@ -148,7 +148,7 @@ func TestFeedbackBotLoginWarningAndEnvDeprecation(t *testing.T) {
 	}
 	t.Setenv("SUMMA42_GITHUB_TOKEN_FILE", "/env")
 	for i := 0; i < 2; i++ {
-		ghIntakeClientConfig("o/r", "", "")
+		ghIntakeClientConfig("o/r", "", "", nil)
 	}
 	if n := strings.Count(buf.String(), "SUMMA42_GITHUB_TOKEN_FILE is deprecated"); n != 1 {
 		t.Fatalf("intake env deprecation logged %d times, want 1", n)

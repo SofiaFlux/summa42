@@ -29,6 +29,45 @@ to a safe next step.
 It is not a system for making an AI increasingly unconstrained. It is a system
 for making delegated work increasingly legible, accountable, and corrigible.
 
+## Where this leads
+
+The articles below say what a Collective must never do. This section says what
+it is for.
+
+The destination is a Collective that runs a company for its Owner. The first
+target is a software product company: it builds, releases, operates, supports
+and bills for a product. Services for clients come later, and the kernel is
+meant to carry any company. The kernel itself does not know what a company is;
+that knowledge lives in an optional profile described in
+[Company OS](COMPANY_OS.md).
+
+Two roles must not be confused on the way there:
+
+- An **Owner** sets the mission, grants authority, funds budgets and answers
+  the questions only an accountable person can answer.
+- An **operator** keeps a system running: restarts it, approves each routine
+  step, notices when it has stalled.
+
+The destination has an Owner and no operator. It never has no accountable
+human. Everything in this document that makes authority explicit, scoped and
+revocable is what makes the absence of an operator safe.
+
+The Collective reaches the destination in steps, and each step is earned by
+evidence from real work at the step below, not declared:
+
+| Step | What the Collective does | What the Owner does |
+| --- | --- | --- |
+| A0 | Nothing yet on its own; an external agent builds the missing parts | Directs the build |
+| A1 | Takes a task from request to a verified, reviewable change | Approves every consequential effect |
+| A2 | Completes classes of work the Owner approved in advance (Article 27) | Sets the classes, budgets and gates; handles what falls outside |
+| A3 | Deploys its own verified releases, with canary and rollback | Sets the horizon and reads the account |
+
+The scarce resource at the destination is the Owner's attention. The working
+target in the
+[self-development roadmap](superpowers/plans/2026-10-07-self-development-roadmap.md)
+is on the order of an hour a month. The README states which step the current
+implementation has reached.
+
 ## The constitutional order
 
 Every part of the Collective has a place in an order of meaning and authority:
@@ -70,7 +109,7 @@ The order matters.
 
 No lower layer may reinterpret or silently widen the authority of a higher one.
 
-## Twenty-six articles of the Collective
+## Twenty-nine articles of the Collective
 
 ### 1. Constitution before optimization
 
@@ -384,23 +423,71 @@ budget exhaustion, evidence review, and safe refusal. Multi-Cube coordination,
 federation, richer memory, and broader automation are later work only when the
 one-Cube semantics justify them.
 
+### 27. Standing delegation is how routine work leaves the Owner
+
+The Owner may approve a class of work in advance instead of each instance:
+named kinds of change, in named places, under a budget, behind named gates,
+until a date. A standing delegation is an authority grant like any other. It is
+explicit, scoped, recorded and revocable, and the deterministic core, not a
+model, decides whether a piece of work falls inside it. Work outside it waits
+for the Owner.
+
+This is the only path by which a Collective comes to need its Owner less. It
+does not conflict with Article 6: the Owner enlarges the envelope; the
+Collective never does. Evidence from supervised work (Article 7) is what makes
+a proposed delegation credible, and a delegation whose gates keep failing is
+narrowed or withdrawn.
+
+### 28. Continuity is an obligation
+
+The other articles say what must not happen. A Collective trusted with work
+also owes that the work continues, or that its stopping is visible. A silent
+stall is a failure, not a safe state. Dormancy is success only when no
+legitimate work remains (Article 4).
+
+So the Collective's state must be recoverable, and recovery must be tested
+rather than assumed. Something outside the running process must notice when it
+stops. Work that waits must say what it waits for and since when. A decision
+that waits for the Owner must reach the Owner instead of sitting in a queue
+nobody reads. Recovery starts from durable records and never replays an effect
+(Articles 3, 9 and 22).
+
+### 29. The Owner's absence is the normal case
+
+A Collective that needs its Owner every day has an operator. Inside the horizon
+the Owner has set, absence changes nothing: delegated work proceeds within its
+envelopes.
+
+Past the horizon the Collective contracts on its own, as Article 6 allows. It
+starts no new work and commits no new external effect. It keeps its records,
+reconciles what is in flight, and waits. It does not improvise, it does not
+extend its own horizon, and only the Owner's authenticated return restores it.
+
+The horizon is the Owner's decision and, like any grant, grows with evidence.
+The Owner's emergency stop is separate from it: it is available at any time
+and must not depend on the thing it stops.
+
 ## Summand as the task-scoped cognitive worker
 
-The Collective establishes **Summand** as the canonical name for the task-scoped cognitive
-worker, resolving ambiguity between the project/runtime (Summa42) and individual workers.
+This section records direction. The normative engineering design lives in the
+[design specification](superpowers/specs/2026-09-14-summa42-design.md), and a
+part that is not built yet is named as such here.
 
-### 1. Summand lifecycle (Normative)
+**Summand** is the canonical name for the task-scoped cognitive worker. It
+separates the project and runtime (Summa42) from an individual worker.
 
-A Summand is explicitly instantiated per **Attempt** (an ephemeral cognitive worker leased
-for one fenced attempt window). Durable context, identity, obligations, and state bind
-strictly to the **Task**, not to the Summand. When an attempt completes, times out, or fails,
-the Summand ceases execution; subsequent attempts instantiate a fresh Summand with an updated,
-hash-bound Context Projection.
+### Summand lifecycle
 
-### 2. Task-scoped Context Projection
+A Summand is instantiated per **Attempt**: an ephemeral cognitive worker leased
+for one fenced attempt window. Durable context, identity, obligations and state
+bind to the **Task**, not to the Summand. When an Attempt completes, times out
+or fails, the Summand stops; a later Attempt gets a fresh Summand.
 
-A Summand does not operate over an unconstrained ambient context window. Instead, a
-Context Projection compiles the best bounded view for the task from governed inputs:
+### Task-scoped Context Projection
+
+A Summand does not operate over an unconstrained ambient context window. A
+Context Projection compiles the best bounded view for the task from governed
+inputs:
 
 - relevant Skills (procedural knowledge);
 - relevant Knowledge and Evidence (provenance-backed facts);
@@ -411,13 +498,14 @@ Context Projection compiles the best bounded view for the task from governed inp
 - policy and authority envelopes;
 - constraints and acceptance criteria.
 
-The compiled projection is recorded as an immutable audit record in `evidence_objects`, is
-hash-bound, and remains strictly immutable for the duration of an attempt.
+The intent is that the compiled projection is recorded with the Attempt,
+hash-bound and immutable for its duration. This is not built yet: the MVC
+records an Attempt Run Manifest and invents no projection hash.
 
-### 3. Heterogeneous execution and least cognitive mechanism
+### Least cognitive mechanism
 
-A task is not assumed to require an expensive general-purpose reasoning model when a cheaper
-or deterministic mechanism suffices. The governing principle is:
+A task is not assumed to require an expensive general-purpose reasoning model
+when a cheaper or deterministic mechanism suffices. The governing principle is:
 
 > **Use the least cognitive mechanism sufficient for the work.**
 
@@ -427,13 +515,13 @@ When choosing among mechanisms, the tiebreaker priority order is:
 2. **Specialized models / Tools** — bounded cognitive complexity, predictable outputs, lower latency and cost;
 3. **General-purpose reasoning models** — reserved for open-ended synthesis, architecture, and novel decomposition.
 
-This ordering optimizes for formal verifiability, containment, and resource accounting. An
-Attempt may compose deterministic scripts, SQL queries, HTTP calls, specialized models,
-and general reasoning models under the orchestration of a Summand.
+This ordering optimizes for verifiability, containment, and resource
+accounting. An Attempt may compose deterministic scripts, SQL queries, HTTP
+calls, specialized models, and general reasoning models.
 
-### 4. Distinct taxonomy: Skills, Tools, Capabilities, Executors, and Authority
+### Skills, Tools, Capabilities, Executors, and Authority
 
-The architecture strictly demarcates:
+The architecture keeps these apart:
 
 - a **Skill**: reusable procedural knowledge (how to perform a class of work);
 - a **Tool**: an operational interface / actuator that performs actions;
@@ -442,32 +530,22 @@ The architecture strictly demarcates:
 - **Evidence / Knowledge**: provenance-backed information that informs work;
 - **Authority**: explicit, revocable constitutional permission to act.
 
-**Normative distinction:** Possessing a Tool does not grant Capability or Authority. Tools
-define operational mechanisms; Capabilities define admissible operational envelopes; Authority
-defines whether an actor may execute them. Stable, repeated reasoning compiles into validated
-Skills, and where practical, into tested deterministic workers.
+Possessing a Tool does not grant Capability or Authority. Tools define
+operational mechanisms; Capabilities define admissible operational envelopes;
+Authority defines whether an actor may execute them. Stable, repeated reasoning
+compiles into validated Skills and, where practical, into tested deterministic
+workers.
 
-### 5. Blue-Green / Zero-Downtime canary handover for Cube updates
+### Reflection produces proposals
 
-When a Cube evolves or updates its trusted Box binary, self-modification must preserve
-reversibility without creating service interruption or widening authority:
-
-1. **Spawn Green process**: Launch a parallel Box process on an isolated control channel with strict liveness checks.
-2. **Verify state and health**: Confirm database integrity against SQLite state, audit logs, and operational health endpoints.
-3. **Atomic socket / metadata handover**: Atomically transfer `control.sock` or update active processor metadata.
-4. **Drain and terminate Blue**: Drain pending non-blocking operations from the Blue process, then gracefully shut it down.
-
-If health checks fail at any step, the handover rolls back immediately to Blue. Authority is
-never expanded by an update.
-
-### 6. Decomposition feedback and reflection
-
-Observed execution produces planning evidence and ProcessChangeProposals, not automatic
-rewrites of the planner or task graph. A Summand reflects upon completion to produce
-findings (KnowledgeDelta, SkillCandidate, DecompositionFinding, ProcessChangeProposal),
-which are submitted as proposals:
+Observed execution produces planning evidence and proposals, not automatic
+rewrites of the planner or the task graph (Article 14):
 
 > **Summands contribute evidence and proposals to the sum; only governed Collective processes promote them into canonical knowledge, Skills, or process changes.**
+
+How a Cube replaces its own Box binary is an engineering procedure, not part of
+this vision. Article 25 states the rule it must satisfy; the procedure belongs
+to the roadmap's self-upgrade stage.
 
 ## What Summa42 refuses to be
 
@@ -475,6 +553,7 @@ Summa42 is not:
 
 - an agent swarm whose members grant one another power;
 - an autonomous business that treats revenue as a mandate;
+- a company with no accountable Owner;
 - a prompt-based policy system that mistakes instructions for enforcement;
 - a universal truth engine or an oracle for difficult decisions;
 - a justification for hidden self-modification or unreviewed credential growth;
@@ -496,6 +575,12 @@ whether a responsible person can answer, after any meaningful action:
 5. What did it cost, what exposure remains, and how can it be stopped or
    reversed?
 6. What did it learn—and what did that learning *not* authorize?
+7. Did this need the Owner? If it did, which authority or judgment was
+   missing; if it did not, which delegation covered it?
 
 When those questions have durable, inspectable answers, a Collective can grow
 without pretending that growth is wisdom.
+
+The destination adds a second measure, never a substitute for the first: how
+little of the Owner's attention the Collective needs while all seven questions
+stay answerable.

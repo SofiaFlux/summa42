@@ -11,11 +11,18 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/domain"
+	"github.com/SofiaFlux/summa42/internal/execution"
 	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 )
 
 const (
-	DefaultHeartbeatTimeout = 24 * time.Hour
+	// DefaultHeartbeatTimeout is the Owner's default absence horizon: how long
+	// the Collective keeps working without a heartbeat before it enters safe
+	// mode. The Owner changes it with a signed heartbeat, never a process flag.
+	DefaultHeartbeatTimeout = 7 * 24 * time.Hour
+
+	// breakGlassRevocationReason is recorded on every lease a freeze revokes.
+	breakGlassRevocationReason = "break_glass"
 )
 
 type Service struct {
@@ -33,7 +40,9 @@ func NewService(store *state.Store, clk clock.Clock, ownerPrincipalID domain.ID)
 	}
 }
 
-// EnsureDefaults creates initial singleton rows if absent.
+// EnsureDefaults creates the singleton rows if absent. timeoutSec seeds the
+// Owner's horizon only when no row exists yet (zero means the default); an
+// existing horizon is never rewritten, whichever process opens the state.
 func (s *Service) EnsureDefaults(ctx context.Context, timeoutSec int) error {
 	if timeoutSec <= 0 {
 		timeoutSec = int(DefaultHeartbeatTimeout.Seconds())
@@ -54,8 +63,7 @@ func (s *Service) EnsureDefaults(ctx context.Context, timeoutSec int) error {
 	_, err = s.store.DB().ExecContext(ctx, `
 		INSERT INTO dead_man_switch (singleton, state, last_heartbeat_at, heartbeat_timeout_seconds, updated_at)
 		VALUES (1, 'NOMINAL', ?, ?, ?)
-		ON CONFLICT(singleton) DO UPDATE SET
-			heartbeat_timeout_seconds = excluded.heartbeat_timeout_seconds`,
+		ON CONFLICT(singleton) DO NOTHING`,
 		nowStr, timeoutSec, nowStr,
 	)
 	if err != nil {
@@ -90,6 +98,10 @@ func (s *Service) isAuthorizedOwner(ctx context.Context, caller domain.ID) bool 
 // TriggerBreakGlass atomically freezes all executions, revokes active leases and capability sessions.
 // Controlled exclusively by root/Owner authority.
 func (s *Service) TriggerBreakGlass(ctx context.Context, callerPrincipalID domain.ID, reason string) error {
+	return s.triggerBreakGlass(ctx, callerPrincipalID, reason, auditMeta{})
+}
+
+func (s *Service) triggerBreakGlass(ctx context.Context, callerPrincipalID domain.ID, reason string, meta auditMeta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -105,7 +117,7 @@ func (s *Service) TriggerBreakGlass(ctx context.Context, callerPrincipalID domai
 
 	now := s.clock.Now().UTC()
 	nowStr := domain.FormatTime(now)
-	eventID := domain.NewID("emevent")
+	eventID := meta.eventIDOrNew()
 
 	tx, err := s.store.DB().BeginTx(ctx, nil)
 	if err != nil {
@@ -136,24 +148,11 @@ func (s *Service) TriggerBreakGlass(ctx context.Context, callerPrincipalID domai
 		return fmt.Errorf("freeze emergency_controls: %w", err)
 	}
 
-	// 2. Atomically revoke all active attempt leases and reset EXECUTING tasks to ELIGIBLE
-	_, err = tx.ExecContext(ctx, `
-		UPDATE attempts
-		SET lease_state = 'REVOKED'
-		WHERE lease_state = 'ACTIVE'`,
-	)
-	if err != nil {
+	// 2. Revoke every active lease through the execution kernel, so each
+	// Attempt gets its LEASE_REVOKED event and its Task returns to ELIGIBLE.
+	// Leasing stays closed until resume (CheckLeaseAllowedTx).
+	if _, err := execution.RevokeActiveLeasesTx(ctx, tx, now, breakGlassRevocationReason); err != nil {
 		return fmt.Errorf("revoke attempt leases: %w", err)
-	}
-
-	_, err = tx.ExecContext(ctx, `
-		UPDATE tasks
-		SET state = 'ELIGIBLE',
-		    current_attempt_id = NULL
-		WHERE state = 'EXECUTING'`,
-	)
-	if err != nil {
-		return fmt.Errorf("reset executing tasks: %w", err)
 	}
 
 	// 3. Atomically revoke all active capability sessions
@@ -169,9 +168,9 @@ func (s *Service) TriggerBreakGlass(ctx context.Context, callerPrincipalID domai
 
 	// 4. Record immutable audit event
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO emergency_audit_events (event_id, event_type, principal_id, reason, created_at)
-		VALUES (?, 'BREAK_GLASS_TRIGGERED', ?, ?, ?)`,
-		eventID, callerPrincipalID, reason, nowStr,
+		INSERT INTO emergency_audit_events (event_id, event_type, principal_id, reason, created_at, signature)
+		VALUES (?, 'BREAK_GLASS_TRIGGERED', ?, ?, ?, ?)`,
+		eventID, callerPrincipalID, reason, nowStr, meta.signatureValue(),
 	)
 	if err != nil {
 		return fmt.Errorf("record break glass audit event: %w", err)
@@ -183,6 +182,10 @@ func (s *Service) TriggerBreakGlass(ctx context.Context, callerPrincipalID domai
 // ResumeSystem lifts Break Glass and returns system to RESTORED state.
 // Requires Owner authority.
 func (s *Service) ResumeSystem(ctx context.Context, callerPrincipalID domain.ID, reason string) error {
+	return s.resumeSystem(ctx, callerPrincipalID, reason, auditMeta{})
+}
+
+func (s *Service) resumeSystem(ctx context.Context, callerPrincipalID domain.ID, reason string, meta auditMeta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -198,7 +201,7 @@ func (s *Service) ResumeSystem(ctx context.Context, callerPrincipalID domain.ID,
 
 	now := s.clock.Now().UTC()
 	nowStr := domain.FormatTime(now)
-	eventID := domain.NewID("emevent")
+	eventID := meta.eventIDOrNew()
 
 	tx, err := s.store.DB().BeginTx(ctx, nil)
 	if err != nil {
@@ -229,9 +232,9 @@ func (s *Service) ResumeSystem(ctx context.Context, callerPrincipalID domain.ID,
 	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO emergency_audit_events (event_id, event_type, principal_id, reason, created_at)
-		VALUES (?, 'SYSTEM_RESUMED', ?, ?, ?)`,
-		eventID, callerPrincipalID, reason, nowStr,
+		INSERT INTO emergency_audit_events (event_id, event_type, principal_id, reason, created_at, signature)
+		VALUES (?, 'SYSTEM_RESUMED', ?, ?, ?, ?)`,
+		eventID, callerPrincipalID, reason, nowStr, meta.signatureValue(),
 	)
 	if err != nil {
 		return fmt.Errorf("record resume audit event: %w", err)
@@ -243,6 +246,12 @@ func (s *Service) ResumeSystem(ctx context.Context, callerPrincipalID domain.ID,
 // RecordOwnerHeartbeat records an authentic human heartbeat.
 // If Dead Man switch was in SAFE_MODE, it transitions back to NOMINAL.
 func (s *Service) RecordOwnerHeartbeat(ctx context.Context, callerPrincipalID domain.ID) error {
+	return s.recordOwnerHeartbeat(ctx, callerPrincipalID, 0, auditMeta{})
+}
+
+// recordOwnerHeartbeat records the heartbeat and, when timeoutSec is positive,
+// sets the Owner's horizon to it. Zero keeps the stored horizon.
+func (s *Service) recordOwnerHeartbeat(ctx context.Context, callerPrincipalID domain.ID, timeoutSec int, meta auditMeta) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -257,7 +266,7 @@ func (s *Service) RecordOwnerHeartbeat(ctx context.Context, callerPrincipalID do
 
 	now := s.clock.Now().UTC()
 	nowStr := domain.FormatTime(now)
-	eventID := domain.NewID("emevent")
+	eventID := meta.eventIDOrNew()
 
 	tx, err := s.store.DB().BeginTx(ctx, nil)
 	if err != nil {
@@ -275,16 +284,23 @@ func (s *Service) RecordOwnerHeartbeat(ctx context.Context, callerPrincipalID do
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO dead_man_switch (singleton, state, last_heartbeat_at, heartbeat_timeout_seconds, safe_mode_triggered_at, updated_at)
-		VALUES (1, 'NOMINAL', ?, 86400, NULL, ?)
+		VALUES (1, 'NOMINAL', ?, ?, NULL, ?)
 		ON CONFLICT(singleton) DO UPDATE SET
 			state = 'NOMINAL',
 			last_heartbeat_at = excluded.last_heartbeat_at,
 			safe_mode_triggered_at = NULL,
 			updated_at = excluded.updated_at`,
-		nowStr, nowStr,
+		nowStr, int(DefaultHeartbeatTimeout.Seconds()), nowStr,
 	)
 	if err != nil {
 		return fmt.Errorf("update heartbeat: %w", err)
+	}
+	if timeoutSec > 0 {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE dead_man_switch SET heartbeat_timeout_seconds = ? WHERE singleton = 1`, timeoutSec,
+		); err != nil {
+			return fmt.Errorf("set Owner horizon: %w", err)
+		}
 	}
 
 	eventType := EventHeartbeatRecorded
@@ -293,11 +309,14 @@ func (s *Service) RecordOwnerHeartbeat(ctx context.Context, callerPrincipalID do
 		eventType = EventSafeModeCleared
 		reason = "Safe mode cleared by owner heartbeat"
 	}
+	if timeoutSec > 0 {
+		reason += fmt.Sprintf("; horizon set to %d seconds", timeoutSec)
+	}
 
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO emergency_audit_events (event_id, event_type, principal_id, reason, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		eventID, string(eventType), callerPrincipalID, reason, nowStr,
+		INSERT INTO emergency_audit_events (event_id, event_type, principal_id, reason, created_at, signature)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		eventID, string(eventType), callerPrincipalID, reason, nowStr, meta.signatureValue(),
 	)
 	if err != nil {
 		return fmt.Errorf("record heartbeat audit event: %w", err)
@@ -427,9 +446,11 @@ func (s *Service) CheckExecutionAllowed(ctx context.Context, actionCategory stri
 		}
 
 		catLower := strings.ToLower(strings.TrimSpace(actionCategory))
-		// In safe mode: stops strategic expansion, spend, and policy evolution.
-		// Preserves pre-authorized critical obligations, diagnostics, and evidence.
+		// In safe mode: stops new Attempt leases, strategic expansion, spend, and
+		// policy evolution. Diagnostics, evidence, lease recovery and read-only
+		// reconciliation of in-flight operations continue.
 		prohibitedInSafeMode := []string{
+			"attempt_lease",
 			"strategic_expansion",
 			"expansion",
 			"spend",
@@ -445,6 +466,42 @@ func (s *Service) CheckExecutionAllowed(ctx context.Context, actionCategory stri
 		}
 	}
 
+	return nil
+}
+
+// CheckLeaseAllowedTx is the execution kernel's lease gate. It reads the
+// emergency state inside the leasing transaction and refuses a new Attempt
+// while Break Glass is FROZEN or the Owner's horizon has passed. It never
+// writes: the SAFE_MODE transition is recorded by EvaluateDeadMan.
+func (s *Service) CheckLeaseAllowedTx(ctx context.Context, tx *sql.Tx) error {
+	if tx == nil {
+		return errors.New("SQL transaction is required")
+	}
+	var bgState string
+	err := tx.QueryRowContext(ctx, `SELECT break_glass_state FROM emergency_controls WHERE singleton = 1`).Scan(&bgState)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("fail-closed break glass check: %w", err)
+	}
+	if err == nil && BreakGlassState(bgState) == BreakGlassFrozen {
+		return ErrBreakGlassFrozen
+	}
+	var dmState, lastHeartbeatStr string
+	var timeoutSec int
+	err = tx.QueryRowContext(ctx, `
+		SELECT state, last_heartbeat_at, heartbeat_timeout_seconds FROM dead_man_switch WHERE singleton = 1`,
+	).Scan(&dmState, &lastHeartbeatStr, &timeoutSec)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("fail-closed dead man check: %w", err)
+	}
+	// An unparseable heartbeat is the zero time, which reads as expired.
+	lastHeartbeat, _ := parseTime(lastHeartbeatStr)
+	expired := s.clock.Now().UTC().Sub(lastHeartbeat) > time.Duration(timeoutSec)*time.Second
+	if DeadManState(dmState) == DeadManSafeMode || expired {
+		return fmt.Errorf("%w: new Attempt leases wait for the Owner's heartbeat", ErrSafeModeRestricted)
+	}
 	return nil
 }
 

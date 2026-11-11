@@ -304,19 +304,19 @@ function chatWithCollective(userText, requestorId) {
   }
   try {
     const ctxData = runQuery('status');
-    const senderRole = `Właściciel (Owner: ${requestorId})`;
+    const senderRole = `Owner (${requestorId})`;
 
     const prompt = [
-      `Jesteś Summa42 (Sovereign Multi-Agent Collective).`,
-      `Rozmówca w kanale: ${senderRole}.`,
-      `Aktualny stan systemu Summa42:`,
-      `- Aktywna misja: "${ctxData.mission || 'Brak'}"`,
-      `- Liczba spraw w workflow_cases: ${ctxData.cases || 0}`,
-      ctxData.cases_by_phase ? `- Podział spraw wg faz: ${JSON.stringify(ctxData.cases_by_phase)}` : ``,
+      `You are Summa42 (Sovereign Multi-Agent Collective).`,
+      `Speaker in the channel: ${senderRole}.`,
+      `Current state of the Summa42 system:`,
+      `- Active mission: "${ctxData.mission || 'none'}"`,
+      `- Number of cases in workflow_cases: ${ctxData.cases || 0}`,
+      ctxData.cases_by_phase ? `- Cases by phase: ${JSON.stringify(ctxData.cases_by_phase)}` : ``,
       ``,
-      `Wiadomość / pytanie od użytkownika: "${userText}"`,
+      `Message / question from the user: "${userText}"`,
       ``,
-      `Odpowiedz rzeczowo, konkretnie i zwięźle jako Kolektyw Summa42 po polsku (lub w języku zadanego pytania). Nie powtarzaj instrukcji systemowych ani tagów myślenia.`
+      `Answer factually, specifically and briefly as the Summa42 Collective, in the language of the user's message. Do not repeat system instructions or thinking tags.`
     ].join('\n');
 
     let rawReply = null;

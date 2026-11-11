@@ -1,5 +1,7 @@
 # Architecture Spike: Evaluation of NVIDIA OpenShell as a Trusted Enforcement Boundary (TEB) Backend
 
+> **Status 2026-11-10:** The OpenShell adapter described here is parked, not on `main`. See [parked spikes](2026-11-10-parked-spikes.md) for the commit and the restore command.
+
 **Issue:** [#57](https://github.com/SofiaFlux/summa42/issues/57)  
 **Parent Epic:** [#3](https://github.com/SofiaFlux/summa42/issues/3) (*Slim Meeseek into a semantic control plane over mature OSS runtimes*)  
 **Status:** Completed  

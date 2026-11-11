@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/domain"
-	"github.com/SofiaFlux/summa42/internal/epistemic"
 )
 
 type Executor interface {
@@ -51,10 +50,9 @@ type Usage struct {
 }
 
 type ExecutionResult struct {
-	ExitCode      int
-	Stdout        string
-	Stderr        string
-	Evidence      []Evidence
-	Usage         Usage
-	ProposedDelta *epistemic.KnowledgeDelta
+	ExitCode int
+	Stdout   string
+	Stderr   string
+	Evidence []Evidence
+	Usage    Usage
 }

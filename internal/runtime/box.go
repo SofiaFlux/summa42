@@ -216,9 +216,13 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	experienceSvc := experience.New(store, cfg.Clock, approvalSvc, auditSvc, cfg.OwnerPrincipalID)
 	quarantineSvc := quarantine.NewService(store, cfg.Clock)
 	emergencySvc := emergency.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
-	if err := emergencySvc.EnsureDefaults(ctx, int(cfg.LeaseDuration.Seconds()*10)); err != nil {
+	// The dead man horizon is the Owner's setting (default seven days), never
+	// a function of this process's lease duration.
+	if err := emergencySvc.EnsureDefaults(ctx, 0); err != nil {
 		return nil, fmt.Errorf("ensure emergency defaults: %w", err)
 	}
+	// Break glass and Owner absence close Attempt leasing, not only effects.
+	executionSvc.SetLeaseGate(emergencySvc)
 	operationsSvc.SetEmergency(emergencySvc)
 	capabilityRegistry.SetEmergency(emergencySvc)
 	containmentSvc := containment.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
@@ -229,7 +233,6 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	operationsSvc.SetDetector(detector)
 	attentionSvc := attention.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
 	obligationSvc := obligation.NewService(store, cfg.Clock)
-	plannerAdapter := obligation.NewPlannerAdapter(obligationSvc, schedulerSvc)
 	companySvc := company.NewService(store, cfg.Clock)
 	invariantSvc := invariant.NewService(store, cfg.Clock, companySvc, containmentSvc, attentionSvc, evidenceStore)
 
@@ -266,6 +269,8 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		preferences = append(preferences, experienceSvc)
 	}
 	schedulerSvc = scheduler.New(store, cfg.Clock, purposes, executionSvc, resourceSvc, cfg.LeaseDuration, preferences...)
+	// The planner needs the scheduler that exists only from here on.
+	plannerAdapter := obligation.NewPlannerAdapter(obligationSvc, schedulerSvc)
 	wakeSvc = wake.New(store, cfg.Clock, schedulerSvc)
 
 	executorSet := make(map[string]executors.Executor, len(cfg.Executors)+1)

@@ -195,7 +195,75 @@ func ObserveOnce(ctx context.Context, lister IssueLister, cases *workflowcase.Se
 	return result, nil
 }
 
+// resolveRevision decides which revision an observed issue belongs to. GitHub's
+// updated_at moves for reasons that say nothing about what the maintainers want:
+// a comment by anyone, a deleted comment, a reference from another issue. So
+// once an issue has a recorded revision, a new one is opened only when
+//
+//   - a maintainer commented after the recorded revision, or
+//   - the issue's own content (what CanonicalSnapshot captures) changed.
+//
+// Otherwise the issue stays on the revision already recorded. An issue never
+// seen before keeps what the Client reported.
+//
+// ponytail: revisions stay timestamps because the pipeline orders by them; a
+// maintainer comment and a content change are the only inputs, so an edit and
+// an unrelated update in the same poll interval are still one revision.
+func resolveRevision(ctx context.Context, cases *workflowcase.Service, evidenceStore *evidence.Store, cfg ObserveConfig, issue Issue) (Issue, error) {
+	recorded, err := cases.ListByObject(ctx, cfg.MissionID, "github", issue.ObjectID())
+	if err != nil {
+		return issue, err
+	}
+	var latest time.Time
+	var latestSnapshotID string
+	for _, c := range recorded {
+		at, err := time.Parse(time.RFC3339Nano, c.RevisionID)
+		if err != nil {
+			return issue, fmt.Errorf("parse recorded revision %q of %s: %w", c.RevisionID, issue.ObjectID(), err)
+		}
+		if at.After(latest) {
+			latest, latestSnapshotID = at, c.ObservationEvidenceID
+		}
+	}
+	if latest.IsZero() || issue.LatestTrustedComment.After(latest) {
+		return issue, nil
+	}
+	raw := issue.RawUpdatedAt
+	if raw.IsZero() {
+		raw = issue.UpdatedAt
+	}
+	if !raw.After(latest) {
+		// Nothing is newer than the recorded revision. The Client may have
+		// moved UpdatedAt back to an older trusted comment; do not follow it.
+		if issue.UntrustedTail {
+			issue.UpdatedAt = latest.UTC()
+		}
+		return issue, nil
+	}
+	probe := issue
+	probe.UpdatedAt = latest.UTC()
+	snapshot, err := CanonicalSnapshot(probe)
+	if err != nil {
+		return issue, err
+	}
+	digest := sha256.Sum256(snapshot)
+	existing, found, err := evidenceStore.FindByContentHash(ctx, hex.EncodeToString(digest[:]), SnapshotKind)
+	if err != nil {
+		return issue, err
+	}
+	if found && string(existing.ID) == latestSnapshotID {
+		issue.UpdatedAt = latest.UTC()
+		return issue, nil
+	}
+	issue.UpdatedAt = raw.UTC()
+	return issue, nil
+}
+
 func observeIssue(ctx context.Context, cases *workflowcase.Service, execSvc *execution.Service, evidenceStore *evidence.Store, cfg ObserveConfig, issue Issue, result *ObserveResult) error {
+	issue, err := resolveRevision(ctx, cases, evidenceStore, cfg, issue)
+	if err != nil {
+		return err
+	}
 	existing, found, err := cases.Find(ctx, cfg.MissionID, "github", issue.ObjectID(), issue.RevisionID())
 	if err != nil {
 		return err

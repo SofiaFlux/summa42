@@ -39,12 +39,63 @@ func setupObligationSuite(t *testing.T) (*state.Store, *fixedClock, *obligation.
 	clk := &fixedClock{now: time.Date(2026, 11, 9, 8, 0, 0, 0, time.UTC)}
 	svc := obligation.NewService(store, clk)
 
-	// Ensure default envelope for execution tasks if not already seeded
-	_, _ = store.DB().Exec(`
-		INSERT OR IGNORE INTO resource_envelopes(envelope_id, hard_limit, created_at)
-		VALUES ('envelope_default', 100000, '2026-11-09T08:00:00Z')`)
+	// The default envelope ships unfunded; here the Owner has funded it.
+	fundDefaultEnvelope(t, store, 100000)
 
 	return store, clk, svc
+}
+
+func fundDefaultEnvelope(t *testing.T, store *state.Store, limit int64) {
+	t.Helper()
+	if _, err := store.DB().Exec(`
+		INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at)
+		VALUES ('envelope_default', ?, '2026-11-09T08:00:00Z')
+		ON CONFLICT(envelope_id) DO UPDATE SET hard_limit = excluded.hard_limit`, limit); err != nil {
+		t.Fatalf("fund default envelope: %v", err)
+	}
+}
+
+// A Task synthesized from an obligation spends from the default envelope. Until
+// the Owner funds that envelope the Task exists but cannot be scheduled.
+func TestSynthesizedObligationTaskWaitsForAFundedEnvelope(t *testing.T) {
+	ctx := context.Background()
+	store, clk, obSvc := setupObligationSuite(t)
+	fundDefaultEnvelope(t, store, 0)
+	purposeSvc := purpose.New(store, clk)
+	execSvc := execution.New(store, clk, purposeSvc, nil)
+	schedSvc := scheduler.New(store, clk, purposeSvc, execSvc, resources.New(store, clk), 5*time.Minute)
+	planner := obligation.NewPlannerAdapter(obSvc, schedSvc)
+	if _, err := obSvc.CreateObligation(ctx, obligation.CreateObligationRequest{
+		Source: "CRITICAL_SLA", Statement: "Renew the certificate", DueAt: clk.Now().Add(12 * time.Hour),
+		GracePeriod: 2 * time.Hour, CostOfDelayRate: 200, LeadTime: 24 * time.Hour,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	capacity := scheduler.CapacitySnapshot{Capabilities: map[string]scheduler.CapabilityCapacity{}}
+
+	candidate, err := planner.PlanNext(ctx, capacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate != nil {
+		t.Fatalf("an unfunded envelope produced a candidate with budget %d", candidate.AvailableBudget)
+	}
+	var synthesized int
+	if err := store.DB().QueryRow(`SELECT count(*) FROM tasks WHERE purpose_kind = 'OBLIGATION' AND state = 'ELIGIBLE'`).Scan(&synthesized); err != nil {
+		t.Fatal(err)
+	}
+	if synthesized != 1 {
+		t.Fatalf("synthesized obligation Tasks = %d, want 1 waiting for budget", synthesized)
+	}
+
+	fundDefaultEnvelope(t, store, 100000)
+	candidate, err = planner.PlanNext(ctx, capacity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate == nil || candidate.Task.Purpose.Kind != domain.PurposeObligation {
+		t.Fatalf("candidate after funding = %+v, want the obligation Task", candidate)
+	}
 }
 
 func TestObligationService_CreateAndModel(t *testing.T) {

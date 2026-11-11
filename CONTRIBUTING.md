@@ -40,6 +40,8 @@ export SUMMA42_HOME=/the/path/printed/above
 
 ## Focused changes and tests
 
+A new package enters `main` together with a caller on a running path (a command or the Box) and a test over that path. A spike without a caller belongs in a research note or on a branch; `docs/superpowers/research/2026-11-10-parked-spikes.md` lists the ones parked so far and how to restore them.
+
 Keep each change focused, explain its behavior and boundaries, and add or update tests for changed behavior. Run the relevant focused tests while working, then run the documented validation matrix before requesting review.
 
 Do not commit `SUMMA42_HOME`, keys, bearer tokens, SQLite databases, raw evidence, or credentials. Redact logs and examples before sharing them.

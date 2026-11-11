@@ -190,6 +190,20 @@ func TestOpenGHIntakeBoxStripsWritableComposition(t *testing.T) {
 	}
 }
 
+// The client must judge comments by the same allowlist the observer uses for
+// issue authors, otherwise anyone's comment moves an issue's revision.
+func TestGHIntakeClientConfigCarriesTheMaintainerAllowlist(t *testing.T) {
+	maintainers := []string{"maint", "second"}
+	cfg := ghIntakeClientConfig("o/r", "app[bot]", "/flag", maintainers)
+	if len(cfg.Maintainers) != 2 || cfg.Maintainers[0] != "maint" || cfg.Maintainers[1] != "second" {
+		t.Fatalf("client maintainers = %v, want %v", cfg.Maintainers, maintainers)
+	}
+	maintainers[0] = "changed"
+	if cfg.Maintainers[0] != "maint" {
+		t.Fatal("client config aliases the caller's slice")
+	}
+}
+
 func TestGHIntakeClientConfigReadsTokenFileAndKeepsGitHubBase(t *testing.T) {
 	token := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(token, []byte("sekrit"), 0o600); err != nil {
@@ -197,7 +211,7 @@ func TestGHIntakeClientConfigReadsTokenFileAndKeepsGitHubBase(t *testing.T) {
 	}
 	t.Setenv("SUMMA42_GITHUB_TOKEN_FILE", "  "+token+"  ")
 	t.Setenv("SUMMA42_GITHUB_BASE_URL", "http://127.0.0.1:8080")
-	cfg := ghIntakeClientConfig("o/r", "", "")
+	cfg := ghIntakeClientConfig("o/r", "", "", nil)
 	if cfg.Repository != "o/r" || cfg.TokenFile != token {
 		t.Fatalf("cfg = %+v", cfg)
 	}

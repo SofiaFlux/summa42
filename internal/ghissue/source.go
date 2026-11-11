@@ -49,6 +49,36 @@ type Issue struct {
 	UpdatedAt     time.Time
 	Triage        string
 	IsPullRequest bool
+	// The Client reports what it saw in the issue's comments; the observer
+	// decides the revision from it (see resolveRevision).
+	//
+	// UntrustedTail: the latest update is exactly a comment that may not move
+	// the revision. LatestTrustedComment: when a maintainer last commented
+	// (zero if never, or if comments were not read). RawUpdatedAt: the
+	// issue's own updated_at when the Client replaced UpdatedAt with
+	// LatestTrustedComment (zero otherwise).
+	UntrustedTail        bool
+	LatestTrustedComment time.Time
+	RawUpdatedAt         time.Time
+}
+
+// Wire markers the Client adds to an issue item; see Issue.UntrustedTail.
+const (
+	wireUntrustedTail        = "summa42_untrusted_tail"
+	wireLatestTrustedComment = "summa42_latest_trusted_comment"
+	wireRawUpdatedAt         = "summa42_raw_updated_at"
+)
+
+// wireMarkers are removed from every response item before the Client adds its own.
+var wireMarkers = []string{wireUntrustedTail, wireLatestTrustedComment, wireRawUpdatedAt}
+
+func markerTime(object map[string]any, key string) time.Time {
+	raw, _ := object[key].(string)
+	at, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return at.UTC()
 }
 
 // ObjectID qualifies the issue with its repository: plain issue#n collides
@@ -183,6 +213,9 @@ func ParseIssue(item any, repository string) (Issue, error) {
 		UpdatedAt:  updatedAt.UTC(),
 	}
 	issue.Triage = ClassifyTriage(labels, title)
+	issue.UntrustedTail, _ = object[wireUntrustedTail].(bool)
+	issue.LatestTrustedComment = markerTime(object, wireLatestTrustedComment)
+	issue.RawUpdatedAt = markerTime(object, wireRawUpdatedAt)
 	if raw, ok := object["pull_request"]; ok {
 		issue.IsPullRequest = raw != nil
 	}
