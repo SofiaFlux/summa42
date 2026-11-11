@@ -2,216 +2,192 @@
 
 Dotyczy: [plan rozwoju](2026-11-11-development-plan.md).
 
-Każde pytanie ma **domyślną odpowiedź**, którą plan przyjął. Jeśli domyślna
-pasuje, nie musisz nic robić. Odpowiedz tylko tam, gdzie jest inaczej: wpisz
-odpowiedź pod pytaniem i zrób commit, albo podaj numery w rozmowie.
-
-Pytania oznaczone **(blokuje)** wstrzymują wskazane karty planu, dopóki nie
-odpowiesz. Reszta planu (M0 do M6) idzie bez nich.
+Stan na 11 listopada 2026: Owner odpowiedział na pytania kluczowe w rozmowie.
+Każde pytanie ma poniżej **Decyzję** (odpowiedź Ownera) albo **Przyjęto
+domyślnie** (nie pytano osobno; obowiązuje, dopóki Owner nie zmieni). Zmiana
+decyzji: popraw wpis i zrób commit.
 
 ## A. Produkt i firma
 
-**Q1 (blokuje M7).** Co dokładnie znaczy DaaS w Twoim produkcie: Data as a
-Service, Desktop as a Service czy Device as a Service?
-Domyślnie: Data as a Service. Od tego zależy cała funkcja „operate”.
+**Q1.** Co znaczy DaaS w produkcie?
+Decyzja: Data as a Service.
 
-**Q2 (blokuje M7-T4).** W jakiej formie klient dostaje produkt: API, pliki,
-feed, dashboard, dostęp do bazy?
-Domyślnie: API i pliki.
+**Q2.** W jakiej formie klient dostaje produkt?
+Decyzja: API oraz portal (dashboard, aplikacja web).
 
-**Q3 (blokuje M7-T4).** Skąd pochodzą dane, jak często się odświeżają i co
-obiecujesz klientom (świeżość, kompletność, dostępność)?
-Domyślnie: brak formalnego SLA; system mierzy świeżość i kompletność, a progi
-ustalasz Ty.
+**Q3.** Co obiecujesz klientom (świeżość, kompletność, dostępność)?
+Decyzja: na razie nic; nie ma formalnego SLA, ale w umowach będzie. Najpierw
+mierzymy, progi ustawia się później.
 
-**Q4 (blokuje M7-T4).** Gdzie produkt działa (chmura, dostawca, własny serwer)
-i czym jest dziś monitorowany?
-Domyślnie: nieznane; karta czeka.
+**Q4.** Gdzie produkt działa?
+Decyzja: Azure.
 
-**Q5 (blokuje M8 dla produktu).** Jak dziś wygląda wdrożenie produktu: ręcznie,
-CI/CD, jakie środowiska?
-Domyślnie: nieznane; karta czeka.
+**Q5.** Jak wygląda wdrożenie produktu?
+Decyzja: Azure Pipelines (ADO).
 
-**Q6.** Gdzie jest kod produktu: GitHub czy Azure DevOps, ile repozytoriów,
-jakie języki i jak się uruchamia testy?
-Domyślnie: jedno prywatne repozytorium na GitHubie, osobny Projekt w Summa42.
+**Q6.** Gdzie jest kod produktu?
+Decyzja: GitHub i Azure DevOps, wiele repozytoriów.
 
-**Q7.** Czy poza Tobą ktoś pracuje w firmie lub przy produkcie (ludzie,
-podwykonawcy)? Czy mają dostawać zadania lub decyzje od systemu?
-Domyślnie: nie; jedynym człowiekiem jest Owner.
+**Q7.** Czy poza Ownerem ktoś ma dostawać zadania lub decyzje od systemu?
+Decyzja: nie, tylko Owner.
 
-**Q8 (blokuje M7-T3).** Jakie masz zobowiązania cykliczne z terminem (odnowienia
-domen i certyfikatów, raporty, podatki, faktury, aktualizacje zależności)?
-Które jest najlepszym pierwszym kandydatem?
-Domyślnie: comiesięczna aktualizacja zależności w repozytorium Summa42.
+**Q8.** Pierwsze realne zobowiązanie cykliczne?
+Decyzja: comiesięczna aktualizacja zależności (najpierw `summa42`, potem
+repozytoria produktu).
 
-**Q9 (blokuje M7-T5).** Którędy przychodzą zgłoszenia klientów (e-mail,
-helpdesk, formularz, Slack, Discord)?
-Domyślnie: e-mail.
+**Q9.** Którędy przychodzą zgłoszenia klientów?
+Decyzja: e-mail oraz formularz kontaktu w portalu, który zapisuje zgłoszenie w
+bazie produktu. W przyszłości endpoint w API do zgłaszania zapotrzebowania (na
+przykład na dane firmy X); pójdzie przez ten sam system zgłoszeń (portal, API,
+baza).
 
-**Q10 (blokuje M7-T6).** Czym fakturujesz i gdzie trzymasz klientów (Stripe,
-Fakturownia, inny system, arkusz)?
-Domyślnie: nieznane; karta czeka.
+**Q10.** Czym fakturujesz?
+Decyzja: inFakt, zautomatyzowane i połączone z produktem, na razie sandbox.
+Jest abstrakcja dostawcy, więc da się przepiąć na innego, o ile ma możliwości
+integracji. Summa42 obserwuje, nie wystawia.
 
-**Q11.** Czy system może kiedykolwiek sam wysłać coś do klienta albo wystawić
-dokument finansowy bez Twojego zatwierdzenia?
-Domyślnie: nie. Takie operacje mają co najmniej ryzyko MEDIUM i są poza
-każdym mandatem automatyzacji, dopóki wyraźnie tego nie zmienisz.
+**Q11.** Czy system może sam pisać do klientów albo wystawiać dokumenty
+finansowe?
+Decyzja: na początku nie. Faktury na pewno będą zautomatyzowane, komunikacja w
+przyszłości być może też; każde wymaga osobnej, podpisanej delegacji.
 
-**Q12.** Czy w danych produktu lub zgłoszeniach są dane osobowe albo dane
-klientów objęte umową o poufności? Czy mogą trafiać do modeli w chmurze?
-Domyślnie: prywatne źródła tylko przez modele z zerową retencją (ZDR) albo
-lokalne.
+**Q12.** Czy prywatne dane i kod mogą trafiać do modeli w chmurze?
+Decyzja: tylko modele z zerową retencją (ZDR) albo lokalne.
 
 ## B. Projekty
 
-**Q13.** Jakie Projekty mają powstać na początku?
-Domyślnie: dwa: `summa42` (to repozytorium, poligon) i `daas` (produkt).
+**Q13.** Jakie Projekty na początku?
+Decyzja: `summa42` oraz jeden projekt `daas` obejmujący wiele repozytoriów.
 
-**Q14 (blokuje M2-T7).** Jakie ma być drugie, niegithubowe źródło pracy?
-Domyślnie: lokalna skrzynka plików (każdy plik Markdown to jedno zadanie).
-Alternatywy: work itemy Azure DevOps, Jira, Linear.
+**Q14.** Drugie źródło pracy?
+Decyzja: work itemy Azure DevOps. Do planu doszedł kamień milowy M2A (pełna
+ścieżka work item, implementacja, draft PR w ADO), po M2 i przed M5. Lokalna
+skrzynka plików zostaje jako mała, opcjonalna karta M2-T7.
 
 **Q15.** Czy Projekty mogą dzielić budżet?
-Domyślnie: nie; każdy ma własną kopertę pod kopertą Kolektywu.
+Przyjęto domyślnie: nie; każdy ma własną kopertę pod kopertą Kolektywu.
 
-**Q16.** Czy Projekt ma mieć własnych maintainerów innych niż Owner?
-Domyślnie: nie.
+**Q16.** Czy Projekt ma własnych maintainerów innych niż Owner?
+Przyjęto domyślnie: nie (zgodne z Q7).
 
-**Q17.** Kiedy praca usługowa dla klientów (osobne umowy, terminy, faktury per
-klient)?
-Domyślnie: poza tym planem.
+**Q17.** Kiedy praca usługowa dla klientów?
+Przyjęto domyślnie: poza tym planem.
 
 **Q18.** Czy wszystko działa na jednym hoście?
-Domyślnie: tak, jeden host, jedna baza SQLite.
+Przyjęto domyślnie: tak, jeden host, jedna baza SQLite.
 
-**Q19.** Czy nazwa „Project” jest w porządku dla zakresu poniżej Kolektywu?
-Domyślnie: tak.
+**Q19.** Czy nazwa „Project” jest w porządku?
+Przyjęto domyślnie: tak.
 
 ## C. Budżet i modele
 
-**Q20 (blokuje M3-T1).** Jakie limity pieniężne na start?
-Domyślnie: 5 USD na case i 20 USD dziennie na Kolektyw (z roadmapy), do
-kalibracji po pilotażu.
+**Q20.** Limity pieniężne na start?
+Decyzja: 5 USD na case i 20 USD dziennie, do kalibracji po pilotażu.
 
-**Q21 (blokuje M3-T1).** Jakie subskrypcje i dostępy do modeli masz (Gemini,
-Claude, Codex, Copilot, Command Code, Ollama lokalnie)?
-Domyślnie: te, które README wymienia jako potwierdzone.
+**Q21.** Jakie subskrypcje i dostępy do modeli są dostępne?
+Otwarte. Potrzebne do tabeli cen w M3-T1; do tego czasu obowiązuje lista
+potwierdzona w README.
 
-**Q22.** Czy wolno używać płatnych modeli przez API poza subskrypcjami?
-Domyślnie: tylko w ramach jawnego limitu z Q20.
+**Q22.** Czy wolno używać płatnych modeli przez API?
+Decyzja: tak, w ramach limitów z Q20.
 
-**Q23.** Jak będzie uruchamiany Gemini Flash: przez Antigravity (`agy`),
-Gemini CLI czy API? Który model ma recenzować jego pracę?
-Domyślnie: producent przez profil `agy`; recenzent to inny model (Claude albo
-Codex). Recenzent nie może być tym samym modelem co producent.
+**Q23.** Jak uruchamiany jest wykonawca i kto recenzuje?
+Decyzja: na początek Gemini Flash przez `agy`; inne modele przez Command Code
+albo opencode. W przyszłości także dostawcy API (Microsoft Foundry, Vertex,
+Bedrock, OpenAI API, Anthropic API) i kolejne harnessy (na przykład Pi); stąd
+karta M3-T6. Recenzje wszystkich PR: Claude.
 
 ## D. Ciągłość
 
-**Q24 (blokuje M3-T3).** Którym kanałem system ma Cię powiadamiać?
-Domyślnie: webhook Discorda (most Discord już istnieje). Alternatywy: e-mail,
-ntfy, Telegram.
+**Q24.** Kanał powiadomień?
+Decyzja: webhook Discorda, za interfejsem nadawcy.
 
-**Q25.** Jak długo system może pracować bez Twojego znaku życia?
-Domyślnie: 7 dni (obecne ustawienie).
+**Q25.** Horyzont nieobecności Ownera?
+Decyzja: 7 dni.
 
-**Q26 (blokuje M4-T4, a przez to M5).** Jak chronić klucz Ownera?
-Domyślnie: klucz zaszyfrowany hasłem, odszyfrowywany tylko w CLI na czas
-jednej podpisanej akcji. Mocniejsza opcja: klucz sprzętowy (YubiKey) albo
-`ssh-agent`.
+**Q26.** Ochrona klucza Ownera?
+Decyzja: teraz klucz zaszyfrowany hasłem, odszyfrowywany tylko w CLI na czas
+jednej podpisanej akcji; z warstwą abstrakcji (interfejs podpisującego), żeby
+później łatwo dodać klucz sprzętowy, SSO i inne formy.
 
-**Q27.** Gdzie i jak często robić kopie zapasowe?
-Domyślnie: codziennie do lokalnego katalogu; kopię poza host przenosisz sama,
-dopóki nie wskażesz miejsca.
+**Q27.** Kopie zapasowe?
+Decyzja: codziennie, lokalnie oraz do Azure Blob.
 
-**Q28.** Czy docelowy host to zwykły Linux z systemd, czy WSL?
-Domyślnie: Linux z systemd. Na WSL izolacja użytkownika modelu jest niepełna
-(README).
+**Q28.** Host docelowy?
+Decyzja: maszyna wirtualna z Linuxem i systemd. Ma być uniwersalnie: dziś
+głównie Azure, być może darmowa maszyna Oracle; nic zależnego od jednej chmury.
 
-**Q29.** Ile Twojej uwagi miesięcznie jest celem i ile zajmuje to dziś?
-Domyślnie: cel około godziny miesięcznie; stan obecny zmierzy pilotaż (M1-T5).
+**Q29.** Ile uwagi miesięcznie?
+Przyjęto domyślnie: cel około godziny miesięcznie; stan obecny zmierzy pilotaż
+(M1-T5).
 
 ## E. Automatyzacja
 
-**Q30 (blokuje M6-T1).** Po ilu identycznych zatwierdzeniach system ma
-zaproponować stałą delegację?
-Domyślnie: 5 zatwierdzeń tej samej klasy w 30 dni, zero odrzuceń.
+**Q30.** Kiedy system proponuje stałą delegację?
+Decyzja: po 5 zatwierdzeniach tej samej klasy w 30 dni, bez odrzuceń.
 
-**Q31.** Ile zgodnych przypadków w trybie cienia, zanim propozycja trafi do
-Ciebie albo zostanie przyjęta?
-Domyślnie: 5 kolejnych zgodnych; jedna niezgodność zeruje licznik.
+**Q31.** Ile zgodnych przypadków w trybie cienia?
+Decyzja: 5 kolejnych; jedna niezgodność zeruje licznik.
 
-**Q32 (blokuje M6-T4).** Co system może na start przejmować sam, bez pytania?
-Domyślnie: tylko rzeczy o ryzyku LOW, odwracalne i bez skutku na zewnątrz
-(harmonogramy zadań tylko do odczytu, raporty, porządki wewnętrzne). Wszystko
-inne jest propozycją do zatwierdzenia.
+**Q32.** Co system przejmuje sam na start (pierwszy mandat)?
+Decyzja: tylko ryzyko LOW, odwracalne, bez skutku na zewnątrz. Wszystko inne
+jest propozycją.
 
 **Q33.** Czego nie wolno delegować nigdy?
-Domyślnie: polityki, kluczy, listy zatwierdzających, budżetów, plików
-workflow CI, samego mechanizmu delegacji i mandatu, komunikacji z klientami i
-dokumentów finansowych (Q11).
+Przyjęto domyślnie: polityki, kluczy, listy zatwierdzających, budżetów, plików
+workflow CI oraz samego mechanizmu delegacji i mandatu. Komunikacja z klientami
+i dokumenty finansowe nie są na tej liście (Q11): są poza mandatem na start, a
+Owner może je później delegować osobnym podpisem.
 
-**Q34.** Czy model językowy może podpowiadać kandydatów do automatyzacji?
-Domyślnie: dopiero po działającej wersji deterministycznej (M6-T6), i tylko
-jako kandydat przechodzący tę samą ścieżkę.
+**Q34.** Czy model może podpowiadać kandydatów do automatyzacji?
+Przyjęto domyślnie: dopiero po wersji deterministycznej (M6-T6), jako kandydat
+przechodzący tę samą ścieżkę.
 
-**Q35.** Jak często chcesz dostawać podsumowanie (co przejęto, co
-zaproponowano, co zawieszono, ile wydano)?
-Domyślnie: raz w tygodniu.
+**Q35.** Jak często podsumowanie?
+Przyjęto domyślnie: raz w tygodniu.
 
 ## F. Repozytorium i proces
 
 **Q36.** Kto pisze specyfikacje kart `DESIGN`?
-Domyślnie: mocniejszy model niż wykonawca, a Ty je zatwierdzasz. Gemini Flash
-wykonuje karty `BUILD`.
+Decyzja: Claude; Owner zatwierdza. Gemini Flash wykonuje karty `BUILD`.
 
-**Q37.** Czy do osiągnięcia A2 każdy merge robisz Ty?
-Domyślnie: tak.
+**Q37.** Czy do A2 każdy merge robi Owner?
+Przyjęto domyślnie: tak.
 
-**Q38.** Co z otwartym PR #176 (Dapr i AgentLedger)?
-Domyślnie: zamknąć bez merge i zostawić jako notatkę badawczą, bo żadna
-działająca ścieżka go nie wywołuje (ta sama reguła co przy zaparkowanych
-spike'ach).
+**Q38.** Co z PR #176 (Dapr i AgentLedger)?
+Decyzja: zamknąć bez merge; gałąź zostaje.
 
-**Q39.** Co z epikami „Post-MVC” (#3, #5, #11, #12, #15, #16, #17, #60)?
-Domyślnie: zostają otwarte i poza tym planem; wracają, gdy karta planu ich
-potrzebuje.
+**Q39.** Co z epikami „Post-MVC”?
+Przyjęto domyślnie: zostają otwarte; sekcja 9 planu mówi, które karty spełniają
+ich kryteria zamknięcia.
 
-**Q40.** Czy kolejność „Projekty przed ciągłością” jest w porządku?
-Domyślnie: tak, bo budżety, powiadomienia i pauzy są per Projekt. Jeśli wolisz
-najpierw powiadomienia i kopie zapasowe, M3-T3 do M3-T5 można zrobić przed M2.
+**Q40.** Kolejność: Projekty przed ciągłością?
+Decyzja: tak.
 
-**Q41.** Gdzie ma żyć konfiguracja Twojej firmy (manifesty Projektów,
-zobowiązania, mandaty)?
-Domyślnie: poza publicznym repozytorium, w `SUMMA42_HOME`; w repozytorium są
-tylko przykłady.
+**Q41.** Gdzie żyje konfiguracja firmy (manifesty, zobowiązania, mandaty)?
+Przyjęto domyślnie: poza publicznym repozytorium, w `SUMMA42_HOME`; w
+repozytorium tylko przykłady.
 
-**Q42.** W jakim języku dokumenty w repozytorium?
-Domyślnie: angielski; ten plik jest po polsku, bo jest dla Ciebie.
+**Q42.** Język dokumentów w repozytorium?
+Przyjęto domyślnie: angielski; ten plik jest po polsku, bo jest dla Ownera.
 
 ## G. Issues i dyskusje
 
-**Q43.** Dyskusja #136 (Constructors) nie ma decyzji. Czy „przyjęta
-automatyzacja” z M6 (trwała odpowiedzialność zakotwiczona w Ownerze, uśpiona
-do wybudzenia) ma być pierwszą wersją Constructora, czy Constructor to osobny
-byt na później?
-Domyślnie: nie budujemy osobnego bytu; specyfikacja M6-T1 odpowiada na dziewięć
-pytań z dyskusji i rozstrzyga nazwę.
+**Q43.** Czy przyjęta automatyzacja z M6 jest pierwszą wersją Constructora
+(dyskusja #136)?
+Decyzja: tak, jako minimalny Constructor v1. Specyfikacja M6-T1 odpowiada na
+dziewięć pytań z dyskusji.
 
-**Q44.** Kto i kiedy zakłada issue dla kart planu, i z jakimi etykietami?
-Domyślnie: Ty (albo ja na Twoje polecenie), partiami per kamień milowy, dopiero
-gdy zależności karty są zmergowane, bo intake podejmuje issue maintainera i
-uruchamia case. Etykiety jak dotąd (`feature`, `sub-issue`, `severity_N`);
-`summa-auto` tylko dla kart w trybie `pipeline`.
+**Q44.** Kto i kiedy zakłada issue dla kart?
+Decyzja: issue dla kart M0 założone 11 listopada 2026. Kolejne partiami per
+kamień milowy, gdy zależności karty są zmergowane; `summa-auto` tylko dla kart
+w trybie `pipeline`.
 
-**Q45.** Czy nierozstrzygnięte pytania projektowe (karty `DESIGN`) mają
-zaczynać się jako dyskusja, a issue powstaje dopiero po decyzji?
-Domyślnie: tak.
+**Q45.** Czy nierozstrzygnięte pytania projektowe zaczynają jako dyskusja?
+Przyjęto domyślnie: tak.
 
-**Q46.** Czy epiki zamykasz wyłącznie Ty, po spełnieniu kryterium z ostatniego
-komentarza?
-Domyślnie: tak; agent pisze `Part of #N`, nigdy `Closes` dla epika.
+**Q46.** Czy epiki zamyka wyłącznie Owner, po spełnieniu kryterium?
+Przyjęto domyślnie: tak.
 
-**Q47.** Dyskusje #137 (Resurrector) i #138 (fleet consensus) dotyczą wielu
-Cube'ów. Czy zostają otwarte jako kierunek?
-Domyślnie: tak; M3-T5 realizuje jednohostową wersję #137, #138 jest poza planem.
+**Q47.** Czy dyskusje #137 i #138 zostają otwarte jako kierunek?
+Przyjęto domyślnie: tak; M3-T5 realizuje jednohostową wersję #137.
