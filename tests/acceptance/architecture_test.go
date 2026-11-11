@@ -29,7 +29,6 @@ var orphanAllowlist = map[string]string{
 	"internal/ghtriage/fakemodel":    "test helper: scripted triage model",
 	"internal/modelrun/modelruntest": "test helper: launcher test double",
 	"internal/board":                 "until card M2-T6 wires it; M2-T6 removes this entry",
-	"internal/version":               "until card M1-T2 prints it; M1-T2 removes this entry",
 }
 
 func repositoryRoot(t *testing.T) string {

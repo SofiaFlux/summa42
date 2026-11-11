@@ -43,6 +43,8 @@ Initialize the local Collective once, start the Box in one terminal, then query 
 | `./bin/summa42 status` | Query the local Box status. |
 | `./bin/summa42 mission create "..."` | Set the first active Mission with an Owner signature; prints its ID for Mission-rooted Tasks. |
 | `./bin/summa42 mission show` | Show the active Mission and its ID. |
+| `./bin/summa42 cases [--state S]` | List workflow cases: state, current work, steps, last assessment. Reads the local database directly; `--json` for JSON. |
+| `./bin/summa42 --version` | Print the version. |
 | `go test ./... -count=1` | Run the normal Go test suite. |
 
 `summa42 init` creates `~/.summa42` by default, including the local SQLite database, evidence directory, local-development Owner/Cube keys and a `config.json` file with mode `0600`. The config contains a randomly generated 256-bit bearer token used only for the local control transport. Set `SUMMA42_HOME` to select another Collective home. `SUMMA42_CONTROL_ENDPOINT` and `SUMMA42_CONTROL_TOKEN` can override the automatically resolved endpoint/token.
