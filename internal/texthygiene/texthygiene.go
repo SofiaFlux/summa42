@@ -86,3 +86,17 @@ func Check(field, text string) error {
 	}
 	return nil
 }
+
+// HiddenRunes counts every rejected character in text per code point. An
+// invalid UTF-8 byte is counted under utf8.RuneError.
+func HiddenRunes(text string) map[rune]int {
+	counts := map[rune]int{}
+	for offset := 0; offset < len(text); {
+		r, size := utf8.DecodeRuneInString(text[offset:])
+		if (r == utf8.RuneError && size == 1) || classify(r) != "" {
+			counts[r]++
+		}
+		offset += size
+	}
+	return counts
+}

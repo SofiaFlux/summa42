@@ -66,9 +66,8 @@ func TestBidiAndZeroWidthRejected(t *testing.T) {
 		}
 
 		implementations := map[string]func(*ghtriage.ImplementationOutput){
-			"summary":      func(o *ghtriage.ImplementationOutput) { o.Summary += hidden },
-			"explanation":  func(o *ghtriage.ImplementationOutput) { o.Explanation = "because" + hidden },
-			"file content": func(o *ghtriage.ImplementationOutput) { o.Edits[0].Content = "package version // " + hidden + "\n" },
+			"summary":     func(o *ghtriage.ImplementationOutput) { o.Summary += hidden },
+			"explanation": func(o *ghtriage.ImplementationOutput) { o.Explanation = "because" + hidden },
 		}
 		for field, change := range implementations {
 			implementation := cleanImplementation()
@@ -101,13 +100,8 @@ func TestParsedOutputWithHiddenCharactersIsRejected(t *testing.T) {
 	if _, err := ghtriage.ParsePlanReviewOutput(review); err == nil {
 		t.Error("ParsePlanReviewOutput accepted a hidden character")
 	}
-	implementation, _ := json.Marshal(map[string]any{
-		"summary": "Adds the flag.",
-		"edits":   []map[string]any{{"path": "internal/version/version.go", "content": "package version" + rightToLeftOverride + "\n"}},
-	})
-	if _, err := ghtriage.ParseImplementationOutput(implementation); err == nil {
-		t.Error("ParseImplementationOutput accepted a hidden character")
-	}
+	// Hidden characters in file content are checked against the base version in
+	// repoworkspace.PrepareCandidate, not at parse time.
 }
 
 // producerMarker stands for text a producer wrote to steer the reviewer.

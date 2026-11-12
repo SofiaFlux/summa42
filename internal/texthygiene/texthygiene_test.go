@@ -3,6 +3,7 @@ package texthygiene_test
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/SofiaFlux/summa42/internal/texthygiene"
 )
@@ -76,5 +77,15 @@ func TestFindingLocatesTheFirstHiddenCharacter(t *testing.T) {
 	err := texthygiene.Check("plan summary", "x\u200by")
 	if err == nil || !strings.Contains(err.Error(), "U+200B") || !strings.Contains(err.Error(), "plan summary") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestHiddenRunesCountsPerCodePoint(t *testing.T) {
+	got := texthygiene.HiddenRunes("a\u200cb\u200c\ufeffc\xff\n")
+	if got['\u200c'] != 2 || got['\ufeff'] != 1 || got[utf8.RuneError] != 1 || len(got) != 3 {
+		t.Errorf("HiddenRunes = %v", got)
+	}
+	if len(texthygiene.HiddenRunes("plain\ttext\n")) != 0 {
+		t.Error("plain text reported")
 	}
 }

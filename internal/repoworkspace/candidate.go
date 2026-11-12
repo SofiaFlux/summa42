@@ -47,12 +47,10 @@ func ValidateEdits(allowed []string, edits []Edit) error {
 		if !candidatePath(e.Path) || !permitted[e.Path] || seen[e.Path] || !utf8.ValidString(e.Content) || strings.ContainsRune(e.Content, 0) || (e.Delete && e.Content != "") {
 			return errors.New("edit violates exact owner scope or content contract")
 		}
-		// A changed file is read by the reviewer and the Owner: it must show
-		// what it contains (internal/texthygiene).
+		// A changed file is read by the reviewer and the Owner: its path must
+		// show what it contains (internal/texthygiene). The content is checked
+		// against the base version in PrepareCandidate (checkEditHygiene).
 		if err := texthygiene.Check("path of an edit", e.Path); err != nil {
-			return err
-		}
-		if err := texthygiene.Check("edit "+strconv.Quote(e.Path), e.Content); err != nil {
 			return err
 		}
 		seen[e.Path] = true
@@ -60,6 +58,40 @@ func ValidateEdits(allowed []string, edits []Edit) error {
 	}
 	if total > MaxContextBytes {
 		return errors.New("edits exceed byte limit")
+	}
+	return nil
+}
+
+// checkEditHygiene rejects hidden characters an edit introduces. Characters
+// that the base version of the same file already holds are tolerated, up to
+// their count per code point, so a file that carries a BOM or a zero width
+// character on the base commit can still be edited. A new file is checked
+// exactly as plain text. An unreadable base fails closed.
+func checkEditHygiene(ctx context.Context, dir, base string, e Edit) error {
+	if e.Delete {
+		return nil
+	}
+	have := texthygiene.HiddenRunes(e.Content)
+	if len(have) == 0 {
+		return nil
+	}
+	field := "edit " + strconv.Quote(e.Path)
+	entry, err := git(ctx, dir, "ls-tree", "-z", base, "--", e.Path)
+	if err != nil {
+		return err
+	}
+	if len(entry) == 0 {
+		return texthygiene.Check(field, e.Content)
+	}
+	file, err := ReadFile(ctx, dir, base, e.Path, MaxContextBytes)
+	if err != nil {
+		return fmt.Errorf("cannot read the base version of %s: %w", strconv.Quote(e.Path), err)
+	}
+	allowed := texthygiene.HiddenRunes(file.Content)
+	for r, n := range have {
+		if n > allowed[r] {
+			return fmt.Errorf("%s contains hidden content: U+%04X appears %d times, the base version has %d; write it as an escape sequence if it is intended", field, r, n, allowed[r])
+		}
 	}
 	return nil
 }
@@ -133,6 +165,9 @@ func PrepareCandidate(ctx context.Context, dir, base string, allowed []string, e
 		return Candidate{}, errors.New("regular checkout directory required")
 	}
 	for _, e := range edits {
+		if err := checkEditHygiene(ctx, dir, base, e); err != nil {
+			return Candidate{}, err
+		}
 		if err := safeEditTarget(dir, base, e.Path, ctx); err != nil {
 			return Candidate{}, err
 		}
