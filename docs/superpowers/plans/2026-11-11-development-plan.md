@@ -137,9 +137,9 @@ the first Project and stays the proving ground.
 | Support intake | E-mail and the portal's contact form, which stores requests in the product database; a future API endpoint for data requests uses the same store |
 | Billing | inFakt (sandbox today), already automated inside the product behind a provider abstraction; Summa42 observes it |
 | Customer communication and financial documents | Not sent or issued by Summa42 at the start: a drafted reply is delivered to the Owner, who sends it. Later a send is an external operation of at least MEDIUM risk behind per-operation approval, and doing it without approval needs an Owner-signed delegation. Invoicing stays in the product |
-| Private data and code | Zero-data-retention or local models only |
+| Private data and code | Three data classes (agentic executor spec, section 5.1): `public`; `private-code`, which may go to subscription models; `customer-data`, which goes only to zero-data-retention or local models and never enters a sandbox |
 | Implementer | Gemini Flash through the `agy` profile; other models through Command Code or opencode. Direct API providers and more harnesses later (M3-T6) |
-| Specs and review | Claude writes the `DESIGN` specs and reviews every pull request |
+| Specs and review | Claude writes the `DESIGN` specs and reviews agent pull requests. In the pipeline Gemini writes and Claude or Command Code reviews, by complexity of the work |
 | Model access | Gemini through `agy`, Claude, Copilot, Command Code (Go plan), opencode (free models), Ollama; no per-token API billing today |
 | Money | 5 USD per case, 20 USD per day for the whole Collective; paid API calls only inside those caps |
 | Notifications | Discord webhook first, behind a sender interface |
@@ -207,9 +207,10 @@ The rule that reconciles 2.5 and 2.6:
 
 - **Inside:** a full agentic harness with write and execute permission, a
   shell, compilers, test runners, a package cache, hours of wall time.
-- **The edge:** no credential inside (the provider credential is added by the
-  egress proxy outside the sandbox), no route out except the model provider and
-  a mediated fetch restricted per Project; the only thing that leaves is a
+- **The edge:** no route out except a Box-side gateway (model provider,
+  package registries, a fetch restricted per Project); the provider credential
+  stays outside where the harness allows it, and where it does not, a
+  provider-only login inside is declared and limited to non-private Projects; the only thing that leaves is a
   commit that trusted code collects without executing anything the agent
   wrote, and usage measured at the proxy.
 - **Outside:** unchanged. Independent validation, independent review,
@@ -488,38 +489,22 @@ It reuses what exists: the TEB Docker provider (`internal/teb`), the launcher
 (`internal/modelrun`), `execution.RenewLease`, the pinned checkout
 (`internal/repoworkspace`), the Codex and Copilot executor adapters.
 
-**M1A-T1 `DESIGN`: agentic workspace executor spec.** Settles: the sandbox
-(an OCI container per Attempt through the TEB Docker provider: non-root, no
-credentials, no container socket, writable workspace and caches only; and what
-is offered, at which enforcement level, on a host without Docker); what is in
-the image (toolchains per Project manifest); network (model provider endpoint,
-a package registry path, a mediated fetch tool whose requests are logged as
-evidence; nothing else); how the harness is started in write mode inside and
-why that is safe there and only there; how the result leaves (trusted code
-reads the workspace's Git history; nothing the agent says about its own result
-counts); limits per Attempt in time, money and disk; what happens to the
-existing one-shot stages (they stay for triage, plan review and code review).
-The spec must also close these, each with a named test:
+**M1A-T1 `DESIGN`: agentic workspace executor spec.** Written:
+[agentic workspace executor](../specs/2026-11-11-agentic-workspace-executor-design.md).
+It is binding for every M1A card once the Owner approved it, and its section 11
+splits M1A-T3 and M1A-T8 into smaller cards (M1A-T3a to T3c, M1A-T8a and T8b)
+and adds the harness spike M1A-T1b. Where a card below and the spec differ, the
+spec wins. In short: one hardened container per Attempt; a Box-side gateway as
+the only network; two credential modes (credential at the gateway, or a
+provider-only login inside for subscription harnesses, never for private
+Projects); collection through a separate no-network container into a fresh
+Box-owned repository; one Box-authored candidate commit.
 
-- Collection never runs Git, hooks or any tool inside the agent's directory as
-  the Box user. The agent has had write access to that `.git`. The workspace is
-  exported from inside the sandbox as a bundle and fetched into a fresh
-  Box-owned repository, checked with `fsck`, before anything reads it.
-- The provider credential is not in the sandbox. The egress proxy adds it to
-  requests to the provider's host and measures usage there.
-- The mediated fetch is containment, not logging: a per-Project domain
-  allowlist, GET only, caps on URL length and rate, refused entirely for
-  private data classes, responses marked as untrusted data.
-- Nothing model-written passes from one Attempt to the next except through Box
-  evidence that went through M9-T8.
-- CI and pipeline definition files are protected in every Project, greenfield
-  included; on Azure DevOps a pushed pipeline file could run with deployment
-  service connections.
-- Freeze, containment, lease expiry and an exhausted budget kill the sandbox;
-  stopping the renewal is not enough.
-- Until the money ledger exists (M3-T2), agentic Attempts run only on prepaid
-  subscription profiles, under a wall-time ceiling enforced outside the
-  sandbox.
+**M1A-T1b `OWNER` with `agent`: harness spike.** Depends: M1A-T1 approved. For
+`agy`, Claude, Command Code and opencode: does it run headless in the sandbox
+image in write mode, which credential mode does it need, where does its token
+live, how does it refresh. Needs the Owner's logins. Result in
+`docs/superpowers/research/`; it decides which harness M1A-T3c builds first.
 
 **M1A-T2 `BUILD` `agent`: long Attempts.** A lease that an agentic Attempt
 renews by heartbeat (`execution.RenewLease`), with fencing unchanged: a missed
@@ -579,12 +564,13 @@ application in an hours-long unattended run, and every task the bare harness
 completes and Summa42 does not is listed with its cause. A gap is closed by
 improving the executor, never by relaxing a control.
 
-**M1A-T8 `BUILD` `agent`: egress proxy for sandboxes and the mediated fetch.**
-Depends: M1A-T1 approved. The sandbox's only network is the existing CONNECT
-proxy. It allows the provider host of the Attempt's profile and injects that
-credential; it serves the mediated fetch under the rules of M1A-T1; it records
-usage and every refused request (a refusal is a rogue signal).
-Tests: `TestSandboxHasNoRouteButProxy`, `TestCredentialInjectedOutsideSandbox`,
+**M1A-T8 `BUILD` `agent`: gateway for sandboxes.** Depends: M1A-T1 approved.
+Two cards (spec section 11). The sandbox's only network is a Box-side gateway:
+a registry mirror and a restricted fetch (T8a), and a provider gateway that
+adds the credential outside the sandbox for harnesses that accept a base URL
+(T8b). The existing CONNECT proxy is its outbound side. It records every
+request and every refusal (a refusal is a rogue signal).
+Tests: `TestSandboxHasNoRouteButGateway`, `TestCredentialAddedOutsideSandbox`,
 `TestFetchRefusedForPrivateDataClass`, `TestFetchOutsideAllowlistRefused`.
 
 **M1A-T7 `BUILD` `agent`: new dependency gate.** Depends: M1A-T3, M1A-T8. An agent with full tools will
@@ -610,8 +596,8 @@ Project's envelope hangs under the Collective root envelope; which records gain
 (`ACTIVE`, `PAUSED`, `ARCHIVED`) and what each refuses; the signed Project
 manifest (M2-T3), which must describe several repositories on different hosts
 (GitHub and Azure DevOps) in one Project, each with its own base branch,
-allowed paths, validation commands and model data class (public, or private
-and therefore zero-data-retention or local models only); what the Vision says that this must not contradict (Articles
+allowed paths, validation commands and data class (`public`, `private-code`
+or `customer-data`; agentic executor spec, section 5.1); what the Vision says that this must not contradict (Articles
 3 to 6, 15, 20). It must show that a Collective with only the default Project
 behaves exactly as today.
 
@@ -700,8 +686,8 @@ Article 10), selected into the prompt by the context projection compiler with
 its hash in the run manifest. The repository map is generated by deterministic
 code, not by a model. What a Summand learned enters memory only as an inbox
 packet the Owner approves; a memory item is never adopted under a mandate.
-Every item carries the data class of its source, and an item from a private
-source is never projected into a call to a model without zero data retention
+Every item carries the data class of its source, and an item from a
+`customer-data` source is never projected into a call to a model without zero data retention
 or into another Project. Model-written items pass M9-T8 first.
 Tests: `TestMapIsRegeneratedOnNewBase`, `TestMemoryItemCitesItsEvidence`,
 `TestSummandCannotWriteMemoryDirectly`, `TestProjectionHashRecorded`,
@@ -730,8 +716,9 @@ checkout of an ADO Git repository pinned to a SHA; publication as two protected
 operations (branch, draft pull request) in `internal/adoeffects` with
 `LookupOutcome`; build observation bound to the exact SHA; what the existing
 reviewer-vote path keeps. Credentials stay in the trusted component and never
-reach a model. Private repositories use zero-data-retention or local models
-only.
+reach a model. The repositories are `private-code`; work items may quote
+customer text, and a work item marked `customer-data` goes only to
+zero-data-retention or local models.
 
 **M2A-T2 `BUILD` `agent`: work item intake.** Depends: M2-T6, M2A-T1 approved.
 An ADO work item becomes one card and one case through a real connector;
@@ -833,9 +820,9 @@ Today every model runs through a CLI harness profile. Add a profile kind that
 calls a provider API (OpenAI-compatible first; then Anthropic, Azure AI
 Foundry, Vertex, Bedrock as data, not code, where the wire format allows). The
 caller is a small binary run as the model user through `internal/modelrun`, so
-the isolation and the launcher stay the same; the API key is injected by the
-egress proxy (M1A-T8) and is never readable by the model process (R12). Reported token usage settles the money ledger;
-a provider without zero data retention is refused for private data classes.
+the isolation and the launcher stay the same; the API key is added by the
+provider gateway (M1A-T8b) and is never readable by the model process (R12). Reported token usage settles the money ledger;
+a provider without zero data retention is refused for `customer-data`.
 New harnesses (for example Pi) remain profile data through the existing
 `model-profile-draft`, `model-probe`, `model-profile-adopt` path.
 
@@ -848,7 +835,7 @@ class under an Owner grant; pipeline model profiles are not scheduler
 executors, so the spec decides whether to extend that mechanism or route
 profiles separately, and must not end with two that disagree). A profile over its quota
 or cap falls through to the next; the reviewer is never the producer's model;
-private data classes skip profiles without zero data retention.
+`customer-data` skips profiles without zero data retention.
 Tests: `TestExhaustedProfileFallsThrough`, `TestReviewerNeverEqualsProducer`,
 `TestPrivateDataSkipsNonZDRProfile`, `TestRoutingNeverWidensCapability`.
 
@@ -1117,7 +1104,8 @@ board. Triage; a drafted reply is delivered to the Owner's inbox and the Owner
 sends it. Summa42 has no send operation at the start (section 2.4); these
 drafts do not count toward rule D1. Prefer
 a read endpoint of the product's own API over direct database access. Customer
-text is private data: zero-data-retention or local models only.
+text is `customer-data`: zero-data-retention or local models only, never in a
+sandbox.
 
 **M7-T6 `DESIGN` then `BUILD`: money.** Invoicing already runs inside the product through
 inFakt behind a provider abstraction; Summa42 does not issue invoices. It
@@ -1175,28 +1163,18 @@ an acceptance test over the running path. With M3-T3 and M4-T3 this meets the
 closing criterion of #5.
 
 **M9-T6 `DESIGN` then `BUILD`: producer and reviewer are different OS users.**
-Section 2.5. Protected paths by design (`internal/modelrun/`,
-`scripts/setup-model-user.sh`); Owner review line by line. The flag
-`--review-model-user` already exists (`registerModelFlags` in
-`cmd/summa42-box/main.go`, called with the prefix `review-model` in
-`ghpipeline.go`); do not add it again. It defaults to `SUMMA42_MODEL_USER`, and
-nothing requires it to differ, so both roles run as one user. The single-stage
-review commands (`run-gh-plan-review`, `run-gh-code-review`, triage review) and
-the fallback reviewers take the reviewer under `--model-user`. Make the
-reviewer user required and distinct everywhere a review runs, with its own
-default `SUMMA42_REVIEW_MODEL_USER`, different from the model user, the
-validation user, the Box user and root; the setup script creates `summa42-review` with its
-own 0700 home and its own copies of the reviewer's CLI logins. The startup
-probe checks, through the same launcher, that neither role can read the other's
-home. Every model call runs in a per-call scratch directory, and after each
-call the Box kills what that call left running and removes its scratch. Model
-calls run concurrently, so validation's `kill -KILL -1` of the whole user
-cannot be reused; the spec chooses the mechanism (a process group or a cgroup
-per call) and how a survivor is detected. Audit the scopes of the CLI logins
-copied into both homes and drop any that can write to a repository.
-Tests: `TestReviewerCannotReadProducerHome`, `TestProducerCannotReadReviewerHome`,
-`TestSameUserForBothRolesRefused`, `TestNothingSurvivesAModelCall`, and a
-`realhost` test like the existing ones in `internal/repoworkspace`.
+Section 2.5. Spec written:
+[reviewer isolation](../specs/2026-11-11-reviewer-isolation-design.md). It is
+binding once the Owner approved it and splits the work into five cards, M9-T6a
+to M9-T6e, each one pull request on protected paths (`internal/modelrun/`,
+`scripts/setup-model-user.sh`), reviewed by the Owner line by line. In short:
+the flag `--review-model-user` already exists and must not be added again; it
+gets its own default (`SUMMA42_REVIEW_MODEL_USER`) and must differ from the
+producer and validation users; every model call records the OS user it ran as,
+and a review refuses when the work it reviews was produced as its own user;
+the role homes are mutually unreadable; nothing a call started survives it;
+the CLI settings a model could change for the next call are checked before
+each call.
 
 **M9-T7 `DESIGN` then `BUILD`: model egress allowlist.** Section 2.5. A model
 process may reach only the endpoints of its own provider. Use the existing
@@ -1274,7 +1252,7 @@ authority widen; is every claim in the README true.
 | The Owner key is readable by the Box user | M5 onward | M4-T4 is an entry condition of M5 |
 | Projects migration breaks the one running installation | M2-T2 | Upgrade test on a copy of the live database; backup first |
 | Company connectors built on guesses | M7 | Section 2.4 records the systems; a card stops (R10) when access or a fact it needs is missing |
-| Private code or customer text reaches a model without zero data retention | M2A, M7 | Data class per repository and source in the manifest; refused before the call |
+| Customer data reaches a model without zero data retention, or private code leaves through a sandbox | M1A, M2A, M7 | Data class per repository and source in the manifest; refused before the call; no fetch outside `public`; customer data never mounted |
 | Plan grows stale | all | A card that no longer matches the code is a stop condition (R10), not a licence to improvise |
 
 ## 8. What is deliberately not in this plan
