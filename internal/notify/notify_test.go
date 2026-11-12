@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -403,5 +404,51 @@ func TestDiscordSenderOutcomes(t *testing.T) {
 	outcome, err = sender.Send(ctx, "x")
 	if outcome != NotSent || err == nil || strings.Contains(err.Error(), "secret-token") {
 		t.Fatalf("no listener: %v %v", outcome, err)
+	}
+}
+
+// A timeout while still dialing wrote nothing, so it is NotSent and retried.
+func TestDiscordSenderTimeoutWhileDialingIsNotSent(t *testing.T) {
+	blackhole := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	sender := &WebhookSender{url: "https://discord.com/api/webhooks/1/secret-token", client: &http.Client{Transport: blackhole, Timeout: 100 * time.Millisecond}}
+	outcome, err := sender.Send(context.Background(), "x")
+	if outcome != NotSent || err == nil || strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("client timeout while dialing: %v %v", outcome, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	sender.client.Timeout = 0
+	outcome, err = sender.Send(ctx, "x")
+	if outcome != NotSent || err == nil {
+		t.Fatalf("cancel while dialing: %v %v", outcome, err)
+	}
+}
+
+// A timeout after the request was written may have delivered it: Unknown.
+func TestDiscordSenderTimeoutAfterWriteIsUnknown(t *testing.T) {
+	received := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		close(received)
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+	client := server.Client()
+	client.Timeout = 300 * time.Millisecond
+	sender := &WebhookSender{url: server.URL + "/api/webhooks/1/secret-token", client: client}
+	outcome, err := sender.Send(context.Background(), "x")
+	if outcome != Unknown || err == nil || strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("timeout after the request was written: %v %v", outcome, err)
+	}
+	select {
+	case <-received:
+	default:
+		t.Fatal("the server never saw the request")
 	}
 }

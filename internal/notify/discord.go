@@ -7,11 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -55,22 +56,24 @@ func (s *WebhookSender) Send(ctx context.Context, message string) (Outcome, erro
 	if err != nil {
 		return NotSent, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, bytes.NewReader(body))
+	var connected atomic.Bool
+	trace := &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { connected.Store(true) }}
+	request, err := http.NewRequestWithContext(httptrace.WithClientTrace(ctx, trace), http.MethodPost, s.url, bytes.NewReader(body))
 	if err != nil {
 		return NotSent, errors.New("build webhook request")
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := s.client.Do(request)
 	if err != nil {
-		// A connection that was never made carried nothing. Anything later
-		// may have delivered the message before it failed.
-		var opErr *net.OpError
-		if errors.As(err, &opErr) && opErr.Op == "dial" {
+		// Until a connection is handed to the request (GotConn fires after
+		// dial, proxy and TLS setup), nothing of the request was written, so
+		// the failure carried nothing: a dial or DNS error, or a timeout or
+		// cancel while still connecting. The trace belongs to the request
+		// context, so a redirect inherits the flag: a failure after an earlier
+		// hop reached a connection stays Unknown. Anything later may have
+		// delivered the message before it failed.
+		if !connected.Load() {
 			return NotSent, errors.New("webhook: could not connect")
-		}
-		var dnsErr *net.DNSError
-		if errors.As(err, &dnsErr) {
-			return NotSent, errors.New("webhook: could not resolve the host")
 		}
 		return Unknown, errors.New("webhook: the request failed after it was sent")
 	}
