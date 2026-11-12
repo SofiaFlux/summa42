@@ -42,6 +42,10 @@ type serveLoop struct {
 	// configuration error stops serve at startup instead of being retried.
 	validate func(args []string) error
 	run      func(ctx context.Context, args []string) error
+	// stopsServe marks the control daemon: it returns nil without its context
+	// ending only when the Owner asked the Box to shut down (POST /shutdown),
+	// which stops the whole serve process instead of restarting the loop.
+	stopsServe bool
 }
 
 var serveMarkers = []string{"--control", "--intake", "--pipeline", "--worker", "--notify"}
@@ -80,7 +84,7 @@ func serveLoops(sections map[string][]string) []serveLoop {
 	known := map[string]serveLoop{
 		// The local control daemon: what `summa42 status`, `mission`, `approvals`
 		// and `approve` talk to. It is the Box started without a subcommand.
-		"--control": {name: "control", run: func(ctx context.Context, _ []string) error { return run(ctx) }, validate: func(args []string) error {
+		"--control": {name: "control", stopsServe: true, run: func(ctx context.Context, _ []string) error { return run(ctx) }, validate: func(args []string) error {
 			if len(args) != 0 {
 				return fmt.Errorf("the control daemon takes no flags, got %q", args)
 			}
@@ -126,8 +130,12 @@ func serveLoops(sections map[string][]string) []serveLoop {
 // supervise runs every loop until ctx ends. A loop that returns, with or
 // without an error, or panics, is started again after a delay that doubles
 // from restartMin to restartMax and returns to restartMin once a run has
-// lasted longer than restartMax.
-func supervise(ctx context.Context, loops []serveLoop, restartMin, restartMax time.Duration, log io.Writer) {
+// lasted longer than restartMax. A stopsServe loop that returns without an
+// error and without ctx ending is an Owner shutdown request: every loop is
+// cancelled and supervise returns.
+func supervise(parent context.Context, loops []serveLoop, restartMin, restartMax time.Duration, log io.Writer) {
+	ctx, stop := context.WithCancel(parent)
+	defer stop()
 	var logMu sync.Mutex
 	logf := func(format string, values ...any) {
 		logMu.Lock()
@@ -145,6 +153,11 @@ func supervise(ctx context.Context, loops []serveLoop, restartMin, restartMax ti
 				err := runLoopOnce(ctx, loop)
 				if ctx.Err() != nil {
 					logf("serve: %s stopped", loop.name)
+					return
+				}
+				if err == nil && loop.stopsServe {
+					logf("serve: %s stopped at the Owner's request; stopping serve", loop.name)
+					stop()
 					return
 				}
 				if time.Since(started) > restartMax {

@@ -155,6 +155,28 @@ func TestServeStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestServeStopsWhenTheOwnerRequestsShutdown(t *testing.T) {
+	var intake atomic.Int32
+	var controlStarts atomic.Int32
+	control := serveLoop{name: "control", stopsServe: true, run: func(context.Context, []string) error {
+		controlStarts.Add(1)
+		return nil // the control daemon's return after POST /shutdown
+	}}
+	done := make(chan struct{})
+	go func() {
+		supervise(context.Background(), []serveLoop{blockingLoop("intake", &intake, nil), control}, time.Millisecond, time.Millisecond, &lockedBuffer{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve kept running after the Owner requested shutdown")
+	}
+	if controlStarts.Load() != 1 {
+		t.Fatalf("the control daemon was started %d times, want 1", controlStarts.Load())
+	}
+}
+
 func TestSecondServeRefused(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "serve.lock")
 	release, err := lockServe(path)
