@@ -481,7 +481,13 @@ fi
 		t.Fatal(err)
 	}
 
-	adapter, err := New(Config{RunAsUser: testUser, Binary: scriptPath, Timeout: 5 * time.Second})
+	// The rejected answer is kept only in the configured directory, never in
+	// the user's home: a test or a second Collective must not write into the
+	// Owner's ~/.summa42.
+	home := filepath.Join(temp, "home")
+	t.Setenv("HOME", home)
+	rejected := filepath.Join(temp, "rejected")
+	adapter, err := New(Config{RunAsUser: testUser, Binary: scriptPath, Timeout: 5 * time.Second, RejectedDir: rejected})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,6 +501,12 @@ fi
 	}
 	if out.Rationale != "repaired" {
 		t.Fatalf("expected rationale 'repaired', got %q", out.Rationale)
+	}
+	if kept, err := os.ReadDir(rejected); err != nil || len(kept) != 1 {
+		t.Fatalf("expected one kept rejected answer in RejectedDir, got %d (%v)", len(kept), err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".summa42")); !os.IsNotExist(err) {
+		t.Fatalf("the adapter wrote into the user's home: %v", err)
 	}
 
 	cntBytes, err := os.ReadFile(countFile)
