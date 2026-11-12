@@ -910,7 +910,9 @@ func openWorkerBox(ctx context.Context, runtimeCfg summa42runtime.Config, modelC
 		return nil, verdict, fmt.Errorf("open Box runtime: %w", err)
 	}
 	adapter = adapter.WithLedger(box.Store, "worker", "")
-	installTriageExecutor(box.Executors, box.Evidence, adapter)
+	if installTriageExecutor(box.Executors, box.Evidence, adapter) {
+		box.Executors[ghtriage.ExecutorKind] = caseScopedExecutor{box.Executors[ghtriage.ExecutorKind], box.Store.DB()}
+	}
 	return box, verdict, nil
 }
 

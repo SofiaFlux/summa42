@@ -152,3 +152,23 @@ func TestFailedCallKeepsItsMessage(t *testing.T) {
 		t.Fatalf("error row = %+v, want the error text", row)
 	}
 }
+
+func TestCaseInTheCallContextWinsOverTheAdaptersCase(t *testing.T) {
+	binary, _ := fakeCommandCode(t, resultLine("success", reviewAnswer, ""))
+	ledger := &memLedger{}
+	adapter, err := New(Config{RunAsUser: testUser, Binary: binary, CommandCodeModel: "reflection/beam:free", Timeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter = adapter.WithLedger(ledger, "plan-review", "")
+	review := ghtriage.PlanReviewInput{Schema: ghtriage.PlanReviewVersion}
+	if _, err := adapter.ReviewPlan(capacity.WithCaseID(context.Background(), "case_7"), review); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.ReviewPlan(context.Background(), review); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.calls) != 2 || ledger.calls[0].CaseID != "case_7" || ledger.calls[1].CaseID != "" {
+		t.Fatalf("ledger case IDs = %+v, want case_7 for the call that named it and none for the other", ledger.calls)
+	}
+}

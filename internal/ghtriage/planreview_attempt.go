@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/SofiaFlux/summa42/internal/capacity"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/execution"
@@ -24,6 +25,7 @@ const planReviewVerifierType = "github.issue.plan.review.binding.v1"
 const PlanReviewLeaseDuration = 5 * time.Minute
 
 func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, plan Plan, planID domain.ID, snap Snapshot, source repoworkspace.Snapshot) (PlanReviewRecord, evidence.EvidenceObject, error) {
+	ctx = capacity.WithCaseID(ctx, string(c.ID))
 	expected := PlanReviewRecord{Schema: PlanReviewVersion, CaseID: c.ID, WorkID: c.CurrentWorkID, PlanEvidenceID: planID, ContextEvidenceID: plan.Source.ContextEvidenceID, BaseSHA: plan.Source.BaseSHA, Reviewer: r.reviewer}
 	fail := func(err error) (PlanReviewRecord, evidence.EvidenceObject, error) {
 		return PlanReviewRecord{}, evidence.EvidenceObject{}, err

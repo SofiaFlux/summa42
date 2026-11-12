@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SofiaFlux/summa42/internal/capacity"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
 	"github.com/SofiaFlux/summa42/internal/execution"
@@ -229,6 +230,7 @@ func (p *Planner) holdCase(ctx context.Context, c workflowcase.Case, failureID d
 
 func (p *Planner) planCase(ctx context.Context, candidate PlanningCandidate) error {
 	c := candidate.Case
+	ctx = capacity.WithCaseID(ctx, string(c.ID))
 	if c.CompletedSteps+1 >= c.MaxSteps || c.RemainingBudget <= 0 {
 		return errors.New("case has no room for a planning handoff")
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/SofiaFlux/summa42/internal/capacity"
 	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
@@ -141,6 +142,7 @@ const (
 )
 
 func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (outcome, error) {
+	ctx = capacity.WithCaseID(ctx, string(c.ID))
 	records, err := r.cases.ListAssessments(ctx, c.ID)
 	if err != nil {
 		return noDecision, err
