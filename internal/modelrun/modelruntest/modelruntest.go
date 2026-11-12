@@ -4,6 +4,7 @@
 package modelruntest
 
 import (
+	"context"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -59,6 +60,8 @@ func InstallScript(body string) (home, sudoLog string, cleanup func(), err error
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		return "", "", nil, err
 	}
+	// Tests run with a gate that allows; a test of the gate sets its own.
+	modelrun.SetGate(func(context.Context) error { return nil })
 	modelrun.SetSeamsForTest(fake, func(name string) (*user.User, error) {
 		switch name {
 		case User:

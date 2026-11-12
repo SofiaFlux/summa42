@@ -12,6 +12,7 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/repoworkspace"
+	"github.com/SofiaFlux/summa42/internal/texthygiene"
 )
 
 const (
@@ -78,6 +79,9 @@ func (p PlanOutput) Validate() error {
 			if strings.TrimSpace(pth) == "" || len(pth) > 240 {
 				return fmt.Errorf("read_repo_file[%d] must be a non-empty path under 240 characters", i)
 			}
+			if err := texthygiene.Check(fmt.Sprintf("read_repo_file[%d]", i), pth); err != nil {
+				return err
+			}
 			if seen[pth] {
 				return fmt.Errorf("duplicate path %q in read_repo_file", pth)
 			}
@@ -89,12 +93,18 @@ func (p PlanOutput) Validate() error {
 	if textLength(p.Summary, 1, 1000) != nil {
 		return errors.New("plan summary must contain 1 to 1000 characters")
 	}
+	if err := texthygiene.Check("plan summary", p.Summary); err != nil {
+		return err
+	}
 	if len(p.Steps) < 1 || len(p.Steps) > 8 {
 		return errors.New("plan must contain 1 to 8 steps")
 	}
 	for i, step := range p.Steps {
 		if textLength(step.Objective, 1, 300) != nil || textLength(step.DoneWhen, 1, 1000) != nil {
 			return fmt.Errorf("plan step %d needs a bounded objective and done_when", i+1)
+		}
+		if err := texthygiene.Check(fmt.Sprintf("plan step %d", i+1), step.Objective+"\n"+step.DoneWhen); err != nil {
+			return err
 		}
 	}
 	if len(p.AllowedPaths) > 64 {
@@ -169,6 +179,8 @@ type PlanInput struct {
 	TrackedFiles       []string       `json:"tracked_files,omitempty"`
 	Turn               int            `json:"turn,omitempty"`
 	ReadResults        []ReadResult   `json:"read_results,omitempty"`
+	// PriorReviews is set for a plan repair: why earlier plans were sent back.
+	PriorReviews []PriorReview `json:"prior_reviews,omitempty"`
 }
 
 type PlanModel interface {

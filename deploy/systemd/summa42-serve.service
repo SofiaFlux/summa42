@@ -1,0 +1,23 @@
+# Runs intake and the pipeline for one repository as the Box user.
+# Install: see docs/operations/running-serve.md.
+[Unit]
+Description=Summa42 Box (serve: intake and pipeline)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The Box user: the account that ran `summa42 init`. Never root, never the
+# model user or the validation user.
+User=summa42
+EnvironmentFile=/etc/summa42/serve.env
+ExecStart=/usr/local/lib/summa42/summa42-serve.sh
+# serve restarts its own loops. systemd restarts serve itself if it exits.
+Restart=always
+RestartSec=10
+# Model calls end by themselves on SIGTERM; give running ones time to stop.
+TimeoutStopSec=90
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -112,7 +113,9 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 	var mission, root, repo, base, credential, fallbackPath string
 	var once bool
 	var interval time.Duration
+	var maxRepairs int
 	flags := flag.NewFlagSet("run-gh-pipeline", flag.ContinueOnError)
+	flags.IntVar(&maxRepairs, "max-repairs", ghtriage.DefaultMaxRepairs, "repairs a case may get after a REVISE verdict, counted over plan and code review: the reviewer's reasons go to a new plan or a new candidate; 0 holds the case on every REVISE")
 	flags.StringVar(&mission, "mission", "", "mission whose GitHub cases are advanced")
 	flags.StringVar(&root, "workspace-root", "", "absolute directory outside --source-repo for worker and implementation attempts")
 	flags.StringVar(&repo, "repository", "", "GitHub owner/name publications go to")
@@ -135,6 +138,9 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 	if !filepath.IsAbs(grounding.local) || !filepath.IsAbs(root) || !filepath.IsAbs(credential) ||
 		strings.TrimSpace(base) == "" || strings.TrimSpace(repo) == "" {
 		return nil, 0, errors.New("run-gh-pipeline requires absolute --source-repo, --workspace-root and --credential-file, and --base-branch and --repository")
+	}
+	if maxRepairs < 0 {
+		return nil, 0, errors.New("run-gh-pipeline requires a non-negative --max-repairs")
 	}
 	if once == (interval != 0) || interval < 0 {
 		return nil, 0, errors.New("run-gh-pipeline requires exactly one of --once or a positive --interval")
@@ -179,6 +185,7 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 	source := grounding.local
 	missionArgs := []string{"--mission=" + mission}
 	produce, review := modelFlagArgv(producer), modelFlagArgv(reviewer)
+	repairs := []string{"--max-repairs=" + strconv.Itoa(maxRepairs)}
 	// ponytail: fixed stage timeouts; the per-case ones sit a minute under
 	// their stage's attempt lease. Make them flags if a deployment needs to.
 	p := &pipeline{
@@ -205,13 +212,13 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 				[]string{"--once", "--workspace-root=" + root, "--lease-duration=" + pipelineWorkerLease(producer.Timeout).String(), "--credential-file=" + credential}, produce)},
 			{"triage-review", pipelineBatchTimeout(reviewer.Timeout), runGHTriageReview, slices.Concat(missionArgs, review)},
 			{"plan", pipelineBatchTimeout(producer.Timeout), runGHPlan, slices.Concat(missionArgs, grounding.argv(), produce)},
-			{"plan-review", pipelineBatchTimeout(reviewer.Timeout), runGHPlanReview, slices.Concat(missionArgs, planBase(grounding), review)},
+			{"plan-review", pipelineBatchTimeout(reviewer.Timeout), runGHPlanReview, slices.Concat(missionArgs, planBase(grounding), repairs, review)},
 		},
 		perCase: []pipelineStage{
 			{"implement", ghtriage.ImplementationLease(producer.Timeout, ghtriage.MaxValidationCommands, validation.Timeout) - time.Minute, runGHImplement, slices.Concat(
 				[]string{"--source-repo=" + source, "--workspace-root=" + root, "--validation-user=" + validation.User, "--validation-timeout=" + validation.Timeout.String()}, produce)},
 			{"code-review", ghtriage.CodeReviewLease(reviewer.Timeout) - time.Minute, runGHCodeReview, slices.Concat(
-				[]string{"--source-repo=" + source}, review)},
+				[]string{"--source-repo=" + source}, repairs, review)},
 			{"publish", ghtriage.PublicationLeaseDuration - time.Minute, runGHPublish, []string{
 				"--source-repo=" + source, "--base-branch=" + base, "--repository=" + repo, "--credential-file=" + credential}},
 		},

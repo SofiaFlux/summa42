@@ -222,6 +222,72 @@ func TestEarlyCancelKillsTheModelSideGroupThroughSudo(t *testing.T) {
 	}
 }
 
+// A fake sudo that escapes the Box's process group and only then, after a
+// pause, runs the launcher's prologue: the model side is out of reach of
+// local signals before its process-group marker exists.
+const slowEscapingSudo = "while [ \"$1\" != -- ]; do shift; done\nshift\n" +
+	"case \"$1\" in */kill|kill) exec \"$@\";; esac\n" +
+	"exec setsid -w sh -c 'sleep 0.4; exec \"$@\"' sh \"$@\"\n"
+
+// A cancel that arrives after the launcher started but before the Box read
+// the process-group marker must still stop the model side. Before the fix the
+// cancel read the marker once, found none, sent only local signals (which
+// cannot cross the boundary), and the model lived until WaitDelay.
+func TestCancelBeforeTheMarkerStillKillsTheModelSide(t *testing.T) {
+	home, sudoLog, cleanup, err := modelruntest.InstallScript(slowEscapingSudo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	bin := script(t, "echo $$ > "+pidFile+"\nwhile :; do sleep 1; done\n")
+	cmd, err := modelrun.Command(context.Background(), modelrun.Spec{RunAs: fakeUser(home), Binary: bin, Timeout: time.Hour, WaitDelay: 20 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	cmd.Cancel() // the marker is at least 0.4 s away
+	_ = cmd.Wait()
+	if elapsed := time.Since(started); elapsed > 8*time.Second {
+		t.Fatalf("cancel before the marker took %s: the model side was not killed", elapsed)
+	}
+	logged, _ := os.ReadFile(sudoLog)
+	if !strings.Contains(string(logged), "-u "+modelruntest.User+" -- /bin/kill -TERM -- -") {
+		t.Fatalf("no model-side kill through sudo: %q", logged)
+	}
+	if _, err := os.Stat(pidFile); err == nil && pidFileAlive(t, pidFile) {
+		t.Fatal("model process survived a cancel that came before the marker")
+	}
+}
+
+// When the launcher never prints a marker, a cancel must not wait forever for
+// one: it falls back to local signals after the bounded wait.
+func TestCancelWithoutAnyMarkerDoesNotHang(t *testing.T) {
+	// This sudo runs the model directly and never runs the prologue.
+	home, _, cleanup, err := modelruntest.InstallScript("while [ \"$1\" != -- ]; do shift; done\nshift\ncase \"$1\" in */kill|kill) exit 0;; esac\nexec sleep 30\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	defer modelrun.SetMarkerWaitForTest(200 * time.Millisecond)()
+	cmd, err := modelrun.Command(context.Background(), modelrun.Spec{RunAs: fakeUser(home), Binary: script(t, "exit 0\n"), Timeout: time.Hour, WaitDelay: 20 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	cmd.Cancel()
+	_ = cmd.Wait()
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("cancel without a marker took %s", elapsed)
+	}
+}
+
 func TestEarlyCancelEscalatesToKillAfterTheGrace(t *testing.T) {
 	home, sudoLog, cleanup, err := modelruntest.InstallScript(escapingSudo)
 	if err != nil {
@@ -448,4 +514,19 @@ func runOutput(cmd *modelrun.Cmd) ([]byte, error) {
 	cmd.Stdout = &out
 	err := cmd.Run()
 	return out.Bytes(), err
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// pidFileAlive2 reports at once whether the process in the pid file exists.
+func pidFileAlive2(path string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	return err == nil && syscall.Kill(pid, 0) == nil
 }

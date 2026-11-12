@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/SofiaFlux/summa42/internal/approvals"
+	"github.com/SofiaFlux/summa42/internal/casereport"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghpublish"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
@@ -317,6 +318,15 @@ func TestPublicationResumesExactApprovedOperations(t *testing.T) {
 	var requests int
 	if err = f.store.DB().QueryRowContext(f.ctx, `SELECT count(*) FROM approval_requests`).Scan(&requests); err != nil || requests != 2 {
 		t.Fatal("approval rebound", requests, err)
+	}
+	// The case report counts exactly these two Owner approvals as
+	// interventions of this case.
+	report, err := casereport.Build(f.ctx, f.store, f.cases, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Interventions.Approvals != 2 || report.Interventions.Rejections != 0 || report.Interventions.Total != 2 {
+		t.Fatalf("case report interventions = %+v, want the two approvals", report.Interventions)
 	}
 }
 func TestPublicationRejectsUpstreamCompletionMismatch(t *testing.T) {

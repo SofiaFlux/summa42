@@ -90,4 +90,4 @@ A Constructor never possesses self-granted authority:
 
 ## Interactive Visualization
 An interactive, pan-and-zoom SVG diagram of this architecture is available at:
-[`docs/architecture/constructors-collective-architecture.html`](file:///home/topol/git/summa42/docs/architecture/constructors-collective-architecture.html)
+[`docs/architecture/constructors-collective-architecture.html`](constructors-collective-architecture.html)

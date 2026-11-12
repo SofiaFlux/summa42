@@ -28,3 +28,19 @@ func SetKillGraceForTest(d time.Duration) func() {
 	killGrace = d
 	return func() { killGrace = old }
 }
+
+// SetMarkerWaitForTest shortens how long a cancel waits for the process-group
+// marker and returns the restore function.
+func SetMarkerWaitForTest(d time.Duration) func() {
+	old := markerWait
+	markerWait = d
+	return func() { markerWait = old }
+}
+
+// SetGateTimingForTest shortens the gate's check interval and returns the
+// restore function.
+func SetGateTimingForTest(interval time.Duration) func() {
+	old := gateInterval
+	gateInterval = interval
+	return func() { gateInterval = old }
+}

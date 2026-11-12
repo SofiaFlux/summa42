@@ -5,6 +5,7 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/control"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
+	"github.com/SofiaFlux/summa42/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -23,6 +24,8 @@ func newRootCommandWithClient(api control.API) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "summa42",
 		Short: "Control a Summa42",
+		// --version prints it.
+		Version: version.Version,
 	}
 	var jsonOutput bool
 	command.PersistentFlags().BoolVar(&jsonOutput, "json", false, "emit stable JSON DTO output")
@@ -30,6 +33,10 @@ func newRootCommandWithClient(api control.API) *cobra.Command {
 		NewInitCommand(),
 		newPolicyCommand(),
 		newEmergencyCommand(&jsonOutput),
+		newEnvelopeCommand(&jsonOutput),
+		newBackupCommand(&jsonOutput),
+		newCasesCommand(&jsonOutput),
+		newCaseCommand(&jsonOutput),
 		newStatusCommand(api, &jsonOutput),
 		newMissionCommand(api, &jsonOutput),
 		newTaskCommand(api, &jsonOutput),

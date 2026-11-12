@@ -40,6 +40,9 @@ var (
 	killBinary    = "/bin/kill"
 	killAllBinary = "/bin/kill"
 	killGrace     = 10 * time.Second
+	// markerWait bounds how long a cancel waits for the process-group marker
+	// when it has not been read yet.
+	markerWait    = 3 * time.Second
 	shellBinary   = "/bin/sh"
 	defaultPATH   = DefaultPATH
 	defaultLocale = "C.UTF-8"
@@ -254,7 +257,11 @@ func build(ctx context.Context, spec Spec, probed bool) (*Cmd, error) {
 		shellBinary, "-c", script, "sh", dir, home, path, lang, spec.Binary)
 	argv = append(argv, spec.Args...)
 
-	c := &Cmd{Cmd: exec.CommandContext(ctx, argv[0], argv[1:]...), runAs: spec.RunAs.Username, done: make(chan struct{})}
+	// The gate stops a running call by cancelling this context, so a refusal
+	// takes the same path as a cancel by the caller: exec runs cmd.Cancel and
+	// arms WaitDelay. Wait releases it.
+	ctx, stop := context.WithCancel(ctx)
+	c := &Cmd{Cmd: exec.CommandContext(ctx, argv[0], argv[1:]...), runAs: spec.RunAs.Username, done: make(chan struct{}), stop: stop}
 	cmd := c.Cmd
 	// The launcher carries only PATH (to find sudo) and the allowlisted values.
 	// "/" because the Box's cwd may not be reachable by the model user.
@@ -267,7 +274,7 @@ func build(ctx context.Context, spec Spec, probed bool) (*Cmd, error) {
 	isolateProcessTree(cmd)
 	local := cmd.Cancel
 	cmd.Cancel = func() error {
-		if pgid := c.pgid.Load(); pgid > 1 {
+		if pgid := c.awaitMarker(); pgid > 1 {
 			c.killModelGroup(pgid)
 		}
 		if local != nil {
@@ -293,6 +300,12 @@ type Cmd struct {
 	done     chan struct{}
 	doneOnce sync.Once
 	filter   *markerFilter
+	// stop cancels the call's context; the gate uses it to stop the process.
+	stop context.CancelFunc
+	// gateErr is set when the gate stopped the running process.
+	gateErr atomic.Pointer[error]
+	// gateDone is closed when the gate watcher has ended; nil before Start.
+	gateDone chan struct{}
 }
 
 // Start wraps the caller's stderr to strip the pgid marker line.
@@ -303,16 +316,31 @@ func (c *Cmd) Start() error {
 	}
 	c.filter = &markerFilter{dst: dst, found: func(pgid int64) { c.pgid.Store(pgid) }}
 	c.Cmd.Stderr = c.filter
-	if err := c.Cmd.Start(); err != nil {
+	if err := checkGateAtStart(context.Background()); err != nil {
 		c.doneOnce.Do(func() { close(c.done) })
+		c.stop()
 		return err
 	}
+	if err := c.Cmd.Start(); err != nil {
+		c.doneOnce.Do(func() { close(c.done) })
+		c.stop()
+		return err
+	}
+	c.gateDone = make(chan struct{})
+	go c.watchGate(currentGate(), gateInterval, gateFailureLimit)
 	return nil
 }
 
 func (c *Cmd) Wait() error {
 	err := c.Cmd.Wait()
 	c.doneOnce.Do(func() { close(c.done) })
+	c.stop()
+	if c.gateDone != nil {
+		<-c.gateDone
+	}
+	if stopped := c.gateErr.Load(); stopped != nil {
+		err = fmt.Errorf("modelrun: process stopped: %w", *stopped)
+	}
 	if c.filter != nil {
 		c.filter.flush()
 	}
@@ -338,6 +366,30 @@ func (c *Cmd) Run() error {
 		return err
 	}
 	return c.Wait()
+}
+
+// awaitMarker returns the model-side process group, waiting up to markerWait
+// for the marker when it has not been read yet. A cancel can arrive between
+// the launcher's start and the moment the Box reads the marker line; reading
+// the marker only once there would skip the model-side kill, and local signals
+// do not cross the uid boundary, so the model would run on until WaitDelay.
+// It returns 0 when the call ended or no marker came in time.
+func (c *Cmd) awaitMarker() int64 {
+	wait := markerWait
+	deadline := time.Now().Add(wait)
+	for {
+		if pgid := c.pgid.Load(); pgid > 1 {
+			return pgid
+		}
+		if !time.Now().Before(deadline) {
+			return 0
+		}
+		select {
+		case <-c.done:
+			return c.pgid.Load()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 }
 
 // killModelGroup signals the model-side process group as the model user:

@@ -660,21 +660,33 @@ func (s *Service) Find(ctx context.Context, missionID domain.ID, source, objectI
 type rowScanner interface{ Scan(...any) error }
 
 func scanCase(row rowScanner) (Case, string, error) {
+	var requestJSON string
+	c, err := scanCaseColumns(row, &requestJSON)
+	return c, requestJSON, err
+}
+
+// scanCaseWith scans caseColumns followed by the extra columns of the query.
+func scanCaseWith(row rowScanner, extra ...any) (Case, error) {
+	var requestJSON string
+	return scanCaseColumns(row, &requestJSON, extra...)
+}
+
+func scanCaseColumns(row rowScanner, requestJSON *string, extra ...any) (Case, error) {
 	var c Case
-	var workJSON, grantJSON, requestJSON string
-	err := row.Scan(&c.ID, &c.MissionID, &c.Source, &c.ObjectID, &c.RevisionID,
+	var workJSON, grantJSON string
+	targets := append([]any{&c.ID, &c.MissionID, &c.Source, &c.ObjectID, &c.RevisionID,
 		&c.ObservationEvidenceID, &c.State, &c.CurrentWorkID, &workJSON, &grantJSON,
-		&c.CompletedSteps, &c.MaxSteps, &c.RemainingBudget, &c.ProgressSignature, &requestJSON, &c.Phase)
-	if err != nil {
-		return Case{}, "", err
+		&c.CompletedSteps, &c.MaxSteps, &c.RemainingBudget, &c.ProgressSignature, requestJSON, &c.Phase}, extra...)
+	if err := row.Scan(targets...); err != nil {
+		return Case{}, err
 	}
 	if err := json.Unmarshal([]byte(workJSON), &c.NextWork); err != nil {
-		return Case{}, "", fmt.Errorf("decode next work: %w", err)
+		return Case{}, fmt.Errorf("decode next work: %w", err)
 	}
 	if err := json.Unmarshal([]byte(grantJSON), &c.Grant); err != nil {
-		return Case{}, "", fmt.Errorf("decode grant: %w", err)
+		return Case{}, fmt.Errorf("decode grant: %w", err)
 	}
-	return c, requestJSON, nil
+	return c, nil
 }
 
 func isDirectiveReason(reason string) bool {

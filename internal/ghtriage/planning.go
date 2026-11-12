@@ -22,6 +22,9 @@ type PlanningCandidate struct {
 	Decision           Decision
 	DecisionEvidenceID domain.ID
 	Severity           int
+	// PriorReviews holds the plan reviewer's reasons when the case is at plan
+	// repair work; empty for a first plan.
+	PriorReviews []PriorReview
 }
 
 // PlanningGate supplies candidates for a planner. A planner must recheck these
@@ -60,7 +63,7 @@ func (g *PlanningGate) List(ctx context.Context, missionID domain.ID) ([]Plannin
 	result := make([]PlanningCandidate, 0)
 	var caseErrs []CaseError
 	for _, c := range active {
-		if c.Source != SourceGitHub || c.CurrentWorkID == "" || c.NextWork.Kind != TaskClass {
+		if c.Source != SourceGitHub || c.CurrentWorkID == "" || (c.NextWork.Kind != TaskClass && c.NextWork.Kind != PlanRepairWorkKind) {
 			continue
 		}
 		candidate, ok, err := g.candidate(ctx, missionID, c)
@@ -100,7 +103,49 @@ func (g *PlanningGate) candidate(ctx context.Context, missionID domain.ID, c wor
 	if !latest {
 		return none, false, nil
 	}
-	task, found, err := g.exec.FindByIdempotencyKey(ctx, string(c.CurrentWorkID))
+	// The triage work is the case's current work for a first plan. At plan
+	// repair work it is the work the accepted index names, and the repair must
+	// be backed by a REVISE plan review.
+	triageWorkID := c.CurrentWorkID
+	var priorReviews []PriorReview
+	if c.NextWork.Kind == PlanRepairWorkKind {
+		records, err := g.cases.ListAssessments(ctx, c.ID)
+		if err != nil {
+			return none, false, err
+		}
+		history, err := decodeAssessments(records)
+		if err != nil {
+			return none, false, err
+		}
+		producer, err := producerOf(history, string(c.CurrentWorkID))
+		if err != nil {
+			return none, false, err
+		}
+		if producer == nil {
+			return none, false, fmt.Errorf("case %s is at plan repair work that no assessment produced", c.ID)
+		}
+		if err := checkRepair(ctx, g.evidence, c, *producer, RepairOfPlanReview, PlanRepairWorkKind); err != nil {
+			return none, false, fmt.Errorf("case %s: %w", c.ID, err)
+		}
+		for _, item := range history {
+			if item.isRepair() && item.req.RepairOf == RepairOfPlanReview {
+				priorReviews = append(priorReviews, PriorReview{Stage: RepairOfPlanReview, Reason: reviewReason(item.req.Assessment.Reason)})
+			}
+		}
+		indexRaw, indexFound, err := findAcceptedIndex(ctx, g.evidence, c)
+		if err != nil {
+			return none, false, err
+		}
+		if !indexFound {
+			return none, false, fmt.Errorf("case %s is at plan repair work without an accepted triage index", c.ID)
+		}
+		var index acceptedIndex
+		if err := json.Unmarshal(indexRaw, &index); err != nil {
+			return none, false, fmt.Errorf("decode accepted index for case %s: %w", c.ID, err)
+		}
+		triageWorkID = index.TaskID
+	}
+	task, found, err := g.exec.FindByIdempotencyKey(ctx, string(triageWorkID))
 	if err != nil {
 		return none, false, err
 	}
@@ -125,7 +170,7 @@ func (g *PlanningGate) candidate(ctx context.Context, missionID domain.ID, c wor
 	if err := json.Unmarshal(raw, &accepted); err != nil {
 		return none, false, fmt.Errorf("decode accepted index for case %s: %w", c.ID, err)
 	}
-	if accepted.CaseID != c.ID || accepted.TaskID != c.CurrentWorkID || accepted.Revision != c.RevisionID {
+	if accepted.CaseID != c.ID || accepted.TaskID != triageWorkID || accepted.Revision != c.RevisionID {
 		return none, false, fmt.Errorf("accepted index identity differs from case %s", c.ID)
 	}
 	if !acceptance.CriteriaMet || acceptance.AttemptID != task.CurrentAttemptID ||
@@ -168,5 +213,5 @@ func (g *PlanningGate) candidate(ctx context.Context, missionID domain.ID, c wor
 			}
 		}
 	}
-	return PlanningCandidate{Case: c, Decision: decision, DecisionEvidenceID: object.ID, Severity: sev}, true, nil
+	return PlanningCandidate{Case: c, Decision: decision, DecisionEvidenceID: object.ID, Severity: sev, PriorReviews: priorReviews}, true, nil
 }

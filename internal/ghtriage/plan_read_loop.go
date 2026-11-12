@@ -130,8 +130,12 @@ func (p *Planner) planWithReads(ctx context.Context, repo string, snap Snapshot,
 			Files:      currentFiles,
 		}
 
+		if len(candidate.PriorReviews) > 0 && !strings.HasSuffix(question, PriorReviewsNote) {
+			question += PriorReviewsNote
+		}
 		input := PlanInput{
 			Schema:             PlanSchemaV2,
+			PriorReviews:       candidate.PriorReviews,
 			Question:           question,
 			Snapshot:           snap,
 			Decision:           candidate.Decision,

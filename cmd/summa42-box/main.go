@@ -544,6 +544,8 @@ func verifyPolicySetSignature(ctx context.Context, db *sql.DB, ownerID domain.ID
 
 // subcommands maps each run-* name (and its run-repo-* alias) to its command.
 var subcommands = map[string]func(context.Context, []string) error{
+	"serve":                  runServe,
+	"run-notifier":           runNotifier,
 	"run-worker":             runWorker,
 	"run-observer":           runObserver,
 	"run-gh-intake":          runGHIntake,
@@ -601,7 +603,7 @@ func isolationProbePaths(home string, cfg localconfig.Config, boxHome string) (r
 		}
 	}
 	optional = []string{filepath.Join(keys, "owner.key"), cfg.DatabasePath + "-wal", cfg.DatabasePath + "-shm"}
-	for _, name := range []string{"github_token", "gh-app.pem", "gh-app.json", "discord_auth.json", "openrouter_key"} {
+	for _, name := range []string{"github_token", "gh-app.pem", "gh-app.json", "discord_auth.json", "discord_webhook", "openrouter_key"} {
 		optional = append(optional, filepath.Join(home, name))
 	}
 	if boxHome != "" {
@@ -613,6 +615,7 @@ func isolationProbePaths(home string, cfg localconfig.Config, boxHome string) (r
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	registerIsolationProbe()
+	registerEmergencyGate()
 	if len(os.Args) > 1 {
 		if command, ok := subcommands[os.Args[1]]; ok {
 			code := exitStatus(command(ctx, os.Args[2:]), os.Stderr)
@@ -907,7 +910,9 @@ func openWorkerBox(ctx context.Context, runtimeCfg summa42runtime.Config, modelC
 		return nil, verdict, fmt.Errorf("open Box runtime: %w", err)
 	}
 	adapter = adapter.WithLedger(box.Store, "worker", "")
-	installTriageExecutor(box.Executors, box.Evidence, adapter)
+	if installTriageExecutor(box.Executors, box.Evidence, adapter) {
+		box.Executors[ghtriage.ExecutorKind] = caseScopedExecutor{box.Executors[ghtriage.ExecutorKind], box.Store.DB()}
+	}
 	return box, verdict, nil
 }
 

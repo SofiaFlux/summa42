@@ -19,17 +19,22 @@ import (
 )
 
 // parseGHCodeReviewFlags is run-gh-code-review's flag parsing, without filesystem checks.
-func parseGHCodeReviewFlags(args []string) (caseID, source string, modelConfig climodel.Config, err error) {
+func parseGHCodeReviewFlags(args []string) (caseID, source string, modelConfig climodel.Config, maxRepairs int, err error) {
 	flags := flag.NewFlagSet("run-gh-code-review", flag.ContinueOnError)
 	fallbackOf := flags.String("model-fallback-of", "", "pool a replacement reviewer stands in for (set by run-gh-pipeline)")
 	flags.StringVar(&caseID, "case", "", "active implementation case ID")
 	flags.StringVar(&source, "source-repo", "", "absolute source repository used for the implementation")
+	flags.IntVar(&maxRepairs, "max-repairs", 0, "repairs a case may get after a REVISE, counted over plan and code review; 0 holds the case on every REVISE")
 	registerTriageModelFlags(flags, "independent reviewer wrapper returning ACCEPT, REVISE or BLOCK")
 	if err = flags.Parse(args); err != nil {
 		return
 	}
 	if strings.TrimSpace(caseID) == "" || !filepath.IsAbs(source) || flags.NArg() != 0 {
 		err = errors.New("run-gh-code-review requires --case and absolute --source-repo with no positional arguments")
+		return
+	}
+	if maxRepairs < 0 {
+		err = errors.New("run-gh-code-review requires a non-negative --max-repairs")
 		return
 	}
 	modelConfig, err = triageModelConfig(flags)
@@ -41,7 +46,7 @@ func runGHCodeReview(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context required")
 	}
-	caseID, source, modelConfig, err := parseGHCodeReviewFlags(args)
+	caseID, source, modelConfig, maxRepairs, err := parseGHCodeReviewFlags(args)
 	if err != nil {
 		return err
 	}
@@ -69,8 +74,9 @@ func runGHCodeReview(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
-	adapter = adapter.WithLedger(box.Store, "code-review", "")
+	adapter = adapter.WithLedger(box.Store, "code-review", strings.TrimSpace(caseID))
 	reviewer := ghtriage.NewCodeReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout()).WithReviewer(reviewerIdentity(modelConfig))
+	reviewer.WithMaxRepairs(maxRepairs)
 	result, err := reviewer.Review(ctx, domain.ID(strings.TrimSpace(caseID)), source)
 	if err != nil {
 		return err
@@ -82,7 +88,9 @@ func runGHCodeReview(ctx context.Context, args []string) error {
 		return errBusy
 	}
 	if result.Record != nil && !result.Accepted {
-		return fmt.Errorf("implementation held: code review %s or recorded validation failed", result.Record.Verdict)
+		// With repairs enabled a REVISE may have continued the case into new
+		// implementation work; the message covers both outcomes.
+		return fmt.Errorf("implementation not accepted: code review %s or recorded validation failed", result.Record.Verdict)
 	}
 	return nil
 }

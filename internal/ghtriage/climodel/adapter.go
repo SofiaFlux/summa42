@@ -84,7 +84,8 @@ type usage struct{ input, output *int }
 const unknownReset = time.Hour
 
 // WithLedger returns a copy of the adapter that records each call in ledger
-// under stage and caseID, and refuses calls to a pool the ledger shows exhausted.
+// under stage and caseID (a case in a call's context, see capacity.WithCaseID,
+// wins: one adapter serves many cases), and refuses calls to a pool the ledger shows exhausted.
 func (a *Adapter) WithLedger(ledger capacity.Ledger, stage, caseID string) *Adapter {
 	if a == nil {
 		return nil
@@ -320,7 +321,11 @@ func (a *Adapter) record(ctx context.Context, started time.Time, use usage, err 
 		return
 	}
 	now := time.Now()
-	call := capacity.Call{Pool: a.pool, Harness: a.harness, Model: a.model, Stage: a.stage, CaseID: a.caseID,
+	caseID := a.caseID
+	if id := capacity.CaseIDFrom(ctx); id != "" {
+		caseID = id
+	}
+	call := capacity.Call{Pool: a.pool, Harness: a.harness, Model: a.model, Stage: a.stage, CaseID: caseID,
 		StartedAt: started, Duration: now.Sub(started), Outcome: outcomeOf(err), InputTokens: use.input, OutputTokens: use.output}
 	if err != nil {
 		call.Message = err.Error()

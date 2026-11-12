@@ -66,3 +66,51 @@ jobs:
           go-version: '1.27.1'
       - run: docker version
       - run: go test -tags=oci ./internal/teb ./tests/acceptance -run 'TestOCIBypass|TestReviewedFailureSemantics/[Cc]apability' -count=1 -v
+
+  # Rule R5 of the development plan: a pull request that changes a protected
+  # path needs the Owner. The script and its list of paths come from the base
+  # commit, never from the pull request, so a pull request cannot relax its own
+  # check. Nothing from the pull request's tree is executed; Git only reads it.
+  protected-paths:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out the base commit (trusted copy of the gate)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - name: Check out the pull request head with full history (data only)
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
+          path: head
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run the base commit's gate against the head
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          gate=base/scripts/check_protected_paths.py
+          if [[ ! -f "$gate" ]]; then
+            # Only the pull request that introduces the gate reaches this.
+            # Afterwards the gate is in every base commit and is itself a
+            # protected path, so removing it fails this check.
+            echo "::warning::the base commit has no protected path gate yet; nothing was checked"
+            exit 0
+          fi
+          # Labels are read now, not from the event, so re-running this job
+          # after the Owner sets the label sees it.
+          PR_LABELS="$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER" --jq '[.labels[].name]')"
+          export PR_LABELS
+          python3 "$gate" --repo head --base "$BASE_SHA" --head "$HEAD_SHA"
