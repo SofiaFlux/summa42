@@ -298,6 +298,8 @@ type Cmd struct {
 	filter   *markerFilter
 	// gateErr is set when the gate stopped the running process.
 	gateErr atomic.Pointer[error]
+	// gateDone is closed when the gate watcher has ended; nil before Start.
+	gateDone chan struct{}
 }
 
 // Start wraps the caller's stderr to strip the pgid marker line.
@@ -316,6 +318,7 @@ func (c *Cmd) Start() error {
 		c.doneOnce.Do(func() { close(c.done) })
 		return err
 	}
+	c.gateDone = make(chan struct{})
 	go c.watchGate(currentGate(), gateInterval, gateFailureLimit)
 	return nil
 }
@@ -323,6 +326,9 @@ func (c *Cmd) Start() error {
 func (c *Cmd) Wait() error {
 	err := c.Cmd.Wait()
 	c.doneOnce.Do(func() { close(c.done) })
+	if c.gateDone != nil {
+		<-c.gateDone
+	}
 	if stopped := c.gateErr.Load(); stopped != nil {
 		err = fmt.Errorf("modelrun: process stopped: %w", *stopped)
 	}

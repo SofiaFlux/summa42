@@ -76,6 +76,9 @@ func checkGateAtStart(ctx context.Context) error {
 // this goroutine can start late, and it must not read package state that a
 // later test writes.
 func (c *Cmd) watchGate(g Gate, interval time.Duration, limit int) {
+	// Wait waits for this goroutine, so nothing of this call reads package
+	// state after the call has returned.
+	defer close(c.gateDone)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	failures := 0
@@ -85,9 +88,17 @@ func (c *Cmd) watchGate(g Gate, interval time.Duration, limit int) {
 			return
 		case <-ticker.C:
 		}
+		// The check ends with the call, so Wait never waits for a slow gate.
 		checkCtx, cancel := context.WithTimeout(context.Background(), interval)
+		stop := context.AfterFunc(doneContext(c.done), cancel)
 		err := g(checkCtx)
+		stop()
 		cancel()
+		select {
+		case <-c.done:
+			return
+		default:
+		}
 		switch {
 		case err == nil:
 			failures = 0
@@ -105,4 +116,14 @@ func (c *Cmd) watchGate(g Gate, interval time.Duration, limit int) {
 		}
 		return
 	}
+}
+
+// doneContext is a context that ends when done is closed.
+func doneContext(done <-chan struct{}) context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-done
+		cancel()
+	}()
+	return ctx
 }
