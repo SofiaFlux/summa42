@@ -72,6 +72,14 @@ func checkGateAtStart(ctx context.Context) error {
 // watchGate stops the process when the gate refuses, or cannot answer
 // gateFailureLimit times in a row. It ends with the call.
 //
+// Stopping cancels the call's context, so exec runs cmd.Cancel and arms
+// WaitDelay exactly as for a caller's cancel. One attempt is not enough: when
+// the process-group marker is not known yet the cancel can only send local
+// signals, which do not cross the uid boundary, and a sudo kill can fail. So
+// after a refusal the watcher signals the model-side group again on every tick
+// until the call ends. It does so itself rather than from a goroutine of its
+// own, because Wait waits for the watcher and the kill reads package state.
+//
 // The gate and the timing are read by Start, while the call still owns them:
 // this goroutine can start late, and it must not read package state that a
 // later test writes.
@@ -111,10 +119,25 @@ func (c *Cmd) watchGate(g Gate, interval time.Duration, limit int) {
 			err = fmt.Errorf("%w: the gate could not answer %d times in a row: %v", ErrRefused, failures, err)
 		}
 		c.gateErr.Store(&err)
-		if cancelFn := c.Cmd.Cancel; cancelFn != nil {
-			_ = cancelFn()
-		}
+		c.stop()
+		c.killUntilDone(ticker.C)
 		return
+	}
+}
+
+// killUntilDone signals the model-side process group on every tick until the
+// call ends, once its marker is known. The first attempt is the cancel that
+// exec runs; this covers a marker that came later and a kill that failed.
+func (c *Cmd) killUntilDone(tick <-chan time.Time) {
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-tick:
+		}
+		if pgid := c.pgid.Load(); pgid > 1 {
+			c.killModelGroup(pgid)
+		}
 	}
 }
 

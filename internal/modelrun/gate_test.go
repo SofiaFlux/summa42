@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -133,5 +137,125 @@ func TestGateThatCannotAnswerStopsARunningModelAfterThreeChecks(t *testing.T) {
 	}
 	if pidFileAlive(t, pidFile) {
 		t.Fatal("the model survived a gate that stopped answering")
+	}
+}
+
+// A fake sudo like slowEscapingSudo, but the marker comes a full second late:
+// longer than a cancel waits for it in these tests.
+const lateMarkerSudo = "while [ \"$1\" != -- ]; do shift; done\nshift\n" +
+	"case \"$1\" in */kill|kill) exec \"$@\";; esac\n" +
+	"exec setsid -w sh -c 'sleep 1; exec \"$@\"' sh \"$@\"\n"
+
+// waitBounded waits for the call, and on timeout kills the model's process
+// group itself (the fake sudo keeps the test's uid) so the test cannot hang.
+func waitBounded(t *testing.T, cmd *modelrun.Cmd, pidFile string, bound time.Duration) (time.Duration, error) {
+	t.Helper()
+	started := time.Now()
+	result := make(chan error, 1)
+	go func() { result <- cmd.Wait() }()
+	select {
+	case err := <-result:
+		return time.Since(started), err
+	case <-time.After(bound):
+	}
+	if raw, err := os.ReadFile(pidFile); err == nil {
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil {
+			if pgid, err := syscall.Getpgid(pid); err == nil {
+				_ = syscall.Kill(-pgid, syscall.SIGKILL)
+			}
+		}
+	}
+	<-result
+	t.Fatalf("the model was still running %s after the gate refused", bound)
+	return 0, nil
+}
+
+// A refusal whose first kill cannot reach the model side (its process-group
+// marker is not known yet, and local signals do not cross the uid boundary)
+// must not be the only attempt: the launcher keeps trying until the model is
+// gone. Before the fix the watcher sent one cancel and returned, and the model
+// ran on to its own timeout.
+func TestFreezeBeforeTheMarkerStillKillsTheModel(t *testing.T) {
+	defer modelrun.SetGateTimingForTest(50 * time.Millisecond)()
+	defer modelrun.SetMarkerWaitForTest(100 * time.Millisecond)()
+	defer modelrun.SetKillGraceForTest(300 * time.Millisecond)()
+	home, sudoLog, cleanup, err := modelruntest.InstallScript(lateMarkerSudo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Cleanup(func() { modelrun.SetGate(func(context.Context) error { return nil }) })
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	bin := script(t, "echo $$ > "+pidFile+"\nwhile :; do sleep 1; done\n")
+	cmd, err := modelrun.Command(context.Background(), modelrun.Spec{RunAs: fakeUser(home), Binary: bin, Timeout: time.Hour, WaitDelay: 20 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frozen atomic.Bool
+	modelrun.SetGate(func(context.Context) error {
+		if frozen.Load() {
+			return fmt.Errorf("%w: system is frozen", modelrun.ErrRefused)
+		}
+		return nil
+	})
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	frozen.Store(true) // the first refusal comes before the marker
+	// Far below WaitDelay (20 s): only the model-side kill can end it in time.
+	elapsed, err := waitBounded(t, cmd, pidFile, 8*time.Second)
+	if !errors.Is(err, modelrun.ErrRefused) {
+		t.Fatalf("Wait after a freeze = %v, want ErrRefused", err)
+	}
+	logged, _ := os.ReadFile(sudoLog)
+	if !strings.Contains(string(logged), "-u "+modelruntest.User+" -- /bin/kill -TERM -- -") {
+		t.Fatalf("no model-side kill through sudo after %s: %q", elapsed, logged)
+	}
+	if fileExists(pidFile) && pidFileAlive(t, pidFile) {
+		t.Fatal("the model survived a freeze that came before the marker")
+	}
+}
+
+// A refusal arms WaitDelay as a context cancel does: when nothing ends the
+// launcher (no marker ever comes and it ignores TERM), the Box abandons it
+// after WaitDelay rather than at the call's own timeout.
+func TestFreezeAppliesWaitDelay(t *testing.T) {
+	defer modelrun.SetGateTimingForTest(50 * time.Millisecond)()
+	defer modelrun.SetMarkerWaitForTest(50 * time.Millisecond)()
+	// This sudo never runs the prologue, ignores TERM, and its kill does nothing.
+	home, _, cleanup, err := modelruntest.InstallScript("while [ \"$1\" != -- ]; do shift; done\nshift\n" +
+		"case \"$1\" in */kill|kill) exit 0;; esac\ntrap '' TERM\nwhile :; do sleep 1; done\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	t.Cleanup(func() { modelrun.SetGate(func(context.Context) error { return nil }) })
+	cmd, err := modelrun.Command(context.Background(), modelrun.Spec{RunAs: fakeUser(home), Binary: script(t, "exit 0\n"), Timeout: time.Hour, WaitDelay: 500 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var frozen atomic.Bool
+	modelrun.SetGate(func(context.Context) error {
+		if frozen.Load() {
+			return fmt.Errorf("%w: system is frozen", modelrun.ErrRefused)
+		}
+		return nil
+	})
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	frozen.Store(true)
+	started := time.Now()
+	result := make(chan error, 1)
+	go func() { result <- cmd.Wait() }()
+	select {
+	case err := <-result:
+		if !errors.Is(err, modelrun.ErrRefused) {
+			t.Fatalf("Wait after a freeze = %v, want ErrRefused", err)
+		}
+	case <-time.After(8 * time.Second):
+		_ = cmd.Process.Kill()
+		<-result
+		t.Fatalf("Wait did not return within %s of a freeze although WaitDelay is 500 ms", time.Since(started))
 	}
 }

@@ -257,7 +257,11 @@ func build(ctx context.Context, spec Spec, probed bool) (*Cmd, error) {
 		shellBinary, "-c", script, "sh", dir, home, path, lang, spec.Binary)
 	argv = append(argv, spec.Args...)
 
-	c := &Cmd{Cmd: exec.CommandContext(ctx, argv[0], argv[1:]...), runAs: spec.RunAs.Username, done: make(chan struct{})}
+	// The gate stops a running call by cancelling this context, so a refusal
+	// takes the same path as a cancel by the caller: exec runs cmd.Cancel and
+	// arms WaitDelay. Wait releases it.
+	ctx, stop := context.WithCancel(ctx)
+	c := &Cmd{Cmd: exec.CommandContext(ctx, argv[0], argv[1:]...), runAs: spec.RunAs.Username, done: make(chan struct{}), stop: stop}
 	cmd := c.Cmd
 	// The launcher carries only PATH (to find sudo) and the allowlisted values.
 	// "/" because the Box's cwd may not be reachable by the model user.
@@ -296,6 +300,8 @@ type Cmd struct {
 	done     chan struct{}
 	doneOnce sync.Once
 	filter   *markerFilter
+	// stop cancels the call's context; the gate uses it to stop the process.
+	stop context.CancelFunc
 	// gateErr is set when the gate stopped the running process.
 	gateErr atomic.Pointer[error]
 	// gateDone is closed when the gate watcher has ended; nil before Start.
@@ -312,10 +318,12 @@ func (c *Cmd) Start() error {
 	c.Cmd.Stderr = c.filter
 	if err := checkGateAtStart(context.Background()); err != nil {
 		c.doneOnce.Do(func() { close(c.done) })
+		c.stop()
 		return err
 	}
 	if err := c.Cmd.Start(); err != nil {
 		c.doneOnce.Do(func() { close(c.done) })
+		c.stop()
 		return err
 	}
 	c.gateDone = make(chan struct{})
@@ -326,6 +334,7 @@ func (c *Cmd) Start() error {
 func (c *Cmd) Wait() error {
 	err := c.Cmd.Wait()
 	c.doneOnce.Do(func() { close(c.done) })
+	c.stop()
 	if c.gateDone != nil {
 		<-c.gateDone
 	}
