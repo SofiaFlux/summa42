@@ -89,6 +89,10 @@ func (c *Cmd) watchGate(g Gate, interval time.Duration, limit int) {
 	defer close(c.gateDone)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// One context for the whole call, not one per check: each would park a
+	// goroutine until the call ends. It ends when Wait closes done, before Wait
+	// waits for this watcher.
+	callDone := doneContext(c.done)
 	failures := 0
 	for {
 		select {
@@ -98,7 +102,7 @@ func (c *Cmd) watchGate(g Gate, interval time.Duration, limit int) {
 		}
 		// The check ends with the call, so Wait never waits for a slow gate.
 		checkCtx, cancel := context.WithTimeout(context.Background(), interval)
-		stop := context.AfterFunc(doneContext(c.done), cancel)
+		stop := context.AfterFunc(callDone, cancel)
 		err := g(checkCtx)
 		stop()
 		cancel()
