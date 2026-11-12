@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -174,6 +175,38 @@ func TestServeStopsWhenTheOwnerRequestsShutdown(t *testing.T) {
 	}
 	if controlStarts.Load() != 1 {
 		t.Fatalf("the control daemon was started %d times, want 1", controlStarts.Load())
+	}
+}
+
+func TestServeRefusesAnUnusableNotifierWebhookAtStartup(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string, mode os.FileMode) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	const discord = "https://discord.com/api/webhooks/1/token\n"
+	cases := map[string]string{
+		"missing file":   filepath.Join(dir, "absent"),
+		"group readable": write("open", discord, 0o640),
+		"not a Discord":  write("other", "https://example.com/api/webhooks/1/token\n", 0o600),
+		"plain http":     write("http", "http://discord.com/api/webhooks/1/token\n", 0o600),
+		"not an address": write("junk", "hello\n", 0o600),
+	}
+	notifier := serveLoops(map[string][]string{"--notify": nil})[0]
+	for name, path := range cases {
+		err := notifier.validate([]string{"--webhook-file", path})
+		if err == nil {
+			t.Errorf("%s: serve accepted the webhook file", name)
+		}
+	}
+	if err := notifier.validate([]string{"--webhook-file", write("good", discord, 0o600)}); err != nil {
+		t.Errorf("a private Discord webhook file was refused: %v", err)
 	}
 }
 

@@ -133,8 +133,12 @@ func TestDeployedServeScriptProducesFlagsServeAccepts(t *testing.T) {
 		}
 	}
 	// With a webhook file set the script adds the notifier.
+	webhook := filepath.Join(work, "discord_webhook")
+	if err := os.WriteFile(webhook, []byte("https://discord.com/api/webhooks/1/token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	withWebhook := exec.Command("/bin/sh", filepath.Join(root, "deploy", "summa42-serve.sh"))
-	withWebhook.Env = append(environment, "SUMMA42_DISCORD_WEBHOOK_FILE="+filepath.Join(work, "discord_webhook"))
+	withWebhook.Env = append(environment, "SUMMA42_DISCORD_WEBHOOK_FILE="+webhook)
 	if output, err := withWebhook.CombinedOutput(); err != nil {
 		t.Fatalf("summa42-serve.sh with a webhook: %v\n%s", err, output)
 	}

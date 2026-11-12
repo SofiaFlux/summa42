@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/localconfig"
+	"github.com/SofiaFlux/summa42/internal/notify"
 )
 
 // summa42-box serve runs the control daemon, intake, the pipeline and the worker in one process
@@ -102,9 +103,14 @@ func serveLoops(sections map[string][]string) []serveLoop {
 			return err
 		}},
 		"--notify": {name: "notifier", run: runNotifier, validate: func(args []string) error {
-			_, _, once, err := parseNotifierFlags(args)
+			webhookFile, _, once, err := parseNotifierFlags(args)
 			if err == nil && once {
 				err = errors.New("serve runs the notifier as a loop: remove --once")
+			}
+			if err == nil {
+				// The same checks runNotifier makes, so a missing, readable-by-others
+				// or non-Discord webhook file stops serve here, not in a restart loop.
+				_, err = notify.NewDiscordSender(webhookFile)
 			}
 			return err
 		}},
