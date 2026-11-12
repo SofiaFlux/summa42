@@ -84,7 +84,11 @@ type Interventions struct {
 	// OwnerEvidence counts cited evidence whose kind starts with
 	// summa42.owner., by kind.
 	OwnerEvidence map[string]int `json:"owner_evidence"`
-	Total         int            `json:"total"`
+	// Approvals and Rejections count the Owner's decisions on external
+	// operations of this case's Tasks (for example a publication).
+	Approvals  int `json:"approvals"`
+	Rejections int `json:"rejections"`
+	Total      int `json:"total"`
 }
 
 // Build reads the report of one case.
@@ -155,11 +159,52 @@ func Build(ctx context.Context, store *state.Store, cases *workflowcase.Service,
 		previous = record.CreatedAt
 	}
 
+	// A Task of this case is keyed by the work it was made for: the work ID
+	// itself, or "<stage>:<work ID>". Work IDs are random, so the suffix
+	// match cannot pick up another case's Task.
+	workIDs := map[string]bool{}
+	if c.CurrentWorkID != "" {
+		workIDs[string(c.CurrentWorkID)] = true
+	}
+	for _, stage := range report.Stages {
+		workIDs[stage.WorkID] = true
+	}
+	for workID := range workIDs {
+		rows, err := store.DB().QueryContext(ctx, `
+			SELECT d.decision_action, COUNT(*)
+			FROM tasks t
+			JOIN external_operations o ON o.task_id = t.task_id
+			JOIN approval_decisions d ON d.approval_id = o.approval_id
+			WHERE t.idempotency_key = ? OR t.idempotency_key LIKE '%:' || ?
+			GROUP BY d.decision_action`, workID, workID)
+		if err != nil {
+			return Report{}, fmt.Errorf("read approval decisions: %w", err)
+		}
+		for rows.Next() {
+			var action string
+			var count int
+			if err := rows.Scan(&action, &count); err != nil {
+				rows.Close()
+				return Report{}, err
+			}
+			if action == "APPROVE" {
+				report.Interventions.Approvals += count
+			} else {
+				report.Interventions.Rejections += count
+			}
+			report.Interventions.Total += count
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return Report{}, err
+		}
+	}
+
 	if err := readModelCalls(ctx, store, &report); err != nil {
 		return Report{}, err
 	}
 	report.Notes = []string{
-		"Owner interventions are counted only from evidence of kind " + OwnerEvidencePrefix + "* that an assessment of this case cites (for example a manual block). Approvals and rejections of this case's operations, and cancels, are not counted yet.",
+		"Owner interventions are the Owner's approvals and rejections of external operations of this case's Tasks, and evidence of kind " + OwnerEvidencePrefix + "* that an assessment of this case cites (for example a manual block). Cancels, restarts and anything the Owner did outside the Box are not counted.",
 		"Model calls come from the model call ledger for this case ID. Token sums cover only the calls that reported tokens.",
 		"Not in this report yet: plan hash, candidate commit and pull request reference as named fields (the evidence of each stage is listed with its kind and content hash), and wall time of Attempts.",
 	}

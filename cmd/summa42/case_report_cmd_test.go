@@ -113,7 +113,7 @@ func TestCaseReportTextSaysWhatItDoesNotCount(t *testing.T) {
 	for _, want := range []string{
 		string(c.ID), "SofiaFlux/summa42#101", "BLOCKED", "hold for the release", "summa42.owner.case_block",
 		"plan-review", "model-b", "4000", "250",
-		"Approvals and rejections of this case's operations, and cancels, are not counted yet",
+		"approvals: 0", "Cancels, restarts and anything the Owner did outside the Box are not counted",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("output does not contain %q:\n%s", want, output)

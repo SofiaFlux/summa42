@@ -97,6 +97,7 @@ func writeCaseReport(out io.Writer, report casereport.Report) error {
 	}
 
 	fmt.Fprintf(out, "\nOwner interventions (%d)\n", report.Interventions.Total)
+	fmt.Fprintf(out, "  approvals: %d\n  rejections: %d\n", report.Interventions.Approvals, report.Interventions.Rejections)
 	kinds := make([]string, 0, len(report.Interventions.OwnerEvidence))
 	for kind := range report.Interventions.OwnerEvidence {
 		kinds = append(kinds, kind)
