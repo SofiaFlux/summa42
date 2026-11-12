@@ -811,11 +811,11 @@ func prefixedModelConfig(flags *flag.FlagSet, prefix string) (climodel.Config, e
 	}
 	profile := strings.TrimSpace(flags.Lookup(prefix + "-profile").Value.String())
 	profileDir := strings.TrimSpace(flags.Lookup(prefix + "-profile-dir").Value.String())
+	home, err := localconfig.ResolveHome("")
+	if err != nil {
+		return climodel.Config{}, fmt.Errorf("--%s-profile-dir: %w", prefix, err)
+	}
 	if profileDir == "" {
-		home, err := localconfig.ResolveHome("")
-		if err != nil {
-			return climodel.Config{}, fmt.Errorf("--%s-profile-dir: %w", prefix, err)
-		}
 		profileDir = filepath.Join(home, "model-profiles")
 	}
 	if profile != "" && !explicitBinary(flags, prefix) {
@@ -843,7 +843,8 @@ func prefixedModelConfig(flags *flag.FlagSet, prefix string) (climodel.Config, e
 	allowPaid, _ := flags.Lookup(prefix + "-allow-paid").Value.(flag.Getter).Get().(bool)
 	zdr, _ := flags.Lookup(prefix + "-zdr").Value.(flag.Getter).Get().(bool)
 	return climodel.Config{RunAsUser: runAs, Binary: binary, Args: args, Timeout: duration, EnvAllowlist: envNames, CommandCodeModel: commandCode, AllowPaid: allowPaid, ZDR: zdr,
-		Profile: profile, ProfileModel: strings.TrimSpace(flags.Lookup(prefix + "-name").Value.String()), ProfileDir: profileDir}, nil
+		Profile: profile, ProfileModel: strings.TrimSpace(flags.Lookup(prefix + "-name").Value.String()), ProfileDir: profileDir,
+		RejectedDir: filepath.Join(home, "logs", "rejected")}, nil
 }
 
 // triageModelAdapter builds the classifier the triage executor needs and reports

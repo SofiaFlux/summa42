@@ -52,6 +52,9 @@ type Config struct {
 	// FallbackOf names the pool this reviewer stands in for when it is a
 	// replacement reviewer; empty for the primary reviewer and for producers.
 	FallbackOf string
+	// RejectedDir keeps each answer that failed parsing, for the Owner to read.
+	// Empty: such answers are not kept.
+	RejectedDir string
 }
 
 type Adapter struct {
@@ -74,6 +77,8 @@ type Adapter struct {
 	pool    string
 	stage   string
 	caseID  string
+	// rejectedDir is Config.RejectedDir.
+	rejectedDir string
 }
 
 // usage is the token count one call reported; nil when the CLI did not report it.
@@ -128,7 +133,7 @@ func New(config Config) (*Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("model binary %q is not usable: %w", config.Binary, err)
 	}
-	adapter := &Adapter{runAs: target, binary: resolved, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist, zdr: config.ZDR, commandCode: config.CommandCodeModel != "", profile: profile}
+	adapter := &Adapter{runAs: target, binary: resolved, args: config.Args, timeout: config.Timeout, allowlist: config.EnvAllowlist, zdr: config.ZDR, commandCode: config.CommandCodeModel != "", profile: profile, rejectedDir: config.RejectedDir}
 	switch {
 	case config.CommandCodeModel != "":
 		adapter.harness, adapter.model, adapter.pool = "commandcode", config.CommandCodeModel, commandCodePool(config.CommandCodeModel)
@@ -143,12 +148,10 @@ func (a *Adapter) Timeout() time.Duration { return a.timeout }
 
 const maxJSONRepairs = 2
 
-func saveRejectedJSON(caseID, stage string, attempt int, raw []byte, parseErr error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
+func saveRejectedJSON(dir, caseID, stage string, attempt int, raw []byte, parseErr error) {
+	if dir == "" {
 		return
 	}
-	dir := filepath.Join(home, ".summa42", "logs", "rejected")
 	_ = os.MkdirAll(dir, 0700)
 	filename := fmt.Sprintf("%s_%s_att%d_%d.json", stage, caseID, attempt, time.Now().UnixNano())
 	content := fmt.Sprintf("// Parse error: %v\n%s\n", parseErr, string(raw))
@@ -210,7 +213,7 @@ func runWithJSONRepair[T any](
 		}
 		lastErr = parseErr
 		if a != nil {
-			saveRejectedJSON(a.caseID, a.stage, attempt+1, raw, parseErr)
+			saveRejectedJSON(a.rejectedDir, a.caseID, a.stage, attempt+1, raw, parseErr)
 		}
 		if attempt == maxJSONRepairs {
 			break
