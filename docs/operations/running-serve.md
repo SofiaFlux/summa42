@@ -139,6 +139,29 @@ daemon, intake and the pipeline. A loop that stops is restarted by `serve`;
 `serve` itself is restarted by systemd. A second `serve` on the same
 Collective refuses to start.
 
+## 6a. Notifications on Discord (optional)
+
+Create a webhook in a Discord channel only you read, and store its address in a
+private file:
+
+```bash
+install -m 0600 /dev/null ~/.summa42/discord_webhook
+editor ~/.summa42/discord_webhook        # one line: https://discord.com/api/webhooks/...
+```
+
+Set `SUMMA42_DISCORD_WEBHOOK_FILE` in `/etc/summa42/serve.env` to that path and
+restart the service. You are told, once per event, when an approval waits, a
+case is held, a draft pull request is ready, break glass is frozen, safe mode
+has begun or is 24 hours away, a budget is 80 percent used, or an attempt was
+contained.
+
+A message carries identifiers and a reason code from a fixed list, never text
+a model wrote: for a held case you get the case ID, the issue reference and a
+word such as `plan-review-revise`, and read the reason with
+`summa42 case report`. A message whose delivery could not be confirmed is not
+sent again. The webhook address is a secret: anyone who has it can post to
+the channel.
+
 ## 7. Daily use
 
 | You want to | Do |
@@ -164,8 +187,9 @@ Collective refuses to start.
   reviewer's reasons as your comment, which opens a new case.
 - **Merging and closing the issue.** There is no merge stage.
 - **Restart after each merge**, because the commit is pinned at start.
-- **Notifications.** Nothing tells you that an approval is waiting or a case
-  is held; look at `summa42 approvals` and `summa42 cases --state BLOCKED`.
+- **Without a webhook, nothing tells you** that an approval is waiting or a
+  case is held; look at `summa42 approvals` and
+  `summa42 cases --state BLOCKED`, or set up section 6a.
 - **Backups.** Copy `~/.summa42` (database, evidence, keys) yourself while the
   service is stopped.
 - **One repository per Collective.** One Mission is active at a time.

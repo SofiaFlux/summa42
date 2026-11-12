@@ -272,7 +272,9 @@ On the autonomy ladder in the [Vision](docs/VISION.md#where-this-leads) the impl
 | Company OS: `internal/company`, `obligation`, `invariant`, `attention`, `board` | Library only: constructed or present, never called by a running path. See [Company OS](docs/COMPANY_OS.md) |
 | Mission/goal research, decision engine, digital twin, replay, learning, inter-Collective delegation, OpenShell and MAF adapters | Parked, not on `main`. See [parked spikes](docs/superpowers/research/2026-11-10-parked-spikes.md) |
 
-Not built at all: budgets in a currency, notifications to the Owner, backup and restore, a watchdog outside the process, CI observation, merge, issue closure, self-upgrade.
+Owner notifications exist as an optional Discord webhook (`summa42-box run-notifier`, or the `--notify` section of `serve`): each event is queued once and delivered at most once, and a message carries identifiers and reason codes from a fixed list, never model text. Sending does not go through the external-operation boundary yet, and it was tested against a local HTTPS server, not against Discord.
+
+Not built at all: budgets in a currency, backup and restore, a watchdog outside the process, CI observation, merge, issue closure, self-upgrade.
 
 ## What is authoritative
 

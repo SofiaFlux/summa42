@@ -545,6 +545,7 @@ func verifyPolicySetSignature(ctx context.Context, db *sql.DB, ownerID domain.ID
 // subcommands maps each run-* name (and its run-repo-* alias) to its command.
 var subcommands = map[string]func(context.Context, []string) error{
 	"serve":                  runServe,
+	"run-notifier":           runNotifier,
 	"run-worker":             runWorker,
 	"run-observer":           runObserver,
 	"run-gh-intake":          runGHIntake,
@@ -602,7 +603,7 @@ func isolationProbePaths(home string, cfg localconfig.Config, boxHome string) (r
 		}
 	}
 	optional = []string{filepath.Join(keys, "owner.key"), cfg.DatabasePath + "-wal", cfg.DatabasePath + "-shm"}
-	for _, name := range []string{"github_token", "gh-app.pem", "gh-app.json", "discord_auth.json", "openrouter_key"} {
+	for _, name := range []string{"github_token", "gh-app.pem", "gh-app.json", "discord_auth.json", "discord_webhook", "openrouter_key"} {
 		optional = append(optional, filepath.Join(home, name))
 	}
 	if boxHome != "" {

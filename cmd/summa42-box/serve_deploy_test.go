@@ -132,6 +132,27 @@ func TestDeployedServeScriptProducesFlagsServeAccepts(t *testing.T) {
 			t.Errorf("%s flags from the deployed script are refused: %v\n%v", loop.name, err, loop.args)
 		}
 	}
+	// With a webhook file set the script adds the notifier.
+	withWebhook := exec.Command("/bin/sh", filepath.Join(root, "deploy", "summa42-serve.sh"))
+	withWebhook.Env = append(environment, "SUMMA42_DISCORD_WEBHOOK_FILE="+filepath.Join(work, "discord_webhook"))
+	if output, err := withWebhook.CombinedOutput(); err != nil {
+		t.Fatalf("summa42-serve.sh with a webhook: %v\n%s", err, output)
+	}
+	raw, err = os.ReadFile(recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sections, err = splitServeArgs(strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	loops = serveLoops(sections)
+	if len(loops) != 4 || loops[3].name != "notifier" {
+		t.Fatalf("loops with a webhook = %+v, want the notifier as well", loops)
+	}
+	if err := loops[3].validate(loops[3].args); err != nil {
+		t.Errorf("notifier flags from the deployed script are refused: %v", err)
+	}
 }
 
 func TestDeployedServeScriptNamesAMissingSetting(t *testing.T) {

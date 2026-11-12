@@ -76,4 +76,9 @@ if [ -n "${SUMMA42_CONTEXT_MAX_BYTES:-}" ]; then
     set -- "$@" --context-max-bytes "$SUMMA42_CONTEXT_MAX_BYTES"
 fi
 
+if [ -n "${SUMMA42_DISCORD_WEBHOOK_FILE:-}" ]; then
+    # Tell the Owner on Discord when something needs them.
+    set -- "$@" --notify --webhook-file "$SUMMA42_DISCORD_WEBHOOK_FILE"
+fi
+
 exec "$box" "$@"

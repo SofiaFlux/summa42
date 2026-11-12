@@ -24,7 +24,8 @@ import (
 //	    --control \
 //	    --intake   <run-gh-intake flags> \
 //	    --pipeline <run-gh-pipeline flags, with --interval> \
-//	    --worker   <run-worker flags>
+//	    --worker   <run-worker flags> \
+//	    --notify   <run-notifier flags>
 //
 // Each section marker starts the flags of that command; a section that is not
 // given does not run. Until a Project manifest replaces the flags (card
@@ -43,7 +44,7 @@ type serveLoop struct {
 	run      func(ctx context.Context, args []string) error
 }
 
-var serveMarkers = []string{"--control", "--intake", "--pipeline", "--worker"}
+var serveMarkers = []string{"--control", "--intake", "--pipeline", "--worker", "--notify"}
 
 // splitServeArgs separates serve's own flags from the flags of each section.
 func splitServeArgs(args []string) (own []string, sections map[string][]string, err error) {
@@ -70,7 +71,7 @@ func splitServeArgs(args []string) (own []string, sections map[string][]string, 
 		}
 	}
 	if len(sections) == 0 {
-		return nil, nil, errors.New("serve requires at least one of --control, --intake, --pipeline, --worker; the last three are each followed by that command's flags")
+		return nil, nil, errors.New("serve requires at least one of --control, --intake, --pipeline, --worker, --notify; all but --control are followed by that command's flags")
 	}
 	return own, sections, nil
 }
@@ -93,6 +94,13 @@ func serveLoops(sections map[string][]string) []serveLoop {
 			_, interval, err := parsePipelineFlags(args)
 			if err == nil && interval == 0 {
 				err = errors.New("serve runs the pipeline as a loop: give --interval, not --once")
+			}
+			return err
+		}},
+		"--notify": {name: "notifier", run: runNotifier, validate: func(args []string) error {
+			_, _, once, err := parseNotifierFlags(args)
+			if err == nil && once {
+				err = errors.New("serve runs the notifier as a loop: remove --once")
 			}
 			return err
 		}},
