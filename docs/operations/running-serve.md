@@ -162,6 +162,30 @@ word such as `plan-review-revise`, and read the reason with
 sent again. The webhook address is a secret: anyone who has it can post to
 the channel.
 
+## 6b. Backups
+
+```bash
+summa42 backup create /var/backups/summa42/$(date +%F)
+```
+
+This works while the service runs. It writes a consistent snapshot of the
+database, the evidence the snapshot refers to, and a manifest of hashes signed
+with the Owner key, and prints the Owner public key you need to restore. Keys,
+`config.json`, tokens and webhook files are never part of a backup: keep your
+own copy of `~/.summa42/keys` and `~/.summa42/config.json` somewhere safe.
+
+```bash
+summa42 backup verify  /var/backups/summa42/2026-11-12 --owner-public-key <hex>
+summa42 backup restore /var/backups/summa42/2026-11-12 --into /home/summa42/.summa42-restored --owner-public-key <hex>
+```
+
+`restore` refuses a backup whose manifest the Owner key did not sign, and a
+target that is not empty. It leaves the restored Collective FROZEN and lists
+the external operations whose outcome was open when the backup was taken;
+check those, put your keys and `config.json` back (with `database_path` and
+`evidence_path` pointing at the restored files), then
+`summa42 emergency resume`.
+
 ## 7. Daily use
 
 | You want to | Do |
@@ -190,6 +214,7 @@ the channel.
 - **Without a webhook, nothing tells you** that an approval is waiting or a
   case is held; look at `summa42 approvals` and
   `summa42 cases --state BLOCKED`, or set up section 6a.
-- **Backups.** Copy `~/.summa42` (database, evidence, keys) yourself while the
-  service is stopped.
+- **Running the backup and keeping it elsewhere.** `summa42 backup create`
+  (section 6b) is not scheduled and writes to a local directory only; copy
+  the directory to another machine yourself. Your keys are never in it.
 - **One repository per Collective.** One Mission is active at a time.

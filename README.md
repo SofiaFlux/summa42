@@ -44,6 +44,7 @@ Initialize the local Collective once, start the Box in one terminal, then query 
 | `./bin/summa42 mission create "..."` | Set the first active Mission with an Owner signature; prints its ID for Mission-rooted Tasks. |
 | `./bin/summa42 mission show` | Show the active Mission and its ID. |
 | `./bin/summa42 envelope create <id> --limit N --reason "..."` | Give the Collective a budget: create a resource envelope (units are bounded requests, not money). Signed with the Owner key; the grant is recorded with its signature. `envelope set-limit` changes the limit (never below what is committed), `envelope list` shows limit and what is available. |
+| `./bin/summa42 backup create <dir>` | Write a backup into an empty directory while the Box runs: a consistent database snapshot, the evidence it refers to, a manifest of hashes signed with the Owner key. Never keys, `config.json` or tokens. `backup verify <dir> --owner-public-key HEX` checks it; `backup restore <dir> --into <empty home> --owner-public-key HEX` restores it and leaves the Collective FROZEN. |
 | `./bin/summa42 cases [--state S]` | List workflow cases: state, current work, steps, last assessment. Reads the local database directly; `--json` for JSON. |
 | `./bin/summa42 case report <case-id>` | What one case cost: assessed stages with their evidence, model calls and tokens from the call ledger, wall time, Owner interventions. It counts interventions only from Owner evidence the case cites (a manual block); approvals, rejections and cancels are not counted yet, and the output says so. |
 | `./bin/summa42 --version` | Print the version. |
@@ -274,7 +275,9 @@ On the autonomy ladder in the [Vision](docs/VISION.md#where-this-leads) the impl
 
 Owner notifications exist as an optional Discord webhook (`summa42-box run-notifier`, or the `--notify` section of `serve`): each event is queued once and delivered at most once, and a message carries identifiers and reason codes from a fixed list, never model text. Sending does not go through the external-operation boundary yet, and it was tested against a local HTTPS server, not against Discord.
 
-Not built at all: budgets in a currency, backup and restore, a watchdog outside the process, CI observation, merge, issue closure, self-upgrade.
+Backups are local only: nothing pushes one to another host or encrypts it, and nothing schedules one.
+
+Not built at all: budgets in a currency, a watchdog outside the process, CI observation, merge, issue closure, self-upgrade.
 
 ## What is authoritative
 
