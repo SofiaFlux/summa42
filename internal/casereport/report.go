@@ -41,7 +41,18 @@ type Report struct {
 	ModelCalls    []ModelUsage  `json:"model_calls"`
 	ModelTotal    ModelUsage    `json:"model_total"`
 	Interventions Interventions `json:"owner_interventions"`
-	Notes         []string      `json:"notes"`
+	// WaitingOn lists the Owner approvals of this case that are pending and
+	// not yet expired: the case cannot go on without them.
+	WaitingOn []PendingApproval `json:"waiting_on"`
+	Notes     []string          `json:"notes"`
+}
+
+// PendingApproval is an external operation of the case held for the Owner.
+type PendingApproval struct {
+	ApprovalID  string    `json:"approval_id"`
+	OperationID string    `json:"operation_id"`
+	Provider    string    `json:"provider"`
+	ExpiresAt   time.Time `json:"expires_at"`
 }
 
 // Stage is one assessed piece of work of the case, in the order assessed.
@@ -91,8 +102,9 @@ type Interventions struct {
 	Total      int `json:"total"`
 }
 
-// Build reads the report of one case.
-func Build(ctx context.Context, store *state.Store, cases *workflowcase.Service, caseID domain.ID) (Report, error) {
+// Build reads the report of one case. now decides which pending approvals have
+// expired.
+func Build(ctx context.Context, store *state.Store, cases *workflowcase.Service, caseID domain.ID, now time.Time) (Report, error) {
 	if store == nil || cases == nil {
 		return Report{}, errors.New("case report needs the store and the case service")
 	}
@@ -105,6 +117,7 @@ func Build(ctx context.Context, store *state.Store, cases *workflowcase.Service,
 		State: string(c.State), Phase: string(c.Phase), CompletedSteps: c.CompletedSteps, MaxSteps: c.MaxSteps,
 		Stages: []Stage{}, ModelCalls: []ModelUsage{},
 		Interventions: Interventions{OwnerEvidence: map[string]int{}},
+		WaitingOn:     []PendingApproval{},
 	}
 	var createdAt, updatedAt string
 	if err := store.DB().QueryRowContext(ctx, `SELECT created_at, updated_at FROM workflow_cases WHERE case_id = ?`, c.ID).Scan(&createdAt, &updatedAt); err != nil {
@@ -198,7 +211,11 @@ func Build(ctx context.Context, store *state.Store, cases *workflowcase.Service,
 		if err := rows.Err(); err != nil {
 			return Report{}, err
 		}
+		if err := readPending(ctx, store, workID, now, &report); err != nil {
+			return Report{}, err
+		}
 	}
+	sort.Slice(report.WaitingOn, func(i, j int) bool { return report.WaitingOn[i].ExpiresAt.Before(report.WaitingOn[j].ExpiresAt) })
 
 	if err := readModelCalls(ctx, store, &report); err != nil {
 		return Report{}, err
@@ -209,6 +226,35 @@ func Build(ctx context.Context, store *state.Store, cases *workflowcase.Service,
 		"Not in this report yet: plan hash, candidate commit and pull request reference as named fields (the evidence of each stage is listed with its kind and content hash), and wall time of Attempts.",
 	}
 	return report, nil
+}
+
+func readPending(ctx context.Context, store *state.Store, workID string, now time.Time, report *Report) error {
+	rows, err := store.DB().QueryContext(ctx, `
+		SELECT a.approval_id, o.operation_id, o.provider, a.expires_at
+		FROM tasks t
+		JOIN external_operations o ON o.task_id = t.task_id
+		JOIN approval_requests a ON a.approval_id = o.approval_id
+		WHERE (t.idempotency_key = ? OR t.idempotency_key LIKE '%:' || ?) AND a.state = 'PENDING'`, workID, workID)
+	if err != nil {
+		return fmt.Errorf("read pending approvals: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item PendingApproval
+		var expires string
+		if err := rows.Scan(&item.ApprovalID, &item.OperationID, &item.Provider, &expires); err != nil {
+			return fmt.Errorf("scan pending approval: %w", err)
+		}
+		if item.ExpiresAt, err = time.Parse(time.RFC3339Nano, expires); err != nil {
+			return fmt.Errorf("parse approval %s expires_at: %w", item.ApprovalID, err)
+		}
+		// ponytail: an expired request stays PENDING in the table; it is
+		// dead, so it is not something the case waits on.
+		if item.ExpiresAt.After(now) {
+			report.WaitingOn = append(report.WaitingOn, item)
+		}
+	}
+	return rows.Err()
 }
 
 func readModelCalls(ctx context.Context, store *state.Store, report *Report) error {

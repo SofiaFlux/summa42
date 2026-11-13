@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SofiaFlux/summa42/internal/casereport"
 	"github.com/SofiaFlux/summa42/internal/domain"
@@ -95,7 +96,7 @@ func TestWorkerTriageModelCallsAreLedgeredUnderTheirCase(t *testing.T) {
 	if rows != 1 {
 		t.Fatalf("model_calls rows for case %s = %d, want 1", c.ID, rows)
 	}
-	report, err := casereport.Build(ctx, box.Store, workflowcase.New(box.Store, box.Clock, box.Purpose), c.ID)
+	report, err := casereport.Build(ctx, box.Store, workflowcase.New(box.Store, box.Clock, box.Purpose), c.ID, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
