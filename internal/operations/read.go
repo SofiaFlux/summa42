@@ -27,10 +27,14 @@ func (s *Service) ApprovalOperation(ctx context.Context, approvalID domain.ID) (
 	if err := s.configured(); err != nil {
 		return domain.ExternalOperation{}, err
 	}
+	approvalID = domain.ID(strings.TrimSpace(string(approvalID)))
+	if approvalID == "" {
+		return domain.ExternalOperation{}, errors.New("approval id is required")
+	}
 	var id domain.ID
 	if err := s.store.DB().QueryRowContext(ctx,
 		`SELECT operation_id FROM external_operations WHERE approval_id = ? ORDER BY operation_sequence DESC LIMIT 1`,
-		strings.TrimSpace(string(approvalID)),
+		approvalID,
 	).Scan(&id); err != nil {
 		return domain.ExternalOperation{}, err
 	}
