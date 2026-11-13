@@ -171,7 +171,7 @@ func Build(ctx context.Context, store *state.Store, cases *workflowcase.Service,
 	}
 	for workID := range workIDs {
 		rows, err := store.DB().QueryContext(ctx, `
-			SELECT d.decision_action, COUNT(*)
+			SELECT d.decision_action, COUNT(DISTINCT d.approval_id || '/' || d.approver_id)
 			FROM tasks t
 			JOIN external_operations o ON o.task_id = t.task_id
 			JOIN approval_decisions d ON d.approval_id = o.approval_id

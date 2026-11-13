@@ -35,7 +35,7 @@ Adoption keeps `subject_id` = the operation that first asked. The schema does no
 1. One signature dispatches at most one effect. `ConsumeInTx` moves `APPROVED` to `CONSUMED`, and a consumed, rejected or expired approval is never adopted.
 2. A different intent needs a new approval. The first gate is the slot itself: `ResolveEffectSlot` refuses a different fingerprint in an existing slot (`ErrIntentConflict`). Adoption's equal-digest check is defense in depth. It also catches equal fingerprint with different canonical JSON, which would be a canonicalization bug.
 3. A changed policy or set of required approvers invalidates the approval. Adoption needs `requiredApproversFor(current decision)` to equal the record's approvers, as `preparedApprovalMatchesInTx` checks today.
-4. Expiry stays bounded. `ExpiresAt = now + ApprovalTTL`, with a default of 24 h and a hard cap of 7 days in config. It is not unbounded. `expires_at` is immutable (trigger `approval_requests_binding_immutable`, migration 00012), so adoption never extends it. An approval with less than `minAdoptionRemaining` left (fixed at 15 min) is not adopted, and a fresh one is made, so the Owner is never shown a request that dies before they can act.
+4. Expiry stays bounded. `ExpiresAt = now + ApprovalTTL`, fixed at 24 h (a config setting capped at 7 days is deferred). It is not unbounded. `expires_at` is immutable (trigger `approval_requests_binding_immutable`, migration 00012), so adoption never extends it. An approval with less than `minAdoptionRemaining` left (fixed at 15 min) is not adopted, and a fresh one is made, so the Owner is never shown a request that dies before they can act.
 5. Adoption stays within the slot. The subject operation must have the same `effect_slot_id` (and so the same task). No approval crosses tasks or cases.
 6. Rejection is not sticky per slot. This is unchanged: a `REJECTED` approval is not adopted, so the next Attempt asks again, as today.
 7. Two Attempts adopting the same approval is benign. A live lease fences out a second Attempt, and even past that `ConsumeInTx` is a compare-and-swap from `APPROVED` to `CONSUMED`, so only one dispatches. The loser's next Prepare sees `CONSUMED` and makes a new approval.
@@ -53,7 +53,7 @@ Adoption keeps `subject_id` = the operation that first asked. The schema does no
 - [ ] Run it and see it fail at step 3 (a new approval ID).
 
 ### Task 2: approval lifetime is its own
-- [ ] Add `ApprovalTTL time.Duration` to `operations.Service` construction. The default is 24 h. Validate it against a cap of 7 days. Wire it from serve config or flags (`--approval-ttl`).
+- [x] `operations.DefaultApprovalTTL` = 24 h, fixed. Deviation: no config or flag. Wiring it means changing ten `runtime.Config` constructions in `cmd/summa42-box`, and nobody has asked for another value. Add it as a `config.json` setting, capped at 7 days, when 24 h proves wrong.
 - [ ] `prepareApprovalInTx`: `ExpiresAt = now + ApprovalTTL` instead of `guardedLeaseExpiry`.
 - [ ] Test: an approval created by an Attempt with a 10-minute lease expires after the TTL, not with the lease.
 

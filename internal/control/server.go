@@ -170,6 +170,7 @@ type AttemptReader interface {
 
 type OperationReader interface {
 	Operation(context.Context, domain.ID) (domain.ExternalOperation, error)
+	ApprovalOperation(context.Context, domain.ID) (domain.ExternalOperation, error)
 }
 
 type ShutdownService interface {
@@ -677,9 +678,9 @@ func (s *Server) approvalDTO(ctx context.Context, record domain.ApprovalRequestR
 		ApprovedBy: record.ApproverID, Status: string(record.State),
 	}
 	if record.SubjectKind == "EXTERNAL_OPERATION" {
-		operation, err := s.deps.Operations.Operation(ctx, record.SubjectID)
+		operation, err := s.deps.Operations.ApprovalOperation(ctx, record.ID)
 		if err != nil {
-			log.Printf("control: load operation %s for approval %s: %v", record.SubjectID, record.ID, err)
+			log.Printf("control: load operation for approval %s: %v", record.ID, err)
 		} else {
 			dto.Provider, dto.EffectSlotID = operation.Provider, operation.EffectSlotID
 			dto.DescriptorType, dto.IntentFingerprint, dto.IntentRevision = operation.DescriptorType, operation.IntentFingerprint, operation.IntentRevision
