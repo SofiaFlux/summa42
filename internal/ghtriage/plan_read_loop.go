@@ -107,6 +107,9 @@ func (p *Planner) planWithReads(ctx context.Context, repo string, snap Snapshot,
 	// missingPaths is set when a final plan came without allowed_paths and no
 	// Owner list stands in for them: the next turn asks for them again.
 	missingPaths := false
+	// missingContext is set when a final plan came before any file was read
+	// and nothing is pinned: a plan needs at least one file it is grounded on.
+	missingContext := false
 
 	// Maximum 5 model calls: turns 0, 1, 2, 3 (reads) and turn 4 (must be final plan).
 	for turn := 0; turn < 5; turn++ {
@@ -120,6 +123,9 @@ func (p *Planner) planWithReads(ctx context.Context, repo string, snap Snapshot,
 		}
 		if missingPaths {
 			question += "\n\nYour last plan had no allowed_paths. Answer with the final plan again and include them."
+		}
+		if missingContext {
+			question += "\n\nYour last plan was written without reading any file. Read the files the plan changes with read_repo_file first, then answer with the final plan."
 		}
 		if isFinalTurn {
 			question += "\n\nFinal answer required. Do not request further files; answer now with the final plan JSON object only."
@@ -237,9 +243,22 @@ func (p *Planner) planWithReads(ctx context.Context, repo string, snap Snapshot,
 			missingPaths = true
 			continue
 		}
+		// The plan's context is what it read: the pinned files plus the files
+		// served by read_repo_file.
+		var readFiles []string
+		for pth := range filesMap {
+			if !slices.Contains(cfg.Source.Paths, pth) {
+				readFiles = append(readFiles, pth)
+			}
+		}
+		sort.Strings(readFiles)
+		if len(filesMap) == 0 && !isFinalTurn {
+			missingContext = true
+			continue
+		}
 
 		// Validate allowed_paths against checkSelection rules
-		if err := checkSelection(FileSelection{AllowedPaths: output.AllowedPaths}, cfg, tracked); err != nil {
+		if err := checkSelection(FileSelection{ContextFiles: readFiles, AllowedPaths: output.AllowedPaths}, cfg, tracked); err != nil {
 			return PlanOutput{}, nil, "", &planFailure{class: "validation", err: fmt.Errorf("plan allowed_paths: %w", err), turnLogID: storeTurnLog()}
 		}
 

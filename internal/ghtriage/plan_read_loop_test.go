@@ -458,3 +458,34 @@ func TestPlanWithReads_PlanWithoutAllowedPathsIsAskedAgain(t *testing.T) {
 		t.Fatalf("unexpected stored plan: %s", p.PlanOutput.Summary)
 	}
 }
+
+// Without pinned files, a plan written before reading anything is sent back
+// to read first, and the files it read become its context.
+func TestPlanWithReads_NoPinnedFilesPlanMustReadFirst(t *testing.T) {
+	f, _ := readyPlannerFixture(t)
+	cfg, _, _ := readLoopFixture(t)
+	cfg.Source.Paths = nil
+
+	final := ghtriage.PlanOutput{Summary: "Plan", Steps: []ghtriage.PlanStep{{Objective: "Do it", DoneWhen: "Done"}}, AllowedPaths: []string{"pkg/foo.go"}}
+	model := &multiTurnModel{
+		turns: []ghtriage.PlanOutput{
+			final,
+			{ReadRepoFile: []string{"pkg/foo.go"}},
+			final,
+		},
+	}
+	planner := ghtriage.NewPlanner(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model)
+	if err := planner.SetGrounding(cfg); err != nil {
+		t.Fatal(err)
+	}
+	res, err := planner.Tick(f.ctx, f.missionID)
+	if err != nil || res.Planned != 1 {
+		t.Fatalf("planner.Tick failed: res=%+v err=%v", res, err)
+	}
+	if model.callCount != 3 {
+		t.Fatalf("expected 3 model calls, got %d", model.callCount)
+	}
+	if !strings.Contains(model.inputs[1].Question, "without reading any file") {
+		t.Fatalf("the second question does not ask to read first: %q", model.inputs[1].Question)
+	}
+}
