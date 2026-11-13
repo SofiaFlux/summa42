@@ -48,7 +48,7 @@ func newCaseReportCommand(jsonOutput *bool) *cobra.Command {
 			}
 			defer store.DB().Close()
 			cases := workflowcase.New(store, clock.System{}, purpose.New(store, clock.System{}))
-			report, err := casereport.Build(cmd.Context(), store, cases, domain.ID(strings.TrimSpace(args[0])))
+			report, err := casereport.Build(cmd.Context(), store, cases, domain.ID(strings.TrimSpace(args[0])), time.Now())
 			if err != nil {
 				return err
 			}
@@ -72,6 +72,14 @@ func writeCaseReport(out io.Writer, report casereport.Report) error {
 	fmt.Fprintf(out, "  %s %s (revision %s)\n", report.Source, report.Object, report.Revision)
 	fmt.Fprintf(out, "  state %s, steps %d/%d, wall time %s (created %s, updated %s)\n\n", report.State, report.CompletedSteps, report.MaxSteps,
 		seconds(report.WallSeconds), report.CreatedAt.UTC().Format(time.RFC3339), report.UpdatedAt.UTC().Format(time.RFC3339))
+
+	if len(report.WaitingOn) > 0 {
+		fmt.Fprintf(out, "Waiting on the Owner (%d)\n", len(report.WaitingOn))
+		for _, item := range report.WaitingOn {
+			fmt.Fprintf(out, "  approve %s  (%s, expires %s)\n", item.ApprovalID, item.Provider, item.ExpiresAt.Local().Format("15:04:05 MST"))
+		}
+		fmt.Fprintln(out)
+	}
 
 	fmt.Fprintf(out, "Stages (%d)\n", len(report.Stages))
 	for n, stage := range report.Stages {
