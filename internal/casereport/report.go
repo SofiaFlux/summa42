@@ -47,12 +47,13 @@ type Report struct {
 	Notes     []string          `json:"notes"`
 }
 
-// PendingApproval is an external operation of the case held for the Owner.
+// PendingApproval is an Owner approval a held external operation of the case
+// waits on. One approval may be carried by several operations of one effect
+// slot (a later Attempt adopts it), so it is listed once, without an operation.
 type PendingApproval struct {
-	ApprovalID  string    `json:"approval_id"`
-	OperationID string    `json:"operation_id"`
-	Provider    string    `json:"provider"`
-	ExpiresAt   time.Time `json:"expires_at"`
+	ApprovalID string    `json:"approval_id"`
+	Provider   string    `json:"provider"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 // Stage is one assessed piece of work of the case, in the order assessed.
@@ -230,7 +231,7 @@ func Build(ctx context.Context, store *state.Store, cases *workflowcase.Service,
 
 func readPending(ctx context.Context, store *state.Store, workID string, now time.Time, report *Report) error {
 	rows, err := store.DB().QueryContext(ctx, `
-		SELECT a.approval_id, o.operation_id, o.provider, a.expires_at
+		SELECT DISTINCT a.approval_id, o.provider, a.expires_at
 		FROM tasks t
 		JOIN external_operations o ON o.task_id = t.task_id
 		JOIN approval_requests a ON a.approval_id = o.approval_id
@@ -242,7 +243,7 @@ func readPending(ctx context.Context, store *state.Store, workID string, now tim
 	for rows.Next() {
 		var item PendingApproval
 		var expires string
-		if err := rows.Scan(&item.ApprovalID, &item.OperationID, &item.Provider, &expires); err != nil {
+		if err := rows.Scan(&item.ApprovalID, &item.Provider, &expires); err != nil {
 			return fmt.Errorf("scan pending approval: %w", err)
 		}
 		if item.ExpiresAt, err = time.Parse(time.RFC3339Nano, expires); err != nil {
