@@ -139,7 +139,7 @@ func (s *Service) prepareApprovalInTx(
 	ctx context.Context,
 	tx *sql.Tx,
 	result domain.ExternalOperation,
-	guardedLeaseExpiry time.Time,
+	now time.Time,
 	decision domain.PolicyDecision,
 	callerRequired []domain.ID,
 	provider Provider,
@@ -166,15 +166,76 @@ func (s *Service) prepareApprovalInTx(
 	if err != nil {
 		return "", "", err
 	}
+	adopted, err := s.adoptableApprovalInTx(ctx, tx, result.EffectSlotID, digest, required, now)
+	if err != nil {
+		return "", "", err
+	}
+	if adopted != "" {
+		return adopted, callerJSON, nil
+	}
 	record, err := s.approvals.CreateInTx(ctx, tx, approvals.CreateRequest{
 		SubjectKind: "EXTERNAL_OPERATION", SubjectID: result.ID, RequestDigest: digest,
 		PolicyDecisionID: decision.ID, RequiredApprovers: required,
-		RequestedBy: result.AttemptID, ExpiresAt: guardedLeaseExpiry,
+		RequestedBy: result.AttemptID, ExpiresAt: now.Add(DefaultApprovalTTL),
 	})
 	if err != nil {
 		return "", "", err
 	}
 	return record.ID, callerJSON, nil
+}
+
+// minAdoptionRemaining is the least time an approval must have left to be
+// adopted; with less, the Owner gets a fresh request rather than one that may
+// die before they act.
+const minAdoptionRemaining = 15 * time.Minute
+
+// adoptableApprovalInTx finds the open approval of an earlier operation in the
+// same effect slot for the exact same digest and approvers. What the Owner
+// signs (OperationApprovalDigest) names the slot and the intent, not the
+// operation or its Attempt, so a new Attempt can wait on it instead of asking
+// again. A consumed, rejected or expired request is never adopted.
+func (s *Service) adoptableApprovalInTx(ctx context.Context, tx *sql.Tx, slotID domain.ID, digest string, required []domain.ID, now time.Time) (domain.ID, error) {
+	var id domain.ID
+	err := tx.QueryRowContext(ctx, `
+		SELECT a.approval_id
+		FROM external_operations o
+		JOIN approval_requests a ON a.approval_id = o.approval_id
+		WHERE o.effect_slot_id = ? AND a.subject_kind = 'EXTERNAL_OPERATION' AND a.request_digest = ?
+		  AND a.state IN (?, ?)
+		ORDER BY o.operation_sequence DESC LIMIT 1`,
+		slotID, digest, domain.ApprovalPending, domain.ApprovalApproved,
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("find adoptable approval: %w", err)
+	}
+	record, err := s.approvals.GetInTx(ctx, tx, id)
+	if err != nil {
+		return "", err
+	}
+	if record.ExpiresAt.Sub(now) < minAdoptionRemaining || !approvalIDsEqual(record.RequiredApprovers, required) {
+		return "", nil
+	}
+	return id, nil
+}
+
+// approvalSubjectInSlotInTx reports whether an approval's subject operation is
+// op itself or an earlier operation of op's effect slot (an adopted approval).
+func approvalSubjectInSlotInTx(ctx context.Context, tx *sql.Tx, subject domain.ID, op domain.ExternalOperation) (bool, error) {
+	if subject == op.ID {
+		return true, nil
+	}
+	var slot domain.ID
+	err := tx.QueryRowContext(ctx, `SELECT effect_slot_id FROM external_operations WHERE operation_id = ?`, subject).Scan(&slot)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return slot == op.EffectSlotID, nil
 }
 
 func (s *Service) preparedApprovalMatchesInTx(
@@ -220,7 +281,11 @@ func (s *Service) preparedApprovalMatchesInTx(
 	if err != nil {
 		return false, err
 	}
-	if record.SubjectKind != "EXTERNAL_OPERATION" || record.SubjectID != op.ID ||
+	inSlot, err := approvalSubjectInSlotInTx(ctx, tx, record.SubjectID, op)
+	if err != nil {
+		return false, err
+	}
+	if record.SubjectKind != "EXTERNAL_OPERATION" || !inSlot ||
 		record.RequestDigest != digest || !approvalIDsEqual(record.RequiredApprovers, required) {
 		return false, nil
 	}
@@ -264,7 +329,11 @@ func (s *Service) validateAndConsumeApprovalInTx(
 	if err != nil {
 		return err
 	}
-	if record.SubjectKind != "EXTERNAL_OPERATION" || record.SubjectID != op.ID ||
+	inSlot, err := approvalSubjectInSlotInTx(ctx, tx, record.SubjectID, op)
+	if err != nil {
+		return fmt.Errorf("%w: load approval subject: %v", domain.ErrPolicyDenied, err)
+	}
+	if record.SubjectKind != "EXTERNAL_OPERATION" || !inSlot ||
 		record.RequestDigest != digest || !approvalIDsEqual(record.RequiredApprovers, required) {
 		return fmt.Errorf("%w: approval binding does not match current dispatch identity", domain.ErrPolicyDenied)
 	}

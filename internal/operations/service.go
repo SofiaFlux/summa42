@@ -79,6 +79,12 @@ type Service struct {
 	cubeID             domain.ID
 }
 
+// DefaultApprovalTTL is how long an Owner approval request stays open. It
+// outlives the Attempt that asked: a later Attempt in the same effect slot
+// adopts it (see adoptableApprovalInTx).
+// ponytail: fixed; make it a config.json setting when 24 h proves wrong.
+const DefaultApprovalTTL = 24 * time.Hour
+
 func (s *Service) SetQuarantine(q QuarantineChecker, cubeID domain.ID) {
 	s.quarantine = q
 	s.cubeID = cubeID
@@ -282,7 +288,7 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 			IntentRevision: slot.IntentRevision, Provider: provider.Name(), ReservationID: reservation.ID, CreatedAt: now,
 		}
 		approvalID, callerJSON, err := s.prepareApprovalInTx(
-			ctx, tx, result, guarded.LeaseExpiresAt, decision, callerRequired,
+			ctx, tx, result, now, decision, callerRequired,
 			provider, request.Intent.DescriptorType(), canonical,
 		)
 		if err != nil {

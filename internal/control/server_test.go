@@ -117,6 +117,10 @@ func (f *fakeAttemptReader) Attempt(context.Context, domain.ID) (domain.Attempt,
 
 type fakeOperationReader struct{ operation domain.ExternalOperation }
 
+func (f *fakeOperationReader) ApprovalOperation(context.Context, domain.ID) (domain.ExternalOperation, error) {
+	return f.operation, nil
+}
+
 func (f *fakeOperationReader) Operation(context.Context, domain.ID) (domain.ExternalOperation, error) {
 	return f.operation, nil
 }
