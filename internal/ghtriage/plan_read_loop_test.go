@@ -422,3 +422,39 @@ func TestPlanWithReads_ContextEvidenceExactUnionAndTurnLog(t *testing.T) {
 		t.Fatalf("unexpected turn log paths: served=%v denied=%v", entry.PathsServed, entry.PathsDenied)
 	}
 }
+
+// A final plan without allowed_paths in read mode (no Owner list to fall back
+// on) is asked for again instead of failing the case, and the question names
+// allowed_paths from the first turn.
+func TestPlanWithReads_PlanWithoutAllowedPathsIsAskedAgain(t *testing.T) {
+	f, _ := readyPlannerFixture(t)
+	cfg, _, _ := readLoopFixture(t)
+
+	model := &multiTurnModel{
+		turns: []ghtriage.PlanOutput{
+			{Summary: "No boundary", Steps: []ghtriage.PlanStep{{Objective: "Do it", DoneWhen: "Done"}}},
+			{Summary: "With boundary", Steps: []ghtriage.PlanStep{{Objective: "Do it", DoneWhen: "Done"}}, AllowedPaths: []string{"pkg/foo.go"}},
+		},
+	}
+	planner := ghtriage.NewPlanner(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, model)
+	if err := planner.SetGrounding(cfg); err != nil {
+		t.Fatal(err)
+	}
+	res, err := planner.Tick(f.ctx, f.missionID)
+	if err != nil || res.Planned != 1 {
+		t.Fatalf("planner.Tick failed: res=%+v err=%v", res, err)
+	}
+	if model.callCount != 2 {
+		t.Fatalf("expected 2 model calls, got %d", model.callCount)
+	}
+	if !strings.Contains(model.inputs[0].Question, `"allowed_paths"`) {
+		t.Fatalf("the first question does not ask for allowed_paths: %q", model.inputs[0].Question)
+	}
+	if !strings.Contains(model.inputs[1].Question, "no allowed_paths") {
+		t.Fatalf("the second question does not say what was missing: %q", model.inputs[1].Question)
+	}
+	p, _ := storedPlan(t, f)
+	if p.PlanOutput.Summary != "With boundary" {
+		t.Fatalf("unexpected stored plan: %s", p.PlanOutput.Summary)
+	}
+}

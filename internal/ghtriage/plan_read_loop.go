@@ -104,11 +104,23 @@ func (p *Planner) planWithReads(ctx context.Context, repo string, snap Snapshot,
 		return obj.ID
 	}
 
+	// missingPaths is set when a final plan came without allowed_paths and no
+	// Owner list stands in for them: the next turn asks for them again.
+	missingPaths := false
+
 	// Maximum 5 model calls: turns 0, 1, 2, 3 (reads) and turn 4 (must be final plan).
 	for turn := 0; turn < 5; turn++ {
 		isFinalTurn := (turn == 4) || (totalBytes >= budget)
 
 		question := PlanQuestion
+		if len(cfg.AllowedPaths) == 0 {
+			// PlanQuestion's schema has no allowed_paths: outside read mode a
+			// separate file selection supplies them. Here the plan must.
+			question += ReadModeAllowedPathsNote
+		}
+		if missingPaths {
+			question += "\n\nYour last plan had no allowed_paths. Answer with the final plan again and include them."
+		}
 		if isFinalTurn {
 			question += "\n\nFinal answer required. Do not request further files; answer now with the final plan JSON object only."
 		} else {
@@ -220,6 +232,10 @@ func (p *Planner) planWithReads(ctx context.Context, repo string, snap Snapshot,
 		// If output.AllowedPaths is empty and cfg.AllowedPaths is present, fallback.
 		if len(output.AllowedPaths) == 0 && len(cfg.AllowedPaths) > 0 {
 			output.AllowedPaths = append([]string(nil), cfg.AllowedPaths...)
+		}
+		if len(output.AllowedPaths) == 0 && !isFinalTurn {
+			missingPaths = true
+			continue
 		}
 
 		// Validate allowed_paths against checkSelection rules
