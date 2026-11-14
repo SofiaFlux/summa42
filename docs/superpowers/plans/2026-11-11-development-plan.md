@@ -320,6 +320,7 @@ tasks. `agent`: needs an external coding agent working in a checkout.
 | M6 | Automation loop | Detect, shadow, propose, adopt inside a mandate, suspend on failure | M5 |
 | M7 | Company OS for the first product | Obligations, operate, support and money functions on real sources | M6 |
 | M8 | Release and self-upgrade (A3) | Supervisor, canary, rollback | M5 |
+| M10 | Goal mandate | The Owner signs a goal with a ceiling; inside it the Project plans, executes and verifies without asking | M5, M6, M8, M9 |
 | M9 | Containment hardening | Separate reviewer user, model egress allowlist, output hygiene, OCI execution, capability sessions | M9-T6 and M9-T8 right after M0; the rest after M3 |
 
 ### 4.1 Execution order
@@ -334,6 +335,7 @@ Card IDs say which milestone a card belongs to, not when it runs. The order:
 5. M2A, M3 (M3-T7 and M3-T8 last), M7-T3.
 6. M4, then M9-T4, M9-T7, M9-T3, M2-T8, M2-T9.
 7. M5, M6, the rest of M7, M8, the rest of M9.
+8. M10, only after M6 is done on a real Project.
 
 M1-T5 (the pilot tasks) draws `pipeline` cards from every step.
 
@@ -1270,6 +1272,53 @@ otherwise the epic stays open.
 Parked spikes return only by the rule in the parked-spikes index: with a
 caller, an acceptance test, and their listed findings resolved.
 
+### M10. Goal mandate
+
+The Owner's aim (Q49): grant once, then the system acts on its own. M5
+delegates one operation class and M6 adopts only schedules and templates for
+work that is already allowed. A goal mandate is wider: the Owner signs a goal
+and a ceiling, and inside that ceiling the Project decomposes, plans, executes
+and verifies work without asking. It is still a standing delegation in the
+sense of Vision Article 27, granted by one Owner signature, and it never
+expands by itself (Article 6). Public reporting on autonomous agents
+([prior art](../research/2026-11-14-prior-art.md), ARTEX) shows that long
+autonomous runs work today and that their weak point is unverified claims of
+success; this milestone is therefore built on verification, not on more
+freedom alone.
+
+**M10-T1 `DESIGN`: goal mandate spec.** Depends: M5 and M6 done, M6's "Done
+when" met on a real Project, M8-T1 approved, M9-T6 and M9-T8 done. Settles:
+
+- *The record.* Goal, Project, money and resource envelope, risk ceiling,
+  operation classes it covers, expiry, and the list of decisions that always
+  return to the Owner even inside the goal: every irreversible external
+  effect above the ceiling, everything on M5-T1's undelegable list, and the
+  mandate mechanism itself. Owner-signed; a format that can only be attenuated
+  is considered ([prior art](../research/2026-11-14-prior-art.md), Biscuit).
+- *Planning inside the goal.* Tasks the Collective creates under the mandate
+  inherit its ceiling and cannot exceed it; Article 13 (goals are hypotheses
+  with accountability) and Article 16 (sufficient effort and dormancy) bound
+  how much work it may create.
+- *Verification.* Every claimed effect needs independent evidence; an
+  unverified result is `UNKNOWN` and is never counted as progress toward the
+  goal. A run of `UNKNOWN` results contracts the mandate.
+- *Contraction.* Failure budgets in the style of SRE error budgets; spending
+  one suspends the mandate without asking; reactivation needs the Owner.
+- *Reporting.* What was done toward the goal, at what cost, with what
+  evidence, in the digest (M6-T5).
+- *Vision fit.* Article by article (6, 7, 13, 16, 27, 29), why the mandate does
+  not violate the Vision. If the spec finds that it needs a Vision change,
+  that is a stop condition (R10): `docs/VISION.md` is changed only by the
+  Owner.
+
+Tests the spec must name at least: `TestGoalMandateCannotExceedCeiling`,
+`TestTaskUnderMandateInheritsCeiling`, `TestUnknownResultIsNotProgress`,
+`TestSpentFailureBudgetSuspendsMandate`, `TestUndelegableAlwaysReachesOwner`,
+`TestMandateCannotCreateOrWidenMandate`.
+
+**M10-T2 `BUILD` `agent`: goal mandate.** Depends: M10-T1 approved. Cards are
+cut from the spec. The first goal mandate runs on the Summa42 Project.
+
 ## 6. How to hand a card to the implementing agent
 
 Use this prompt, one card per session:
@@ -1308,7 +1357,7 @@ authority widen; is every claim in the README true.
 | A design decision is taken by the implementer | `DESIGN` cards | Spec approved by the Owner first; stronger model writes or reviews it |
 | Governance makes the agents weaker than their bare harness | M1 to M9 | Section 2.6, milestone M1A, parity benchmark M1A-T6 repeated on every change |
 | Agents coordinate outside the Collective's sight | every milestone with two model roles | Section 2.5, R12, M9-T6 to M9-T8 before any delegation |
-| Delegation or mandate widens authority | M5, M6 | Spec lists the undelegable; suspension is automatic; M4-T4 first |
+| Delegation or mandate widens authority | M5, M6, M10 | Spec lists the undelegable; suspension is automatic; M4-T4 first |
 | The Owner key is readable by the Box user | M5 onward | M4-T4 is an entry condition of M5 |
 | Projects migration breaks the one running installation | M2-T2 | Upgrade test on a copy of the live database; backup first |
 | Company connectors built on guesses | M7 | Section 2.4 records the systems; a card stops (R10) when access or a fact it needs is missing |

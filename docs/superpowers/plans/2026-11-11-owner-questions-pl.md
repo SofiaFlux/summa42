@@ -250,3 +250,13 @@ wyniku, do Ownera. Skrypt i każda jego poprawka to propozycja do podpisu
 Ownera, nigdy adopcja w ramach mandatu.
 Przyjęto domyślnie: N = 5 w 30 dni (jak Q30), 5 zgodnych przypadków w trybie
 cienia (jak Q31). Specyfikacja M6-T8 może zaproponować inne progi.
+
+**Q49.** Czy Summa ma działać w pełni autonomicznie po przyznaniu celu?
+Decyzja: tak, jako cel docelowy: kamień milowy M10 („mandat na cel”). Owner
+podpisuje cel, budżet, pułap ryzyka, termin i listę decyzji, które zawsze
+wracają do niego; wewnątrz tego system sam planuje, wykonuje i weryfikuje, bez
+pytań. Mandat nigdy sam się nie poszerza, kurczy się automatycznie przy
+porażkach, a wynik bez niezależnego dowodu nie liczy się jako postęp.
+Kolejność: dopiero po M5, M6 (sprawdzonym na prawdziwym projekcie), M8 i M9.
+To rozszerza pierwszy mandat z Q32 tylko dla celów podpisanych osobno; Q32
+pozostaje domyślnym mandatem projektu.
