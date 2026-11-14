@@ -149,6 +149,15 @@ func TestResolveRunAsUserFailsClosed(t *testing.T) {
 	}
 }
 
+// atomicPIDWrite is a shell line that publishes the script's PID at path.
+// It writes a temporary file and renames it, so path never exists empty: a
+// plain "echo $$ > path" creates the file before writing, and a cancel that
+// kills the script between the two left an empty file that pidFileAlive
+// could not parse.
+func atomicPIDWrite(path string) string {
+	return "echo $$ > " + path + ".tmp && mv " + path + ".tmp " + path + "\n"
+}
+
 func pidFileAlive(t *testing.T, path string) (alive bool) {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -191,7 +200,7 @@ func TestEarlyCancelKillsTheModelSideGroupThroughSudo(t *testing.T) {
 	}
 	defer cleanup()
 	pidFile := filepath.Join(t.TempDir(), "pid")
-	bin := script(t, "echo $$ > "+pidFile+"\nwhile :; do sleep 1; done\n")
+	bin := script(t, atomicPIDWrite(pidFile)+"while :; do sleep 1; done\n")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	cmd, err := modelrun.Command(ctx, modelrun.Spec{RunAs: fakeUser(home), Binary: bin, WaitDelay: 20 * time.Second})
@@ -240,7 +249,7 @@ func TestCancelBeforeTheMarkerStillKillsTheModelSide(t *testing.T) {
 	}
 	defer cleanup()
 	pidFile := filepath.Join(t.TempDir(), "pid")
-	bin := script(t, "echo $$ > "+pidFile+"\nwhile :; do sleep 1; done\n")
+	bin := script(t, atomicPIDWrite(pidFile)+"while :; do sleep 1; done\n")
 	cmd, err := modelrun.Command(context.Background(), modelrun.Spec{RunAs: fakeUser(home), Binary: bin, Timeout: time.Hour, WaitDelay: 20 * time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -296,7 +305,7 @@ func TestEarlyCancelEscalatesToKillAfterTheGrace(t *testing.T) {
 	defer cleanup()
 	defer modelrun.SetKillGraceForTest(300 * time.Millisecond)()
 	pidFile := filepath.Join(t.TempDir(), "pid")
-	bin := script(t, "trap '' TERM\necho $$ > "+pidFile+"\nwhile :; do sleep 1; done\n")
+	bin := script(t, "trap '' TERM\n"+atomicPIDWrite(pidFile)+"while :; do sleep 1; done\n")
 	cmd, err := modelrun.Command(context.Background(), modelrun.Spec{RunAs: fakeUser(home), Binary: bin, Timeout: time.Hour, WaitDelay: 20 * time.Second})
 	if err != nil {
 		t.Fatal(err)
