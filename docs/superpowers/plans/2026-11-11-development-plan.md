@@ -1022,7 +1022,12 @@ Only D2, and only for work that needs no approval today, can be adopted under
 a mandate. D1, D3, D4 and D5 always end as an Owner-signed packet: a
 delegation, a manifest change and funding are authority, and a D5 script is
 model-written code that would be executed, which rule R12 forbids without the
-Owner's review. D5 inverts the usual automation order: the agent solves the
+Owner's review. The one exception (Q48): once the Owner has signed a standing
+delegation (M5) for script promotion in a given Task class, a script version
+in that class that passed its full regression suite and shadow mode is
+promoted without a signature and the Owner gets a notification (FYI) instead.
+The delegation is the Owner's review of the class; it is never created by the
+Collective and is suspended by any failure of a promoted script. D5 inverts the usual automation order: the agent solves the
 class first, and the script is a verified cache of what it did, not a workflow
 designed in advance (Vision, "Least cognitive mechanism").
 
@@ -1097,7 +1102,9 @@ widening authority. The spec settles:
 - *No silent self-repair.* After handling an edge case the agent may emit a
   fixed script only as a new `CANDIDATE` (M6-T7 path). The running version is
   never edited in place; promotion is the Owner's review and signature, like
-  any code change.
+  any code change, unless an Owner-signed delegation for script promotion in
+  that class exists (Q48): then a version that passed the regression suite
+  and shadow is promoted and the Owner is notified.
 - *Containment.* The script runs as an executor contract with the class's
   existing capabilities and enforcement level, in the same sandbox as a model
   Attempt. It needs no model credential and gets no capability the class did
@@ -1107,7 +1114,10 @@ Tests: `TestD5NeedsVerifiedAttempts`, `TestDifferentOutputShapeResetsD5`,
 `TestScriptOutputBreakingContractIsUnknown`,
 `TestBrokenContractFallsBackToModelExecutor`,
 `TestFallbackCannotWidenCapabilities`, `TestNewScriptVersionRunsRegressionSuite`,
-`TestScriptIsNeverAdoptedUnderMandate`, `TestAgentFixIsCandidateNotReplacement`.
+`TestScriptIsNeverAdoptedUnderMandate`, `TestAgentFixIsCandidateNotReplacement`,
+`TestScriptPromotionWithoutDelegationNeedsOwner`,
+`TestDelegatedScriptPromotionNotifiesOwner`,
+`TestFailedPromotedScriptSuspendsDelegation`.
 
 **M6-T6 `DESIGN`: model-assisted discovery.** Later and optional. A model reads
 sanitized summaries of a Project's sources and suggests candidates that the

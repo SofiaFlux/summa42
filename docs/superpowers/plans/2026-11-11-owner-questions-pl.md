@@ -246,10 +246,16 @@ Decyzja: tak, jako reguła D5 w M6 (karta M6-T8). Najpierw zadanie rozwiązuje
 agent; po N zweryfikowanych, jednakowych wykonaniach system proponuje
 deterministyczny skrypt z kontraktem wyjścia i zestawem regresyjnym z tych
 wykonań. Przypadek brzegowy wraca do agenta, a gdy agent nie umie zweryfikować
-wyniku, do Ownera. Skrypt i każda jego poprawka to propozycja do podpisu
-Ownera, nigdy adopcja w ramach mandatu.
-Przyjęto domyślnie: N = 5 w 30 dni (jak Q30), 5 zgodnych przypadków w trybie
-cienia (jak Q31). Specyfikacja M6-T8 może zaproponować inne progi.
+wyniku, do Ownera. Skrypt i każda jego poprawka wymagają podpisu Ownera,
+dopóki Owner nie podpisze stałej delegacji (M5) na promocję skryptów w danej
+klasie zadań. Od tego momentu wersja, która przeszła pełny zestaw regresyjny i
+tryb cienia, wchodzi bez podpisu, a Owner dostaje powiadomienie (FYI). Sam
+mandat z Q32 nigdy nie wystarcza.
+Decyzja (14 listopada 2026): N = 5 w 30 dni (jak Q30), 5 zgodnych przypadków
+w trybie cienia (jak Q31).
+
+**Q50.** Kiedy mandat na cel (M10)?
+Decyzja: na końcu, po M5, M6 sprawdzonym na prawdziwym projekcie, M8 i M9.
 
 **Q49.** Czy Summa ma działać w pełni autonomicznie po przyznaniu celu?
 Decyzja: tak, jako cel docelowy: kamień milowy M10 („mandat na cel”). Owner
