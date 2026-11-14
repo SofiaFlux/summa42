@@ -2,7 +2,7 @@
 
 Dotyczy: [plan rozwoju](2026-11-11-development-plan.md).
 
-Stan na 11 listopada 2026: Owner odpowiedział na pytania kluczowe w rozmowie.
+Stan na 11 listopada 2026 (sekcja K: 14 listopada): Owner odpowiedział na pytania kluczowe w rozmowie.
 Każde pytanie ma poniżej **Decyzję** (odpowiedź Ownera) albo **Przyjęto
 domyślnie** (nie pytano osobno; obowiązuje, dopóki Owner nie zmieni). Zmiana
 decyzji: popraw wpis i zrób commit.
@@ -237,3 +237,16 @@ pracy jednym zdaniem (M4-T6). Panel webowy nie wchodzi do planu.
 
 Decyzja: tabela luk w izolacji (sekcja 2.5 planu) zostaje w publicznym
 repozytorium; wykonawca kart musi ją znać.
+
+## K. Kompilowanie powtarzalnej pracy agenta (dopisane 14 listopada 2026)
+
+**Q48.** Czy system ma sam proponować skrypt, gdy agent wiele razy rozwiązał
+to samo zadanie tak samo?
+Decyzja: tak, jako reguła D5 w M6 (karta M6-T8). Najpierw zadanie rozwiązuje
+agent; po N zweryfikowanych, jednakowych wykonaniach system proponuje
+deterministyczny skrypt z kontraktem wyjścia i zestawem regresyjnym z tych
+wykonań. Przypadek brzegowy wraca do agenta, a gdy agent nie umie zweryfikować
+wyniku, do Ownera. Skrypt i każda jego poprawka to propozycja do podpisu
+Ownera, nigdy adopcja w ramach mandatu.
+Przyjęto domyślnie: N = 5 w 30 dni (jak Q30), 5 zgodnych przypadków w trybie
+cienia (jak Q31). Specyfikacja M6-T8 może zaproponować inne progi.

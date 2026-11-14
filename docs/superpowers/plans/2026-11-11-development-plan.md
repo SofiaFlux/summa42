@@ -1014,10 +1014,15 @@ Detection rules for the first version (deterministic, over M4-T1 rows):
 | D2 | The Owner ran the same manual command on a regular cadence | A schedule that creates that Task |
 | D3 | Cases of one class block at the same gate for the same reason, and the Owner unblocks them the same way | A manifest change (grant, limit or allowed path), shown as a diff. Proposal only |
 | D4 | An obligation was fulfilled by hand on time K times (needs M7-T3) | A Task template and the funding it would need. Proposal only |
+| D5 | Tasks of one class were completed by a model Attempt N times with passed verification, the same input shape and the same output shape (Q48) | A compiled script for that class: the script, a deterministic output contract and a regression suite built from those N Attempts' evidence. Proposal only (M6-T8) |
 
 Only D2, and only for work that needs no approval today, can be adopted under
-a mandate. D1, D3 and D4 always end as an Owner-signed packet: a delegation, a
-manifest change and funding are authority.
+a mandate. D1, D3, D4 and D5 always end as an Owner-signed packet: a
+delegation, a manifest change and funding are authority, and a D5 script is
+model-written code that would be executed, which rule R12 forbids without the
+Owner's review. D5 inverts the usual automation order: the agent solves the
+class first, and the script is a verified cache of what it did, not a workflow
+designed in advance (Vision, "Least cognitive mechanism").
 
 **M6-T2 `BUILD` `agent`: detector and proposals.** Depends: M6-T1 approved.
 Create `internal/automation/` with a caller in `serve` (one detection pass per
@@ -1068,6 +1073,39 @@ never under a mandate (M2-T8). Nothing a Summand writes
 becomes Collective knowledge directly. Restore from the parked
 `internal/epistemic` only what this path calls, with durable state in a
 migration.
+
+**M6-T8 `DESIGN` then `BUILD` `agent`: compiled scripts (D5).** Depends:
+M6-T3, M1A-T3. Turns repeated agent work into a deterministic executor without
+widening authority. The spec settles:
+
+- *Same shape.* What makes N Attempts "the same" (a normalized schema of the
+  inputs and of the verified output), the threshold N and the window (Q48).
+- *Output contract.* The script is promoted with deterministic checks on its
+  output (schema, invariants, row counts or hashes the class allows). Exit code
+  0 is not success: an output that breaks the contract is `UNKNOWN` (Vision
+  Articles 11 and 21) and never published.
+- *Regression suite.* The N source Attempts, and every later edge case the
+  script failed on, become the suite. A new script version must pass all of it
+  in shadow before it can be proposed.
+- *Escalation ladder.* Script first; on a broken contract, an unknown input
+  shape or an error, the same Task goes back to the model executor of that
+  class inside the same authority ceiling; when the model cannot verify a
+  result, it goes to the Owner inbox. Each fallback is recorded and counts
+  toward suspension (M6-T4).
+- *No silent self-repair.* After handling an edge case the agent may emit a
+  fixed script only as a new `CANDIDATE` (M6-T7 path). The running version is
+  never edited in place; promotion is the Owner's review and signature, like
+  any code change.
+- *Containment.* The script runs as an executor contract with the class's
+  existing capabilities and enforcement level, in the same sandbox as a model
+  Attempt. It needs no model credential and gets no capability the class did
+  not already have.
+
+Tests: `TestD5NeedsVerifiedAttempts`, `TestDifferentOutputShapeResetsD5`,
+`TestScriptOutputBreakingContractIsUnknown`,
+`TestBrokenContractFallsBackToModelExecutor`,
+`TestFallbackCannotWidenCapabilities`, `TestNewScriptVersionRunsRegressionSuite`,
+`TestScriptIsNeverAdoptedUnderMandate`, `TestAgentFixIsCandidateNotReplacement`.
 
 **M6-T6 `DESIGN`: model-assisted discovery.** Later and optional. A model reads
 sanitized summaries of a Project's sources and suggests candidates that the
