@@ -29,7 +29,7 @@ func gateCommand(t *testing.T) (*modelrun.Cmd, string) {
 	// Whatever a test sets, the next test starts with a gate that allows.
 	t.Cleanup(func() { modelrun.SetGate(func(context.Context) error { return nil }) })
 	pidFile := filepath.Join(t.TempDir(), "pid")
-	bin := script(t, "echo $$ > "+pidFile+"\nwhile :; do sleep 1; done\n")
+	bin := script(t, atomicPIDWrite(pidFile)+"while :; do sleep 1; done\n")
 	cmd, err := modelrun.Command(context.Background(), modelrun.Spec{RunAs: fakeUser(home), Binary: bin, Timeout: time.Hour, WaitDelay: 20 * time.Second})
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func TestFreezeBeforeTheMarkerStillKillsTheModel(t *testing.T) {
 	t.Cleanup(cleanup)
 	t.Cleanup(func() { modelrun.SetGate(func(context.Context) error { return nil }) })
 	pidFile := filepath.Join(t.TempDir(), "pid")
-	bin := script(t, "echo $$ > "+pidFile+"\nwhile :; do sleep 1; done\n")
+	bin := script(t, atomicPIDWrite(pidFile)+"while :; do sleep 1; done\n")
 	cmd, err := modelrun.Command(context.Background(), modelrun.Spec{RunAs: fakeUser(home), Binary: bin, Timeout: time.Hour, WaitDelay: 20 * time.Second})
 	if err != nil {
 		t.Fatal(err)
