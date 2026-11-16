@@ -278,6 +278,58 @@ func TestPublicationReconcilesUnknownPRWithoutRepeatingBranch(t *testing.T) {
 	}
 }
 
+// The Owner may approve after the Attempt that asked has lost its lease: the
+// next Attempt waits on the same approval instead of asking again.
+func TestPublicationApprovalSurvivesLeaseExpiry(t *testing.T) {
+	f, cfg, id, _ := implementedFixture(t)
+	_, err := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &codeReviewModel{verdict: "ACCEPT"}).Review(f.ctx, id, cfg.Source.LocalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantPublication(t, f, id)
+	_, b, p := publicationOps(t, f)
+	a := approvals.New(f.store, f.clock)
+	ops := operations.New(f.store, f.clock, f.execSvc, publicationPolicy{required: []domain.ID{"owner"}}, resources.New(f.store, f.clock), a, "publication_collective", b, p)
+	pub := ghtriage.NewPublisher(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, ops)
+	first, err := pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main")
+	if err != nil || !first.Held || first.ApprovalID == "" {
+		t.Fatalf("first %+v %v", first, err)
+	}
+	for round := 1; round <= 2; round++ {
+		f.clock.Advance(ghtriage.PublicationLeaseDuration + time.Second)
+		if _, err = wake.New(f.store, f.clock, nil).RecoverExpiredLeases(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+		again, err := pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main")
+		if err != nil || !again.Held || again.ApprovalID != first.ApprovalID || again.OperationID == first.OperationID {
+			t.Fatalf("round %d: %+v %v, want held on approval %s from a new operation", round, again, err, first.ApprovalID)
+		}
+	}
+	var requests int
+	if err = f.store.DB().QueryRowContext(f.ctx, `SELECT count(*) FROM approval_requests`).Scan(&requests); err != nil || requests != 1 {
+		t.Fatalf("approval requests = %d %v, want the one adopted request", requests, err)
+	}
+	record, err := a.Get(f.ctx, first.ApprovalID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.Approve(f.ctx, record.ID, "owner", record.RequestDigest); err != nil {
+		t.Fatal(err)
+	}
+	second, err := pub.Publish(f.ctx, id, cfg.Source.LocalPath, "main")
+	if err != nil || !second.Held || second.ApprovalID == first.ApprovalID || b.writes != 1 || p.writes != 0 {
+		t.Fatalf("after approval %+v %v writes=%d/%d", second, err, b.writes, p.writes)
+	}
+	if record, err = a.Get(f.ctx, first.ApprovalID); err != nil || record.State != domain.ApprovalConsumed {
+		t.Fatalf("branch approval %+v %v, want CONSUMED", record, err)
+	}
+	// One approval carried by three operations is one Owner intervention.
+	report, err := casereport.Build(f.ctx, f.store, f.cases, id)
+	if err != nil || report.Interventions.Approvals != 1 {
+		t.Fatalf("case report interventions %+v %v, want 1 approval", report.Interventions, err)
+	}
+}
+
 func TestPublicationResumesExactApprovedOperations(t *testing.T) {
 	f, cfg, id, _ := implementedFixture(t)
 	_, err := ghtriage.NewCodeReviewer(f.cases, f.execSvc, f.verifSvc, f.evidenceStore, &codeReviewModel{verdict: "ACCEPT"}).Review(f.ctx, id, cfg.Source.LocalPath)

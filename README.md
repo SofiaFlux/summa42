@@ -161,7 +161,7 @@ The token file must be a regular private file (0600 on Unix). Repository selecti
 
 The managed branch is `summa42/issue-<number>-<work-hash>`. The publisher exports at most 64 regular UTF-8 files and 256 KiB of new contents, preserving executable modes and deletions. Only ordinary unsigned single-parent commits are supported. GitHub must return the exact reviewed tree and commit SHA before a create-only branch ref can be written; a conflicting branch is held. The base branch must remain at the accepted base SHA. A deterministic marker binds the draft PR to the exact head, base, repository and evidence.
 
-Policy-required approval produces `held: true` with the exact operation and approval IDs and a nonzero exit. Approve that bound request within the live ten-minute lease, then rerun the command; it resumes the same Attempt and prepared operation. Branch and PR may require separate approvals. Concurrent dispatch claims still permit one write.
+Policy-required approval produces `held: true` with the exact operation and approval IDs and a nonzero exit. Approve that bound request while it is open (24 hours), then rerun the command. Within the live lease it resumes the same Attempt and prepared operation; after the lease is lost, the next Attempt prepares a new operation in the same effect slot that adopts the same approval, so the approval ID stays the same. An approval with less than 15 minutes left is not adopted; a fresh request is made instead. Branch and PR may require separate approvals. Concurrent dispatch claims still permit one write.
 
 A lost write acknowledgement yields `pending: true` and a nonzero exit. Outcome lookup is read-only; an absent branch/PR does not prove that a delayed write cannot appear. Repeated calls retain the live claim (`busy: true`); after lease recovery, protected slots reconcile uncertain effects without blindly duplicating them. Confirmed effects are staged as an immutable receipt before completion. Interrupted completion can resume under the same live fence; expired staged receipts need operator recovery. Completed replay returns the historical receipt under current authority, rather than asserting ongoing remote PR health.
 
@@ -309,7 +309,7 @@ The local control API verifies Owner approval signatures with the public key sto
 
 - With `LOCAL_DEV_FILE` custody the Owner key and the control token live in `~/.summa42`, so approval is not a boundary against UNENFORCED executors running as the same OS user: such an executor can approve its own request. Model processes are the exception: they run as the separate model user and cannot read `~/.summa42`. Validation commands run as the separate validation user; other native executors still run as the Box user.
 - Only the Owner can approve. Requests that require any other approver are unsupported, so the AND semantics can only ever be satisfied by the Owner's single signature.
-- An approval expires with its lease; a new lease needs a new approval, and a rejection is not sticky per slot.
+- An approval is bound to its effect slot and exact intent (the signed digest), not to an Attempt: it outlives the lease and is adopted by later Attempts of the same slot until it is consumed, rejected or expired. Consumption still allows one dispatch, and a rejection is not sticky per slot.
 
 ## Enforcement levels
 
