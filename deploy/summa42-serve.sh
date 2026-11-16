@@ -43,7 +43,13 @@ set -- serve \
 if [ -n "${SUMMA42_AUTO_GRANT_LABEL:-}" ]; then
     # Issues carrying this label may be implemented: the label grants
     # workspace.repo.write and workspace.test to that issue's case.
-    set -- "$@" --auto-grant-label "$SUMMA42_AUTO_GRANT_LABEL"
+    # Publication also needs github.repo.publish and github.pr.create in the
+    # case's grant. They are given to every case, but only a case the label
+    # made implementable can publish, and each publication still waits for
+    # the Owner's approval.
+    set -- "$@" --auto-grant-label "$SUMMA42_AUTO_GRANT_LABEL" \
+        --grant-capability github.repo.publish --grant-action github.repo.publish \
+        --grant-capability github.pr.create --grant-action github.pr.create
 fi
 if [ -n "${SUMMA42_BOT_LOGIN:-}" ]; then
     set -- "$@" --bot-login "$SUMMA42_BOT_LOGIN"

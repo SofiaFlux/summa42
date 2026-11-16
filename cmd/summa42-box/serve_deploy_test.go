@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -130,6 +131,17 @@ func TestDeployedServeScriptProducesFlagsServeAccepts(t *testing.T) {
 	for _, loop := range loops {
 		if err := loop.validate(loop.args); err != nil {
 			t.Errorf("%s flags from the deployed script are refused: %v\n%v", loop.name, err, loop.args)
+		}
+	}
+	// With the label set, cases can publish: publication needs these in the
+	// case's grant as capabilities and actions (ghtriage.publicationAuthorized).
+	intake, _, err := parseGHIntakeFlags(loops[1].args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, capability := range []string{"github.repo.publish", "github.pr.create"} {
+		if !slices.Contains(intake.Grant.Capabilities, capability) || !slices.Contains(intake.Grant.Actions, capability) {
+			t.Errorf("the deployed intake grant cannot publish: %s missing from %+v", capability, intake.Grant)
 		}
 	}
 	// With a webhook file set the script adds the notifier.

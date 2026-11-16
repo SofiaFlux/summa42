@@ -125,7 +125,7 @@ journalctl -u summa42-serve -f
 | `SUMMA42_GITHUB_REPOSITORY`, `SUMMA42_BASE_BRANCH` | The repository and the branch pull requests target |
 | `SUMMA42_MAINTAINER` | The login whose issues are taken. Issues by others are ignored |
 | `SUMMA42_GITHUB_TOKEN_FILE` | The private token file |
-| `SUMMA42_AUTO_GRANT_LABEL` | Only issues with this label may be implemented. Empty: plan only |
+| `SUMMA42_AUTO_GRANT_LABEL` | Only issues with this label may be implemented and published as draft pull requests; each publication waits for your approval. Empty: plan only |
 | `SUMMA42_SOURCE_REPO`, `SUMMA42_WORKSPACE_ROOT` | From section 5, absolute paths |
 | `SUMMA42_ALLOWED_PREFIX` | The directory changes may touch, ending in `/` |
 | `SUMMA42_VALIDATION_COMMAND_JSON` | What validates a candidate, as a JSON argument array |
