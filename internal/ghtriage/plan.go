@@ -22,6 +22,10 @@ const (
 		"Return exactly one JSON object and nothing else: " +
 		`{"summary": "at most 500 characters", "steps": [{"objective": "at most 200 characters", ` +
 		`"done_when": "a verifiable condition, at most 500 characters"}]} with 1 to 8 steps. Keep every field short. Do not perform the work.`
+	// ReadModeAllowedPathsNote extends PlanQuestion in read mode without an
+	// Owner list of allowed paths: the plan itself names its write boundary.
+	ReadModeAllowedPathsNote = "\n\nThe final plan object must also contain \"allowed_paths\": the files under allowed_prefixes " +
+		"that the plan changes or creates (1 to 64). List only files the plan changes: a reviewer rejects a boundary with files the plan does not need."
 	PlanningAssessmentReason = "planning-started"
 	PlanReviewWorkKind       = "github.issue.plan.review"
 	KindPlanTurnLog          = "github.issue.plan.turnlog"
