@@ -293,6 +293,13 @@ func TestPublicationResumesExactApprovedOperations(t *testing.T) {
 	if err != nil || !first.Held || first.ApprovalID == "" || first.OperationID == "" || b.writes != 0 || p.writes != 0 {
 		t.Fatalf("first %+v %v", first, err)
 	}
+	waiting, err := casereport.Build(f.ctx, f.store, f.cases, id, f.clock.Now())
+	if err != nil || len(waiting.WaitingOn) != 1 || waiting.WaitingOn[0].ApprovalID != string(first.ApprovalID) {
+		t.Fatalf("case report waiting on = %+v %v, want the held approval %s", waiting.WaitingOn, err, first.ApprovalID)
+	}
+	if late, err := casereport.Build(f.ctx, f.store, f.cases, id, waiting.WaitingOn[0].ExpiresAt); err != nil || len(late.WaitingOn) != 0 {
+		t.Fatalf("an expired approval is still waited on: %+v %v", late.WaitingOn, err)
+	}
 	record, err := a.Get(f.ctx, first.ApprovalID)
 	if err != nil {
 		t.Fatal(err)
@@ -321,9 +328,12 @@ func TestPublicationResumesExactApprovedOperations(t *testing.T) {
 	}
 	// The case report counts exactly these two Owner approvals as
 	// interventions of this case.
-	report, err := casereport.Build(f.ctx, f.store, f.cases, id)
+	report, err := casereport.Build(f.ctx, f.store, f.cases, id, f.clock.Now())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(report.WaitingOn) != 0 {
+		t.Fatalf("published case still waits on %+v", report.WaitingOn)
 	}
 	if report.Interventions.Approvals != 2 || report.Interventions.Rejections != 0 || report.Interventions.Total != 2 {
 		t.Fatalf("case report interventions = %+v, want the two approvals", report.Interventions)
