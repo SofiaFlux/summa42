@@ -185,9 +185,10 @@ has_write_scopes() {
 }
 
 # audit_login_scopes FILE...: inspect JSON payloads recursively for scope/scopes
-# declaring repo-write or CI-write privileges. Exits 2 and names offending files.
+# declaring repo-write or CI-write privileges. Exits 2 on forbidden scopes,
+# 3 if python3 is unavailable (fail-closed).
 audit_login_scopes() {
-  command -v python3 >/dev/null 2>&1 || return 0
+  command -v python3 >/dev/null 2>&1 || { printf 'python3 missing; cannot audit login scopes\n' >&2; return 3; }
   python3 - "$@" <<'PY'
 import json, re, sys
 
@@ -243,8 +244,31 @@ CFG
 )"
   status="$(printf '%s\n' "$headers" | awk 'toupper($1) ~ /^HTTP\// {code=$2} END{print code}')"
   [ "$status" = "200" ] || return 1
-  scopes="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^x-oauth-scopes:[[:space:]]*/{sub(/^[^:]*:[[:space:]]*/, ""); print; exit}')"
+  scopes="$(printf '%s\n' "$headers" | awk 'tolower($0) ~ /^x-oauth-scopes:[[:space:]]*/{sub(/^[^:]*:[[:space:]]*/, ""); found=1; print; exit} END{exit (found ? 0 : 1)}')" || return 1
   printf '%s\n' "$scopes"
+}
+
+# copilot_tokens_read_only FILE: returns 0 if FILE has no ghu_ tokens and every
+# gho_ token verifies read-only via check_github_oauth_scopes.
+copilot_tokens_read_only() {
+  local file="$1" toks tok scopes
+  if grep -aqE 'ghu_[A-Za-z0-9]{20,}' -- "$file" 2>/dev/null; then
+    return 1
+  fi
+  toks="$(grep -aoE 'gho_[A-Za-z0-9]{20,}' -- "$file" 2>/dev/null || true)"
+  [ -n "$toks" ] || return 0
+  while IFS= read -r tok; do
+    [ -n "$tok" ] || continue
+    if ! scopes="$(check_github_oauth_scopes "$tok")"; then
+      return 1
+    fi
+    local scope_words=()
+    IFS=', ' read -ra scope_words <<<"$scopes"
+    if [ "${#scope_words[@]}" -gt 0 ] && has_write_scopes "${scope_words[@]}"; then
+      return 1
+    fi
+  done <<<"$toks"
+  return 0
 }
 run_as_validate() { run_as "$VALIDATE_USER" "$VALIDATE_HOME" "$@"; }
 
@@ -392,30 +416,24 @@ _import_cli() {
     return 2
   fi
   if [ "$name" = copilot ]; then
-    local audited_files=() audited_scan=() i toks tok verified scopes
+    local i mcp_hits
+    for ((i = 0; i < ${#files[@]}; i++)); do
+      if [ "${files[$i]}" = ".copilot/mcp-config.json" ] && mcp_hits="$(scan_secrets default "${scan[$i]}")"; then
+        printf 'refusing to copy %s: token patterns found in:\n%s\n' "$name" "$mcp_hits" >&2
+        return 2
+      fi
+    done
+    warn "copilot's login is a GitHub OAuth credential; copying it hands the model a GitHub credential."
+    if [ "$ASSUME_YES" -eq 1 ]; then
+      say "  skipped copilot: never copied under --yes; re-run without --yes to be asked"
+      skipped+=("$role:$name"); return 0
+    fi
+    local audited_files=() audited_scan=()
     for ((i = 0; i < ${#files[@]}; i++)); do
       rel="${files[$i]}"
-      if [ "$rel" != ".copilot/mcp-config.json" ]; then
-        toks="$(grep -oE 'gho_[A-Za-z0-9]{20,}' -- "${scan[$i]}" 2>/dev/null || true)"
-        if [ -n "$toks" ]; then
-          verified=1
-          while IFS= read -r tok; do
-            [ -n "$tok" ] || continue
-            if ! scopes="$(check_github_oauth_scopes "$tok")"; then
-              verified=0; break
-            fi
-            # Split commas/spaces carefully before checking scopes.
-            local scope_words=()
-            IFS=', ' read -ra scope_words <<<"$scopes"
-            if [ "${#scope_words[@]}" -gt 0 ] && has_write_scopes "${scope_words[@]}"; then
-              verified=0; break
-            fi
-          done <<<"$toks"
-          if [ "$verified" -eq 0 ]; then
-            warn "dropping $rel for $role ($dest_home): GitHub OAuth token is over-scoped or could not be verified read-only"
-            continue
-          fi
-        fi
+      if [ "$rel" != ".copilot/mcp-config.json" ] && ! copilot_tokens_read_only "${scan[$i]}"; then
+        warn "dropping $rel for $role ($dest_home): GitHub OAuth token is over-scoped, ghu_, or could not be verified read-only"
+        continue
       fi
       audited_files+=("$rel"); audited_scan+=("${scan[$i]}")
     done
@@ -423,10 +441,10 @@ _import_cli() {
     scan=("${audited_scan[@]}")
     if [ "${#files[@]}" -eq 0 ]; then skipped+=("$role:$name"); return 0; fi
   fi
-  if hits="$(audit_login_scopes "${scan[@]}" 2>&1)"; then
-    :
-  else
-    warn "dropping $name for $role ($dest_home): login declares write scopes ($hits)"
+  local audit_rc=0
+  hits="$(audit_login_scopes "${scan[@]}" 2>&1)" || audit_rc=$?
+  if [ "$audit_rc" -ne 0 ]; then
+    warn "dropping $name for $role ($dest_home): login scope audit failed ($hits)"
     skipped+=("$role:$name")
     return 0
   fi
@@ -436,11 +454,6 @@ _import_cli() {
   done
   [ "$dest_exists" -eq 1 ] && verb=refresh
   if [ "$name" = copilot ]; then
-    warn "copilot's login is a GitHub OAuth credential; copying it hands the model a GitHub credential."
-    if [ "$ASSUME_YES" -eq 1 ]; then
-      say "  skipped copilot: never copied under --yes; re-run without --yes to be asked"
-      skipped+=("$role:$name"); return 0
-    fi
     ask "$verb $name auth (${files[*]})" "$dest_home" || { say "  skipped $name"; skipped+=("$role:$name"); return 0; }
   else
     approve "$verb $name auth (${files[*]})" "$dest_home" || { say "  skipped $name (any existing copy is left untouched)"; skipped+=("$role:$name"); return 0; }
@@ -463,29 +476,16 @@ _import_cli() {
 purge_overscoped_logins() {
   local role="$1" home="$2" rel tmp
   tmp="$(mktemp)" || return 1
+  trap 'rm -f -- "$tmp"' RETURN
   for rel in $(model_home_login_files); do
     [ "$rel" = ".copilot/mcp-config.json" ] && continue
-    if "run_as_$role" test -f "$home/$rel"; then
-      if "run_as_$role" cat "$home/$rel" >"$tmp" 2>/dev/null; then
+    if "run_as_$role" test ! -L "$home/$rel" -a -f "$home/$rel"; then
+      if "run_as_$role" head -c 1048576 -- "$home/$rel" >"$tmp" 2>/dev/null; then
         local bad=0
         if ! audit_login_scopes "$tmp" >/dev/null 2>&1; then
           bad=1
-        elif [[ "$rel" == *copilot* || "$rel" == *github-copilot* ]]; then
-          local toks tok scopes
-          toks="$(grep -oE 'gho_[A-Za-z0-9]{20,}' -- "$tmp" 2>/dev/null || true)"
-          if [ -n "$toks" ]; then
-            while IFS= read -r tok; do
-              [ -n "$tok" ] || continue
-              if ! scopes="$(check_github_oauth_scopes "$tok")"; then
-                bad=1; break
-              fi
-              local scope_words=()
-              IFS=', ' read -ra scope_words <<<"$scopes"
-              if [ "${#scope_words[@]}" -gt 0 ] && has_write_scopes "${scope_words[@]}"; then
-                bad=1; break
-              fi
-            done <<<"$toks"
-          fi
+        elif [[ "$rel" == *copilot* || "$rel" == *github-copilot* ]] && ! copilot_tokens_read_only "$tmp"; then
+          bad=1
         fi
         if [ "$bad" -eq 1 ]; then
           warn "removing stale over-scoped login $home/$rel"
@@ -494,7 +494,6 @@ purge_overscoped_logins() {
       fi
     fi
   done
-  rm -f -- "$tmp"
 }
 
 verify_cross_home_isolation() {
@@ -538,7 +537,7 @@ require_unreadable() {
     fi
     return 0
   fi
-  if "run_as_$who" test -r "$path"; then
+  if "run_as_$who" test -r "$path" || { [ -d "$path" ] && "run_as_$who" test -x "$path"; }; then
     printf '  READABLE by %s (BAD): %s\n' "$who" "$path" >&2; fail=1
   else
     printf '  ok, not readable by %s: %s\n' "$who" "$path"
