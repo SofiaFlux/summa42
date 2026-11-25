@@ -80,7 +80,7 @@ func runGHCodeReview(ctx context.Context, args []string) error {
 	}
 	defer box.Close()
 	adapter = adapter.WithLedger(box.Store, "code-review", strings.TrimSpace(caseID))
-	reviewer := ghtriage.NewCodeReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout()).WithReviewer(reviewerIdentity(modelConfig))
+	reviewer := ghtriage.NewCodeReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout()).WithReviewer(reviewerIdentity(modelConfig)).WithContainment(box.Containment)
 	reviewer.WithMaxRepairs(maxRepairs)
 	result, err := reviewer.Review(ctx, domain.ID(strings.TrimSpace(caseID)), source)
 	if err != nil {

@@ -93,10 +93,14 @@ func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, pl
 			return fail(err)
 		}
 		expected.AttemptID = attempt.ID
+		findings := scanPlanHygiene(plan)
+		if err := emitHygieneSignal(ctx, r.containment, attempt.ID, task.ID, "plan-review", findings); err != nil {
+			return fail(err)
+		}
 		// Keep a minute for durable cleanup before the lease expires.
 		callCtx, cancel := context.WithTimeout(ctx, PlanReviewLease(r.modelTimeout)-time.Minute)
 		defer cancel()
-		output, modelErr := r.model.ReviewPlan(callCtx, PlanReviewInput{Schema: PlanReviewVersion, Question: PlanReviewQuestion, Plan: plan, Snapshot: snap, Context: source})
+		output, modelErr := r.model.ReviewPlan(callCtx, PlanReviewInput{Schema: PlanReviewVersion, Question: PlanReviewQuestion, Plan: plan, Snapshot: snap, Context: source, HygieneFindings: findings})
 		if modelErr == nil {
 			if err := output.Validate(); err != nil {
 				modelErr = &planFailure{class: "validation", err: err}
