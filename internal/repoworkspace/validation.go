@@ -57,12 +57,13 @@ type CommandResult struct {
 // user's (its home holds the CLI logins and configuration the independent code
 // review relies on). The validation user has no credentials at all.
 type Validator struct {
-	runAs     *user.User
-	modelHome string
-	toolchain []string
-	timeout   time.Duration
-	logf      func(format string, args ...any)
-	lockPath  string
+	runAs        *user.User
+	modelHome    string
+	reviewerHome string
+	toolchain    []string
+	timeout      time.Duration
+	logf         func(format string, args ...any)
+	lockPath     string
 	// One validation at a time: the sweep after a run kills every process of
 	// the validation user and removes its scratch directories.
 	mu sync.Mutex
@@ -77,11 +78,27 @@ type Validator struct {
 // validation user. The Box's own PATH is never forwarded. commandTimeout is
 // the per-command limit; zero means DefaultCommandTimeout.
 func NewValidator(validationUser, modelUser string, toolchainDirs []string, commandTimeout time.Duration, lockPath string) (*Validator, error) {
+	return NewValidatorWithReviewer(validationUser, modelUser, "", toolchainDirs, commandTimeout, lockPath)
+}
+
+// NewValidatorWithReviewer is NewValidator with an optional reviewer user whose
+// home the validation user must also be unable to read.
+func NewValidatorWithReviewer(validationUser, modelUser, reviewerUser string, toolchainDirs []string, commandTimeout time.Duration, lockPath string) (*Validator, error) {
 	model, err := modelrun.ResolveRunAsUser(modelUser)
 	if err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
 	}
-	runAs, err := modelrun.ResolveValidationUser(validationUser, model)
+	others := []*user.User{model}
+	var reviewerHome string
+	if strings.TrimSpace(reviewerUser) != "" {
+		reviewer, err := modelrun.ResolveReviewerUser(reviewerUser, model)
+		if err != nil {
+			return nil, fmt.Errorf("validation: reviewer %w", err)
+		}
+		others = append(others, reviewer)
+		reviewerHome = reviewer.HomeDir
+	}
+	runAs, err := modelrun.ResolveValidationUser(validationUser, others[0], others[1:]...)
 	if err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
 	}
@@ -102,7 +119,15 @@ func NewValidator(validationUser, modelUser string, toolchainDirs []string, comm
 	if !filepath.IsAbs(lockPath) {
 		return nil, errors.New("validation lock path must be absolute: the lock serializes validation across Box processes")
 	}
-	return &Validator{runAs: runAs, modelHome: model.HomeDir, toolchain: dirs, timeout: commandTimeout, logf: log.Printf, lockPath: lockPath}, nil
+	return &Validator{runAs: runAs, modelHome: model.HomeDir, reviewerHome: reviewerHome, toolchain: dirs, timeout: commandTimeout, logf: log.Printf, lockPath: lockPath}, nil
+}
+
+func (v *Validator) protectedHomes() []string {
+	homes := []string{v.modelHome}
+	if v.reviewerHome != "" && v.reviewerHome != v.modelHome {
+		homes = append(homes, v.reviewerHome)
+	}
+	return homes
 }
 
 // Timeout returns the per-command validation timeout.
@@ -155,7 +180,7 @@ func (v *Validator) ValidateCandidate(ctx context.Context, dir string, c Candida
 	limit := v.timeout
 	cmd, err := modelrun.Command(ctx, modelrun.Spec{
 		RunAs: v.runAs, Binary: "/bin/sh", Args: []string{"-c", validationScript(commands, limit)},
-		Scratch: true, Env: map[string]string{"PATH": path}, Unreadable: []string{v.modelHome},
+		Scratch: true, Env: map[string]string{"PATH": path}, Unreadable: v.protectedHomes(),
 		// Archive streaming, every command's limit plus its kill grace.
 		Timeout: archiveTimeout + time.Duration(len(commands))*(limit+validationKillAfter) + time.Minute,
 	})

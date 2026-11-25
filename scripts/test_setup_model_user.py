@@ -384,7 +384,7 @@ class Copy(unittest.TestCase):
         r = self.run_import("claude", extra="command() { if [ \"$2\" = python3 ]; then return 1; fi; builtin command \"$@\"; }")
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         self.assertFalse(os.path.exists(self.model + "/.claude.json"))
-        self.assertTrue(os.path.exists(self.model + "/.claude/.credentials.json"))
+        self.assertFalse(os.path.exists(self.model + "/.claude/.credentials.json"))
 
     def test_gemini_copies_only_the_auth_section_of_settings(self):
         os.makedirs(self.owner + "/.gemini")
@@ -414,6 +414,158 @@ class Copy(unittest.TestCase):
         Path(self.model + "/.codex/auth.json").write_text("old")
         self.assertEqual(self.run_import("codex", yes=0).returncode, 0)
         self.assertEqual(Path(self.model + "/.codex/auth.json").read_text(), "old")
+
+
+class ReviewerRoleAndScopeAudit(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = self.tmp.name
+        self.owner, self.model, self.review, self.validate, self.summa = (
+            os.path.join(d, n) for n in ("owner", "model", "review", "validate", "owner/.summa42")
+        )
+        for p in (self.owner + "/.codex", self.owner + "/.copilot", self.model, self.review, self.validate, self.summa):
+            os.makedirs(p)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_review_user_must_be_valid_and_differ_from_other_users(self):
+        env = dict(os.environ, SUMMA42_REVIEW_MODEL_USER="x;ALL")
+        r = subprocess.run(["bash", SCRIPT], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("SUMMA42_REVIEW_MODEL_USER", r.stderr)
+        for bad_env in (
+            dict(os.environ, SUMMA42_MODEL_USER="same-user", SUMMA42_REVIEW_MODEL_USER="same-user"),
+            dict(os.environ, SUMMA42_MODEL_USER="prod-user", SUMMA42_REVIEW_MODEL_USER="val-user", SUMMA42_VALIDATION_USER="val-user"),
+        ):
+            r = subprocess.run(["bash", SCRIPT], capture_output=True, text=True, env=bad_env, stdin=subprocess.DEVNULL)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("differ", r.stderr)
+
+    def test_audit_login_scopes_rejects_write_scopes_and_allows_read_only(self):
+        bad_arr = os.path.join(self.tmp.name, "bad-arr.json")
+        bad_str = os.path.join(self.tmp.name, "bad-str.json")
+        good = os.path.join(self.tmp.name, "good.json")
+        Path(bad_arr).write_text('{"oauth":{"scopes":["read:user","repo"]}}')
+        Path(bad_str).write_text('{"tokens":{"scope":"user:email vso.code_write"}}')
+        Path(good).write_text('{"oauth":{"scopes":["read:user","user:email"]}}')
+        self.assertNotEqual(bash(f"audit_login_scopes {bad_arr}").returncode, 0)
+        self.assertNotEqual(bash(f"audit_login_scopes {bad_str}").returncode, 0)
+        self.assertEqual(bash(f"audit_login_scopes {good}").returncode, 0)
+
+    def test_check_github_oauth_scopes_passes_token_on_stdin_not_argv(self):
+        bindir = os.path.join(self.tmp.name, "bin")
+        os.makedirs(bindir)
+        argv_log = os.path.join(self.tmp.name, "curl.argv")
+        stdin_log = os.path.join(self.tmp.name, "curl.stdin")
+        tok = "gho_" + "a" * 30
+        curl = os.path.join(bindir, "curl")
+        Path(curl).write_text(f"""#!/bin/sh
+printf '%s\\n' "$*" > {argv_log}
+cat > {stdin_log}
+printf 'HTTP/2 200\\r\\nX-OAuth-Scopes: read:user, user:email\\r\\n\\r\\n'
+""")
+        os.chmod(curl, 0o755)
+        r = bash(f'PATH="{bindir}:$PATH"; check_github_oauth_scopes "{tok}"')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("read:user", r.stdout)
+        self.assertNotIn(tok, Path(argv_log).read_text())
+        self.assertIn(tok, Path(stdin_log).read_text())
+
+        # Non-200 or missing X-OAuth-Scopes header must fail closed.
+        for resp in ("HTTP/2 401\\r\\n\\r\\n", "HTTP/2 200\\r\\nContent-Type: application/json\\r\\n\\r\\n"):
+            Path(curl).write_text(f"#!/bin/sh\ncat >/dev/null\nprintf '{resp}'\n")
+            self.assertNotEqual(bash(f'PATH="{bindir}:$PATH"; check_github_oauth_scopes "{tok}"').returncode, 0, resp)
+
+    def test_copilot_drops_write_offline_and_ghu_while_accepting_readonly_and_blocking_mcp_gho(self):
+        tok_ro = "gho_" + "r" * 30
+        tok_rw = "gho_" + "b" * 30
+        tok_ghu = "ghu_" + "u" * 30
+        mcp_path = self.owner + "/.copilot/mcp-config.json"
+        Path(mcp_path).write_text('{"mcpServers":{"ado":{"env":{"T":"' + tok_rw + '"}}}}')
+        r = bash(f"""
+            OWNER_HOME={self.owner}; REVIEW_HOME={self.review}; SUMMA_HOME={self.summa}; ASSUME_YES=0
+            copied=(); skipped=()
+            run_as_review() {{ env HOME="$REVIEW_HOME" "$@"; }}
+            ask() {{ return 0; }}
+            import_cli copilot review
+        """)
+        self.assertEqual(r.returncode, 2)
+
+        Path(mcp_path).write_text('{"mcpServers":{"ado":{"command":"/usr/bin/ado-mcp"}}}')
+        os.makedirs(self.owner + "/.config/github-copilot", exist_ok=True)
+        hosts = self.owner + "/.config/github-copilot/hosts.json"
+        Path(hosts).write_text('{"github.com":{"oauth_token":"' + tok_ghu + '"}}')
+        Path(self.owner + "/.copilot/config.json").write_text('{"oauth_token":"' + tok_rw + '"}')
+        for stub in ("echo 'repo, read:user'", "return 1"):
+            with tempfile.TemporaryDirectory() as dest:
+                r = bash(f"""
+                    OWNER_HOME={self.owner}; MODEL_HOME={dest}; REVIEW_HOME={dest}; SUMMA_HOME={self.summa}; ASSUME_YES=0
+                    copied=(); skipped=()
+                    run_as_model() {{ env HOME="$MODEL_HOME" "$@"; }}
+                    run_as_review() {{ env HOME="$REVIEW_HOME" "$@"; }}
+                    ask() {{ return 0; }}
+                    check_github_oauth_scopes() {{ {stub}; }}
+                    import_cli copilot review
+                """)
+                self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+                self.assertFalse(os.path.exists(dest + "/.copilot/config.json"), stub)
+                self.assertFalse(os.path.exists(dest + "/.config/github-copilot/hosts.json"), stub)
+                self.assertTrue(os.path.exists(dest + "/.copilot/mcp-config.json"), stub)
+
+        # Read-only gho_ succeeds and copies to REVIEW_HOME.
+        Path(hosts).unlink()
+        Path(self.owner + "/.copilot/config.json").write_text('{"oauth_token":"' + tok_ro + '"}')
+        with tempfile.TemporaryDirectory() as dest:
+            r = bash(f"""
+                OWNER_HOME={self.owner}; REVIEW_HOME={dest}; SUMMA_HOME={self.summa}; ASSUME_YES=0
+                copied=(); skipped=()
+                run_as_review() {{ env HOME="$REVIEW_HOME" "$@"; }}
+                ask() {{ return 0; }}
+                check_github_oauth_scopes() {{ echo 'read:user'; }}
+                import_cli copilot review
+            """)
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+            self.assertTrue(os.path.exists(dest + "/.copilot/config.json"))
+            self.assertTrue(os.path.exists(dest + "/.copilot/mcp-config.json"))
+
+    def test_stale_over_scoped_logins_and_copilot_hosts_are_purged_on_rerun(self):
+        os.makedirs(self.model + "/.codex")
+        stale = self.model + "/.codex/auth.json"
+        Path(stale).write_text('{"scopes":["repo"]}')
+        os.makedirs(self.review + "/.config/github-copilot")
+        stale_hosts = self.review + "/.config/github-copilot/hosts.json"
+        Path(stale_hosts).write_text('{"github.com":{"oauth_token":"gho_' + "z" * 30 + '"}}')
+        r = bash(f"""
+            MODEL_HOME={self.model}; REVIEW_HOME={self.review}
+            run_as_model() {{ env HOME="$MODEL_HOME" "$@"; }}
+            run_as_review() {{ env HOME="$REVIEW_HOME" "$@"; }}
+            check_github_oauth_scopes() {{ echo 'repo, workflow'; }}
+            purge_overscoped_logins model "$MODEL_HOME"
+            purge_overscoped_logins review "$REVIEW_HOME"
+        """)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertFalse(os.path.exists(stale))
+        self.assertFalse(os.path.exists(stale_hosts))
+
+    def test_cross_home_unreadability_verifies_model_and_review_roles(self):
+        for model_ret, review_ret, val_ret, want in (
+            (1, 1, 1, "fail=0"),
+            (0, 1, 1, "fail=1"),
+            (1, 0, 1, "fail=1"),
+            (1, 1, 0, "fail=1"),
+        ):
+            r = bash(f"""
+                MODEL_HOME={self.model}; REVIEW_HOME={self.review}; VALIDATE_HOME={self.validate}
+                MODEL_USER=summa42-model; REVIEW_USER=summa42-review; VALIDATE_USER=summa42-validate
+                fail=0
+                run_as_model() {{ return {model_ret}; }}
+                run_as_review() {{ return {review_ret}; }}
+                run_as_validate() {{ return {val_ret}; }}
+                verify_cross_home_isolation
+                echo "fail=$fail"
+            """)
+            self.assertIn(want, r.stdout, f"{model_ret}/{review_ret}/{val_ret}")
 
 
 if __name__ == "__main__":

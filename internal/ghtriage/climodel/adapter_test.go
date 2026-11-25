@@ -441,9 +441,13 @@ func TestRunLaunchesAsTheModelUserWithACleanEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "home=" + testHome + " tmp=" + testHome + "/tmp pwd=" + testHome + " tok= allowed=yes"
-	if out.Reason != want {
-		t.Fatalf("model saw %q, want %q", out.Reason, want)
+	wantPrefix := "home=" + testHome + " tmp=" + testHome + "/tmp/run.s42."
+	if !strings.HasPrefix(out.Reason, wantPrefix) || !strings.HasSuffix(out.Reason, " tok= allowed=yes") {
+		t.Fatalf("model saw %q, want prefix %q and clean env", out.Reason, wantPrefix)
+	}
+	fields := strings.Fields(out.Reason)
+	if len(fields) < 3 || strings.TrimPrefix(fields[1], "tmp=") != strings.TrimPrefix(fields[2], "pwd=") {
+		t.Fatalf("pwd did not match per-call scratch dir: %q", out.Reason)
 	}
 	logged, err := os.ReadFile(fakeSudoLog)
 	if err != nil || !strings.HasPrefix(string(logged), "-n --preserve-env=ALLOWED -u "+testUser+" -- /bin/sh -c") {

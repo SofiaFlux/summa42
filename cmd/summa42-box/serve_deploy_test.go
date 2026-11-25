@@ -70,6 +70,7 @@ func TestDeployedServeScriptProducesFlagsServeAccepts(t *testing.T) {
 		"SUMMA42_WORKSPACE_ROOT":    filepath.Join(work, "attempts"),
 		"SUMMA42_GITHUB_TOKEN_FILE": token,
 		"SUMMA42_MODEL_USER":        modelruntest.User,
+		"SUMMA42_REVIEW_MODEL_USER": modelruntest.ReviewerUser,
 		"SUMMA42_VALIDATION_USER":   modelruntest.ValidationUser,
 		"SUMMA42_BOX_BIN":           stub,
 	}

@@ -18,12 +18,16 @@ import (
 
 // parseGHPlanReviewFlags is run-gh-plan-review's flag parsing.
 func parseGHPlanReviewFlags(args []string) (mission, baseSHA string, modelConfig climodel.Config, maxRepairs int, err error) {
+	return parseGHPlanReviewFlagsCtx(context.Background(), args)
+}
+
+func parseGHPlanReviewFlagsCtx(ctx context.Context, args []string) (mission, baseSHA string, modelConfig climodel.Config, maxRepairs int, err error) {
 	flags := flag.NewFlagSet("run-gh-plan-review", flag.ContinueOnError)
 	fallbackOf := flags.String("model-fallback-of", "", "pool a replacement reviewer stands in for (set by run-gh-pipeline)")
 	flags.StringVar(&mission, "mission", "", "mission whose grounded plans are independently reviewed")
 	flags.StringVar(&baseSHA, "source-sha", "", "commit plans must be grounded on; a plan on another base is held unreviewed (optional)")
 	flags.IntVar(&maxRepairs, "max-repairs", 0, "repairs a case may get after a REVISE, counted over plan and code review; 0 holds the case on every REVISE")
-	registerTriageModelFlags(flags, "model binary reviewing a grounded issue plan")
+	registerReviewModelFlags(flags, "model binary reviewing a grounded issue plan")
 	if err = flags.Parse(args); err != nil {
 		return
 	}
@@ -35,7 +39,7 @@ func parseGHPlanReviewFlags(args []string) (mission, baseSHA string, modelConfig
 		err = errors.New("run-gh-plan-review requires a non-negative --max-repairs")
 		return
 	}
-	modelConfig, err = triageModelConfig(flags)
+	modelConfig, err = reviewModelConfig(ctx, flags)
 	modelConfig.FallbackOf = *fallbackOf
 	return
 }
@@ -45,10 +49,11 @@ func runGHPlanReview(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	mission, baseSHA, modelConfig, maxRepairs, err := parseGHPlanReviewFlags(args)
+	mission, baseSHA, modelConfig, maxRepairs, err := parseGHPlanReviewFlagsCtx(ctx, args)
 	if err != nil {
 		return err
 	}
+	defer registerRoleHomesForCommand(ctx, os.Getenv("SUMMA42_MODEL_USER"), modelConfig.RunAsUser)()
 	adapter, usable := triageModelAdapter(modelConfig, os.Stderr)
 	if !usable {
 		return errors.New("run-gh-plan-review requires a usable model")

@@ -20,12 +20,16 @@ import (
 
 // parseGHCodeReviewFlags is run-gh-code-review's flag parsing, without filesystem checks.
 func parseGHCodeReviewFlags(args []string) (caseID, source string, modelConfig climodel.Config, maxRepairs int, err error) {
+	return parseGHCodeReviewFlagsCtx(context.Background(), args)
+}
+
+func parseGHCodeReviewFlagsCtx(ctx context.Context, args []string) (caseID, source string, modelConfig climodel.Config, maxRepairs int, err error) {
 	flags := flag.NewFlagSet("run-gh-code-review", flag.ContinueOnError)
 	fallbackOf := flags.String("model-fallback-of", "", "pool a replacement reviewer stands in for (set by run-gh-pipeline)")
 	flags.StringVar(&caseID, "case", "", "active implementation case ID")
 	flags.StringVar(&source, "source-repo", "", "absolute source repository used for the implementation")
 	flags.IntVar(&maxRepairs, "max-repairs", 0, "repairs a case may get after a REVISE, counted over plan and code review; 0 holds the case on every REVISE")
-	registerTriageModelFlags(flags, "independent reviewer wrapper returning ACCEPT, REVISE or BLOCK")
+	registerReviewModelFlags(flags, "independent reviewer wrapper returning ACCEPT, REVISE or BLOCK")
 	if err = flags.Parse(args); err != nil {
 		return
 	}
@@ -37,7 +41,7 @@ func parseGHCodeReviewFlags(args []string) (caseID, source string, modelConfig c
 		err = errors.New("run-gh-code-review requires a non-negative --max-repairs")
 		return
 	}
-	modelConfig, err = triageModelConfig(flags)
+	modelConfig, err = reviewModelConfig(ctx, flags)
 	modelConfig.FallbackOf = *fallbackOf
 	return
 }
@@ -46,10 +50,11 @@ func runGHCodeReview(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context required")
 	}
-	caseID, source, modelConfig, maxRepairs, err := parseGHCodeReviewFlags(args)
+	caseID, source, modelConfig, maxRepairs, err := parseGHCodeReviewFlagsCtx(ctx, args)
 	if err != nil {
 		return err
 	}
+	defer registerRoleHomesForCommand(ctx, os.Getenv("SUMMA42_MODEL_USER"), modelConfig.RunAsUser)()
 	if info, err := os.Lstat(source); err != nil || !info.IsDir() {
 		return errors.New("source must be an existing regular directory")
 	}

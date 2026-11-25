@@ -22,6 +22,10 @@ import (
 
 // parseGHImplementFlags is run-gh-implement's flag parsing, without filesystem checks.
 func parseGHImplementFlags(args []string) (caseID, source, root string, modelConfig climodel.Config, validation validationConfig, err error) {
+	return parseGHImplementFlagsCtx(context.Background(), args)
+}
+
+func parseGHImplementFlagsCtx(ctx context.Context, args []string) (caseID, source, root string, modelConfig climodel.Config, validation validationConfig, err error) {
 	flags := flag.NewFlagSet("run-gh-implement", flag.ContinueOnError)
 	flags.StringVar(&caseID, "case", "", "active implementation case ID")
 	flags.StringVar(&source, "source-repo", "", "absolute local Git repository matching accepted plan")
@@ -38,6 +42,9 @@ func parseGHImplementFlags(args []string) (caseID, source, root string, modelCon
 	if modelConfig, err = triageModelConfig(flags); err != nil {
 		return
 	}
+	if err = checkStandaloneRoleDistinct(ctx, "producer", modelConfig.RunAsUser); err != nil {
+		return
+	}
 	validation, err = validationConfigFrom(flags)
 	return
 }
@@ -47,10 +54,15 @@ func runGHImplement(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	caseID, source, root, modelConfig, validation, err := parseGHImplementFlags(args)
+	caseID, source, root, modelConfig, validation, err := parseGHImplementFlagsCtx(ctx, args)
 	if err != nil {
 		return err
 	}
+	reviewerUser := strings.TrimSpace(os.Getenv("SUMMA42_REVIEW_MODEL_USER"))
+	if roles, ok := pipelineRolesFromCtx(ctx); ok && roles.reviewer != "" {
+		reviewerUser = roles.reviewer
+	}
+	defer registerRoleHomesForCommand(ctx, modelConfig.RunAsUser, reviewerUser)()
 	for _, path := range []string{source, root} {
 		info, err := os.Lstat(path)
 		if err != nil || !info.IsDir() {
@@ -85,7 +97,7 @@ func runGHImplement(ctx context.Context, args []string) error {
 		return err
 	}
 	defer box.Close()
-	validator, err := validatorFor(validation, modelConfig.RunAsUser)
+	validator, err := validatorFor(validation, modelConfig.RunAsUser, reviewerUser)
 	if err != nil {
 		return err
 	}
@@ -148,9 +160,12 @@ func validationConfigFrom(flags *flag.FlagSet) (validationConfig, error) {
 }
 
 // validatorFor builds the validator that runs the validation commands as the
-// validation user. It fails closed when no validation user is configured.
-func validatorFor(cfg validationConfig, modelUser string) (*repoworkspace.Validator, error) {
-	return repoworkspace.NewValidator(cfg.User, modelUser, splitPathList(os.Getenv(validationToolchainEnv)), cfg.Timeout, cfg.LockPath)
+// validation user. It fails closed when no validation or reviewer user is configured.
+func validatorFor(cfg validationConfig, modelUser, reviewerUser string) (*repoworkspace.Validator, error) {
+	if strings.TrimSpace(reviewerUser) == "" {
+		return nil, errors.New("validation: SUMMA42_REVIEW_MODEL_USER is required")
+	}
+	return repoworkspace.NewValidatorWithReviewer(cfg.User, modelUser, reviewerUser, splitPathList(os.Getenv(validationToolchainEnv)), cfg.Timeout, cfg.LockPath)
 }
 
 func splitPathList(raw string) []string {

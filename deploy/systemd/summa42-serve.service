@@ -18,6 +18,7 @@ RestartSec=10
 # Model calls end by themselves on SIGTERM; give running ones time to stop.
 TimeoutStopSec=90
 KillMode=control-group
+Delegate=yes
 
 [Install]
 WantedBy=multi-user.target

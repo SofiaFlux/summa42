@@ -121,3 +121,20 @@ func TestCopilotAllowlistDoesNotForwardBoxPathOrTmp(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerRefusesReviewerUserOverlapWithProducer(t *testing.T) {
+	t.Setenv("SUMMA42_REVIEW_MODEL_USER", "nobody")
+	if err := runWorker(t.Context(), []string{"--once", "--model-user=nobody", "--model-binary=" + usableModelBinary(t)}); err == nil {
+		t.Fatal("runWorker accepted producer matching SUMMA42_REVIEW_MODEL_USER")
+	}
+	t.Setenv("SUMMA42_COPILOT_PATH", "/bin/true")
+	t.Setenv("SUMMA42_REVIEW_MODEL_USER", "")
+	if err := runWorker(t.Context(), []string{"--once", "--model-user=nobody", "--model-binary=" + usableModelBinary(t)}); err == nil {
+		t.Fatal("runWorker built copilot without SUMMA42_REVIEW_MODEL_USER")
+	}
+	t.Setenv("SUMMA42_REVIEW_MODEL_USER", "daemon")
+	t.Setenv("SUMMA42_VALIDATION_USER", "daemon")
+	if _, err := workerCopilotReviewerUser(t.Context(), "nobody"); err == nil {
+		t.Fatal("workerCopilotReviewerUser accepted reviewer matching SUMMA42_VALIDATION_USER")
+	}
+}

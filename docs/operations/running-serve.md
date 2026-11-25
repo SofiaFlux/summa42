@@ -18,12 +18,13 @@ What was checked, and how:
 
 ## 1. Accounts on the host
 
-Three OS users. Never run the Box as root.
+Four OS users. Never run the Box as root.
 
 | User | Purpose |
 | --- | --- |
 | `summa42` (any name) | The Box user. Owns the Collective home, the token and the Owner key |
-| `summa42-model` | Runs the model CLIs. Created by the setup script |
+| `summa42-model` | Runs producer model CLIs. Created by the setup script |
+| `summa42-review` | Runs reviewer model CLIs and Copilot. Isolated `0700` home. Created by the setup script |
 | `summa42-validate` | Runs candidate code (tests). No credentials. Created by the setup script |
 
 ## 2. Build and initialize
@@ -47,16 +48,17 @@ nothing in Summa42 backs it up yet.
 sudo scripts/setup-model-user.sh --toolchain-dirs /usr/local/go/bin
 ```
 
-The script creates the two users, lets the Box user run commands as them
-through `sudo`, and proves that neither can read the Box's secrets. The Go
+The script creates the three dedicated users (`summa42-model`, `summa42-review`, `summa42-validate`), lets the Box user run commands as them
+through `sudo`, audits copied logins for repository-write scopes, and proves that none can read the Box's secrets or cross-role homes. The Go
 toolchain directory must hold the Go version this repository needs and must be
 readable by `summa42-validate`.
 
-Install and log in the model CLIs **as the model user** (the README section
+Install and log in the producer CLIs **as `summa42-model`** and reviewer CLIs **as `summa42-review`** (the README section
 "Harness profiles" lists them), then confirm each one with a live request:
 
 ```bash
 summa42-box model-probe --model-profile=<profile> --model-name=<model id> --model-user=summa42-model
+summa42-box model-probe --model-profile=<profile> --model-name=<model id> --model-user=summa42-review
 ```
 
 Use two different models: one produces (triage, plan, implementation), one
@@ -129,7 +131,7 @@ journalctl -u summa42-serve -f
 | `SUMMA42_SOURCE_REPO`, `SUMMA42_WORKSPACE_ROOT` | From section 5, absolute paths |
 | `SUMMA42_ALLOWED_PREFIX` | The directory changes may touch, ending in `/` |
 | `SUMMA42_VALIDATION_COMMAND_JSON` | What validates a candidate, as a JSON argument array |
-| `SUMMA42_MODEL_USER`, `SUMMA42_VALIDATION_USER`, `SUMMA42_VALIDATION_TOOLCHAIN_DIRS` | From section 3 |
+| `SUMMA42_MODEL_USER`, `SUMMA42_REVIEW_MODEL_USER`, `SUMMA42_VALIDATION_USER`, `SUMMA42_VALIDATION_TOOLCHAIN_DIRS` | From section 3 (`summa42-model`, `summa42-review`, `summa42-validate`) |
 | `SUMMA42_PRODUCER_*`, `SUMMA42_REVIEWER_*` | Harness profile and model ID of the two models |
 | `SUMMA42_CONTEXT_MAX_BYTES` | Planner context limit; keep `80000` for `agy` |
 | `SUMMA42_MAX_REPAIRS`, `SUMMA42_MAX_STEPS` | Optional. Repairs per case after `REVISE` (default 2) and steps per case (default 12; a case without repairs takes about five) |
