@@ -23,6 +23,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
+	"github.com/SofiaFlux/summa42/internal/modelrun"
 	summa42runtime "github.com/SofiaFlux/summa42/internal/runtime"
 	statesqlite "github.com/SofiaFlux/summa42/internal/state/sqlite"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
@@ -103,7 +104,11 @@ type pipeline struct {
 	reviewArgv   []string
 	// exhausted holds the pools the last report found exhausted, so a
 	// transition is logged once rather than every pass.
-	exhausted map[string]bool
+	exhausted    map[string]bool
+	producerUser string
+	reviewerUser string
+	producerHome string
+	reviewerHome string
 }
 
 // parsePipelineFlags returns the pipeline and its interval; zero means --once.
@@ -157,6 +162,24 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	prodU, err := modelrun.ResolveRunAsUser(producer.RunAsUser)
+	if err != nil {
+		return nil, 0, err
+	}
+	revU, err := modelrun.ResolveReviewerUser(reviewer.RunAsUser, prodU)
+	if err != nil {
+		return nil, 0, fmt.Errorf("review model user must differ from producer model user: %w", err)
+	}
+	if validation.User != "" {
+		if validation.User == producer.RunAsUser || validation.User == reviewer.RunAsUser {
+			return nil, 0, fmt.Errorf("--validation-user %q must differ from producer (%q) and reviewer (%q)", validation.User, producer.RunAsUser, reviewer.RunAsUser)
+		}
+		if _, err := resolveOptionalRoleUser(validation.User); err == nil {
+			if _, err := modelrun.ResolveValidationUser(validation.User, prodU, revU); err != nil {
+				return nil, 0, err
+			}
+		}
+	}
 	if sameModel(producer, reviewer) {
 		return nil, 0, errors.New("review model must differ from producer model")
 	}
@@ -194,6 +217,10 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 		reviewerPool: reviewerPool,
 		reviewArgv:   review,
 		exhausted:    map[string]bool{},
+		producerUser: producer.RunAsUser,
+		reviewerUser: reviewer.RunAsUser,
+		producerHome: prodU.HomeDir,
+		reviewerHome: revU.HomeDir,
 		// Plans and code wait for a reviewer before they can go on, so their gates include
 		// one. Triage output just queues for triage review, so the worker gate is the
 		// producer pool alone; otherwise an exhausted reviewer halts all new issues.
@@ -265,6 +292,7 @@ func modelFlagArgv(cfg climodel.Config) []string {
 // stop later stages; busy and a case that already moved on are skips. The pass
 // fails if any stage failed.
 func (p *pipeline) pass(ctx context.Context) error {
+	ctx = withPipelineRoles(ctx, p.producerUser, p.reviewerUser)
 	failed := 0
 	p.reportCapacity(ctx)
 	report := func(name, caseID string, err error) {
@@ -446,6 +474,8 @@ func runGHPipeline(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	modelrun.RegisterRoleHomes(p.producerHome, p.reviewerHome)
+	defer modelrun.RegisterRoleHomes("", "")
 	ledger, err := openCapacityLedger(ctx)
 	if err != nil {
 		return err

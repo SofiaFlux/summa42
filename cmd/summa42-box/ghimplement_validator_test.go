@@ -19,15 +19,18 @@ func TestValidatorFailsClosedWithoutADistinctValidationUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	for _, user := range []string{"", "root", "no-such-user-xyz", modelruntest.User} {
-		if _, err := validatorFor(fakeValidation(user), modelruntest.User); err == nil {
+	for _, user := range []string{"", "root", "no-such-user-xyz", modelruntest.User, modelruntest.ReviewerUser} {
+		if _, err := validatorFor(fakeValidation(user), modelruntest.User, modelruntest.ReviewerUser); err == nil {
 			t.Fatalf("validator built for validation user %q", user)
 		}
 	}
-	if _, err := validatorFor(fakeValidation(modelruntest.ValidationUser), ""); err == nil {
+	if _, err := validatorFor(fakeValidation(modelruntest.ValidationUser), "", modelruntest.ReviewerUser); err == nil {
 		t.Fatal("validator built without a model user")
 	}
-	if _, err := validatorFor(fakeValidation(modelruntest.ValidationUser), modelruntest.User); err != nil {
+	if _, err := validatorFor(fakeValidation(modelruntest.ValidationUser), modelruntest.User, ""); err == nil {
+		t.Fatal("validator built without a reviewer user")
+	}
+	if _, err := validatorFor(fakeValidation(modelruntest.ValidationUser), modelruntest.User, modelruntest.ReviewerUser); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -39,14 +42,14 @@ func TestValidatorReadsExplicitToolchainDirs(t *testing.T) {
 	}
 	defer cleanup()
 	t.Setenv(validationToolchainEnv, "/usr/local/go1.27/bin: /opt/tc/bin ::")
-	if _, err := validatorFor(fakeValidation(modelruntest.ValidationUser), modelruntest.User); err != nil {
+	if _, err := validatorFor(fakeValidation(modelruntest.ValidationUser), modelruntest.User, modelruntest.ReviewerUser); err != nil {
 		t.Fatal(err)
 	}
 	if got := splitPathList("/a::/b"); !slices.Equal(got, []string{"/a", "/b"}) {
 		t.Fatalf("%v", got)
 	}
 	t.Setenv(validationToolchainEnv, "relative/bin")
-	if _, err := validatorFor(fakeValidation(modelruntest.ValidationUser), modelruntest.User); err == nil {
+	if _, err := validatorFor(fakeValidation(modelruntest.ValidationUser), modelruntest.User, modelruntest.ReviewerUser); err == nil {
 		t.Fatal("relative toolchain dir accepted")
 	}
 }

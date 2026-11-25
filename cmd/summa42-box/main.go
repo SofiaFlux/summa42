@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -635,6 +636,10 @@ func main() {
 }
 
 func parseWorkerArgs(args []string) (once bool, workspaceRoot, credentialFile string, pollInterval, leaseDuration time.Duration, modelConfig climodel.Config, err error) {
+	return parseWorkerArgsCtx(context.Background(), args)
+}
+
+func parseWorkerArgsCtx(ctx context.Context, args []string) (once bool, workspaceRoot, credentialFile string, pollInterval, leaseDuration time.Duration, modelConfig climodel.Config, err error) {
 	flags := flag.NewFlagSet("run-worker", flag.ContinueOnError)
 	flags.BoolVar(&once, "once", false, "run one scheduler pass and exit")
 	flags.StringVar(&workspaceRoot, "workspace-root", "", "absolute directory for attempt workspaces")
@@ -657,7 +662,10 @@ func parseWorkerArgs(args []string) (once bool, workspaceRoot, credentialFile st
 		err = errors.New("run-worker requires --workspace-root")
 		return
 	}
-	modelConfig, err = triageModelConfig(flags)
+	if modelConfig, err = triageModelConfig(flags); err != nil {
+		return
+	}
+	err = checkStandaloneRoleDistinct(ctx, "producer", modelConfig.RunAsUser)
 	return
 }
 
@@ -676,17 +684,31 @@ func parseWorkerArgs(args []string) (once bool, workspaceRoot, credentialFile st
 // explicitly, and whatever was explicitly passed is used exactly as passed,
 // with nothing prepended.
 func registerTriageModelFlags(flags *flag.FlagSet, binaryUse string) {
-	registerModelFlags(flags, "model", binaryUse)
+	registerModelFlagsWithEnv(flags, "model", binaryUse, "SUMMA42_MODEL_USER")
+}
+
+// registerReviewModelFlags configures a single-stage review subcommand whose
+// --model-user defaults to SUMMA42_REVIEW_MODEL_USER.
+func registerReviewModelFlags(flags *flag.FlagSet, binaryUse string) {
+	registerModelFlagsWithEnv(flags, "model", binaryUse, "SUMMA42_REVIEW_MODEL_USER")
 }
 
 // registerModelFlags is registerTriageModelFlags under another flag prefix, so
 // run-gh-pipeline can take a second model (--review-model-*) with the same
 // types, defaults and credential checks.
 func registerModelFlags(flags *flag.FlagSet, prefix, binaryUse string) {
+	envName := "SUMMA42_MODEL_USER"
+	if prefix == "review-model" {
+		envName = "SUMMA42_REVIEW_MODEL_USER"
+	}
+	registerModelFlagsWithEnv(flags, prefix, binaryUse, envName)
+}
+
+func registerModelFlagsWithEnv(flags *flag.FlagSet, prefix, binaryUse, userEnv string) {
 	flags.String(prefix+"-binary", "codex", binaryUse+", which must read the prompt on stdin (defaults are codex-shaped: codex + exec)")
 	flags.String(prefix+"-timeout", "30m", "per-invocation model timeout (model answers can take minutes; leases are derived from it)")
-	flags.String(prefix+"-user", os.Getenv("SUMMA42_MODEL_USER"),
-		"dedicated OS user model processes run as via sudo -n -u (required; env SUMMA42_MODEL_USER; "+
+	flags.String(prefix+"-user", os.Getenv(userEnv),
+		"dedicated OS user model processes run as via sudo -n -u (required; env "+userEnv+"; "+
 			"must not be root or the Box user; see scripts/setup-model-user.sh)")
 	flags.Var(&modelArgs{}, prefix+"-arg",
 		"argument passed to the model binary before the prompt, repeatable and in order "+
@@ -758,11 +780,30 @@ func (m *modelArgs) Get() any { return append([]string(nil), m.args...) }
 // command, because the flag sets that call this are not all run-worker's and
 // a rejected value must not be reported against the wrong subcommand.
 func triageModelConfig(flags *flag.FlagSet) (climodel.Config, error) {
-	return prefixedModelConfig(flags, "model")
+	return prefixedModelConfigWithEnv(flags, "model", "SUMMA42_MODEL_USER")
+}
+
+func reviewModelConfig(ctx context.Context, flags *flag.FlagSet) (climodel.Config, error) {
+	cfg, err := prefixedModelConfigWithEnv(flags, "model", "SUMMA42_REVIEW_MODEL_USER")
+	if err != nil {
+		return climodel.Config{}, err
+	}
+	if err := checkStandaloneRoleDistinct(ctx, "reviewer", cfg.RunAsUser); err != nil {
+		return climodel.Config{}, err
+	}
+	return cfg, nil
 }
 
 // prefixedModelConfig is triageModelConfig for the flags registerModelFlags put under prefix.
 func prefixedModelConfig(flags *flag.FlagSet, prefix string) (climodel.Config, error) {
+	envName := "SUMMA42_MODEL_USER"
+	if prefix == "review-model" {
+		envName = "SUMMA42_REVIEW_MODEL_USER"
+	}
+	return prefixedModelConfigWithEnv(flags, prefix, envName)
+}
+
+func prefixedModelConfigWithEnv(flags *flag.FlagSet, prefix, userEnv string) (climodel.Config, error) {
 	binaryFlag := flags.Lookup(prefix + "-binary")
 	if binaryFlag == nil {
 		return climodel.Config{}, errors.New("model flags are not registered: --" + prefix + "-binary is missing from the flag set")
@@ -833,6 +874,9 @@ func prefixedModelConfig(flags *flag.FlagSet, prefix string) (climodel.Config, e
 		return climodel.Config{}, errors.New("model flags are not registered: --" + prefix + "-user is missing from the flag set")
 	}
 	runAs := strings.TrimSpace(userFlag.Value.String())
+	if runAs == "" {
+		return climodel.Config{}, fmt.Errorf("--%s-user is required (set --%s-user or %s)", prefix, prefix, userEnv)
+	}
 	if _, err := climodel.ResolveRunAsUser(runAs); err != nil {
 		return climodel.Config{}, fmt.Errorf("--%s-user: %w", prefix, err)
 	}
@@ -924,14 +968,108 @@ func workerCapacity(box *summa42runtime.Box) (scheduler.CapacitySnapshot, error)
 	return capacity, nil
 }
 
+type pipelineContextKey struct{}
+type pipelineRoleUsers struct{ producer, reviewer string }
+
+func withPipelineValidatedUsers(ctx context.Context) context.Context {
+	return withPipelineRoles(ctx, "", "")
+}
+
+func withPipelineRoles(ctx context.Context, producer, reviewer string) context.Context {
+	return context.WithValue(ctx, pipelineContextKey{}, pipelineRoleUsers{producer: producer, reviewer: reviewer})
+}
+
+func pipelineRolesFromCtx(ctx context.Context) (pipelineRoleUsers, bool) {
+	if ctx == nil {
+		return pipelineRoleUsers{}, false
+	}
+	roles, ok := ctx.Value(pipelineContextKey{}).(pipelineRoleUsers)
+	return roles, ok
+}
+
+func resolveOptionalRoleUser(name string) (*user.User, error) {
+	if name == "" {
+		return nil, nil
+	}
+	return modelrun.ResolveRunAsUser(name)
+}
+
+func checkStandaloneRoleDistinct(ctx context.Context, role, runAs string) error {
+	if _, inPipeline := pipelineRolesFromCtx(ctx); inPipeline {
+		return nil
+	}
+	siblingEnv, siblingLabel := "SUMMA42_REVIEW_MODEL_USER", "reviewer"
+	if role == "reviewer" {
+		siblingEnv, siblingLabel = "SUMMA42_MODEL_USER", "producer"
+	}
+	otherName := strings.TrimSpace(os.Getenv(siblingEnv))
+	valName := strings.TrimSpace(os.Getenv("SUMMA42_VALIDATION_USER"))
+	if otherName != "" && otherName == runAs {
+		return fmt.Errorf("%s user %q must differ from %s user %s (%q)", role, runAs, siblingLabel, siblingEnv, otherName)
+	}
+	if valName != "" && valName == runAs {
+		return fmt.Errorf("%s user %q must differ from validation user SUMMA42_VALIDATION_USER (%q)", role, runAs, valName)
+	}
+	var blockers []*user.User
+	for _, candidate := range []string{otherName, valName} {
+		if u, err := resolveOptionalRoleUser(candidate); err == nil && u != nil {
+			blockers = append(blockers, u)
+		}
+	}
+	if len(blockers) > 0 {
+		if _, err := modelrun.ResolveReviewerUser(runAs, blockers...); err != nil {
+			return fmt.Errorf("%s user: %w", role, err)
+		}
+	}
+	return nil
+}
+
+func registerRoleHomesForCommand(ctx context.Context, producerUser, reviewerUser string) func() {
+	if _, inPipeline := pipelineRolesFromCtx(ctx); inPipeline {
+		return func() {}
+	}
+	var prodHome, revHome string
+	if u, err := resolveOptionalRoleUser(strings.TrimSpace(producerUser)); err == nil && u != nil {
+		prodHome = u.HomeDir
+	}
+	if u, err := resolveOptionalRoleUser(strings.TrimSpace(reviewerUser)); err == nil && u != nil {
+		revHome = u.HomeDir
+	}
+	modelrun.RegisterRoleHomes(prodHome, revHome)
+	return func() { modelrun.RegisterRoleHomes("", "") }
+}
+
+func workerCopilotReviewerUser(ctx context.Context, producerUser string) (string, error) {
+	copilotUser := strings.TrimSpace(os.Getenv("SUMMA42_REVIEW_MODEL_USER"))
+	if roles, ok := pipelineRolesFromCtx(ctx); ok && roles.reviewer != "" {
+		copilotUser = roles.reviewer
+	}
+	if strings.TrimSpace(os.Getenv("SUMMA42_COPILOT_PATH")) == "" {
+		return copilotUser, nil
+	}
+	prodU, err := modelrun.ResolveRunAsUser(producerUser)
+	if err != nil {
+		return "", err
+	}
+	if _, err := modelrun.ResolveReviewerUser(copilotUser, prodU); err != nil {
+		return "", fmt.Errorf("SUMMA42_REVIEW_MODEL_USER for copilot: %w", err)
+	}
+	return copilotUser, nil
+}
+
 func runWorker(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	once, workspaceRoot, credentialFile, pollInterval, leaseDuration, modelConfig, err := parseWorkerArgs(args)
+	once, workspaceRoot, credentialFile, pollInterval, leaseDuration, modelConfig, err := parseWorkerArgsCtx(ctx, args)
 	if err != nil {
 		return err
 	}
+	copilotUser, err := workerCopilotReviewerUser(ctx, modelConfig.RunAsUser)
+	if err != nil {
+		return err
+	}
+	defer registerRoleHomesForCommand(ctx, modelConfig.RunAsUser, copilotUser)()
 	home, err := localconfig.ResolveHome("")
 	if err != nil {
 		return err
@@ -975,7 +1113,7 @@ func runWorker(ctx context.Context, args []string) error {
 		OperationProviders:  operationProviders,
 		CapabilityProviders: capabilityProviders,
 	}
-	copilotExecutors, err := buildCopilotExecutorFromEnv(modelConfig.RunAsUser)
+	copilotExecutors, err := buildCopilotExecutorFromEnv(copilotUser)
 	if err != nil {
 		return err
 	}
@@ -1628,17 +1766,21 @@ func ghtriageDriverTickFailure(result ghtriage.DriverResult) error {
 // flags are the worker's, read through triageModelConfig so the two commands
 // cannot drift onto different models.
 func parseGHTriageReviewFlags(args []string) (domain.ID, climodel.Config, error) {
+	return parseGHTriageReviewFlagsCtx(context.Background(), args)
+}
+
+func parseGHTriageReviewFlagsCtx(ctx context.Context, args []string) (domain.ID, climodel.Config, error) {
 	var mission string
 	flags := flag.NewFlagSet("run-gh-triage-review", flag.ContinueOnError)
 	flags.StringVar(&mission, "mission", "", "mission ID whose GitHub decisions are reviewed")
-	registerTriageModelFlags(flags, "model binary answering the reviewer question")
+	registerReviewModelFlags(flags, "model binary answering the reviewer question")
 	if err := flags.Parse(args); err != nil {
 		return "", climodel.Config{}, err
 	}
 	if strings.TrimSpace(mission) == "" {
 		return "", climodel.Config{}, errors.New("run-gh-triage-review requires --mission")
 	}
-	modelConfig, err := triageModelConfig(flags)
+	modelConfig, err := reviewModelConfig(ctx, flags)
 	if err != nil {
 		return "", climodel.Config{}, err
 	}
@@ -1652,6 +1794,10 @@ func plannerConfig(modelConfig climodel.Config) ghtriage.PlannerConfig {
 
 // parseGHPlanFlags is run-gh-plan's flag parsing.
 func parseGHPlanFlags(args []string) (mission string, grounding *ghtriage.GroundingConfig, modelConfig climodel.Config, err error) {
+	return parseGHPlanFlagsCtx(context.Background(), args)
+}
+
+func parseGHPlanFlagsCtx(ctx context.Context, args []string) (mission string, grounding *ghtriage.GroundingConfig, modelConfig climodel.Config, err error) {
 	flags := flag.NewFlagSet("run-gh-plan", flag.ContinueOnError)
 	sourceFlags := registerGroundingFlags(flags)
 	flags.StringVar(&mission, "mission", "", "mission ID whose ready GitHub issues are planned")
@@ -1667,7 +1813,10 @@ func parseGHPlanFlags(args []string) (mission string, grounding *ghtriage.Ground
 		err = fmt.Errorf("source configuration: %w", err)
 		return
 	}
-	modelConfig, err = triageModelConfig(flags)
+	if modelConfig, err = triageModelConfig(flags); err != nil {
+		return
+	}
+	err = checkStandaloneRoleDistinct(ctx, "producer", modelConfig.RunAsUser)
 	return
 }
 
@@ -1675,10 +1824,11 @@ func runGHPlan(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	mission, grounding, modelConfig, err := parseGHPlanFlags(args)
+	mission, grounding, modelConfig, err := parseGHPlanFlagsCtx(ctx, args)
 	if err != nil {
 		return err
 	}
+	defer registerRoleHomesForCommand(ctx, modelConfig.RunAsUser, os.Getenv("SUMMA42_REVIEW_MODEL_USER"))()
 	adapter, ok := triageModelAdapter(modelConfig, os.Stderr)
 	if !ok {
 		return fmt.Errorf("run-gh-plan needs a model: --model-binary %q is not usable", modelConfig.Binary)
@@ -1746,10 +1896,11 @@ func runGHTriageReview(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	missionID, modelConfig, err := parseGHTriageReviewFlags(args)
+	missionID, modelConfig, err := parseGHTriageReviewFlagsCtx(ctx, args)
 	if err != nil {
 		return err
 	}
+	defer registerRoleHomesForCommand(ctx, os.Getenv("SUMMA42_MODEL_USER"), modelConfig.RunAsUser)()
 	adapter, ok := triageModelAdapter(modelConfig, os.Stderr)
 	if !ok {
 		return fmt.Errorf("run-gh-triage-review needs a model: --model-binary %q is not usable", modelConfig.Binary)

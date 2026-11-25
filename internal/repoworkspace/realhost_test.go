@@ -11,6 +11,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ import (
 
 const (
 	realModelUser      = "summa42-model"
+	realReviewUser     = "summa42-review"
 	realValidationUser = "summa42-validate"
 )
 
@@ -110,8 +112,9 @@ func TestRealHostCancelKillsTheModelProcesses(t *testing.T) {
 	cancel()
 	_ = cmd.Wait()
 	noProcessesWithin(t, realModelUser, 20*time.Second)
-	// ponytail: a SIGKILLed call keeps its scratch until the day-old sweep.
-	t.Logf("scratch after cancel: %q", scratchDirsOf(t, realModelUser))
+	if left := scratchDirsOf(t, realModelUser); left != "" {
+		t.Fatalf("cancelled model call left scratch dirs: %s", left)
+	}
 }
 
 func TestRealHostProbeRefusesAReadableSecret(t *testing.T) {
@@ -173,7 +176,7 @@ func candidateRepo(t *testing.T) (string, Candidate) {
 
 func realValidator(t *testing.T, toolchain []string) *Validator {
 	t.Helper()
-	v, err := NewValidator(realValidationUser, realModelUser, toolchain, 10*time.Minute, filepath.Join(t.TempDir(), "validation.lock"))
+	v, err := NewValidatorWithReviewer(realValidationUser, realModelUser, realReviewUser, toolchain, 10*time.Minute, filepath.Join(t.TempDir(), "validation.lock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,12 +227,75 @@ func TestRealHostCancelledValidationLeavesNothing(t *testing.T) {
 func TestRealHostValidationCannotReadTheModelHome(t *testing.T) {
 	dir, c := candidateRepo(t)
 	results, err := realValidator(t, nil).ValidateCandidate(context.Background(), dir, c,
-		[][]string{{"/bin/sh", "-c", "ls /var/lib/summa42-model; cat /var/lib/summa42-model/.claude/.credentials.json"}})
+		[][]string{{"/bin/sh", "-c", "ls /var/lib/summa42-model || ls /var/lib/summa42-review || cat /var/lib/summa42-model/.claude/.credentials.json"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if results[0].Passed {
-		t.Fatalf("validation user read the model home: %s", results[0].Output)
+		t.Fatalf("validation user read a model home: %s", results[0].Output)
+	}
+}
+
+func TestRealHostReviewerAndProducerHomesIsolated(t *testing.T) {
+	producer, err := modelrun.ResolveRunAsUser(realModelUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer, err := modelrun.ResolveReviewerUser(realReviewUser, producer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelrun.RegisterRoleHomes(producer.HomeDir, reviewer.HomeDir)
+	t.Cleanup(func() { modelrun.RegisterRoleHomes("", "") })
+	for _, tc := range []struct {
+		name      string
+		runAs     *user.User
+		forbidden string
+	}{
+		{"reviewer cannot read producer home", reviewer, producer.HomeDir},
+		{"producer cannot read reviewer home", producer, reviewer.HomeDir},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := modelrun.Command(context.Background(), modelrun.Spec{
+				RunAs: tc.runAs, Binary: "/bin/sh", Args: []string{"-c", "ls " + tc.forbidden},
+				Timeout: 15 * time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Run(); err == nil {
+				t.Fatalf("%s unexpectedly read %s", tc.runAs.Username, tc.forbidden)
+			}
+		})
+	}
+}
+
+func TestRealHostNothingSurvivesAModelCall(t *testing.T) {
+	producer, err := modelrun.ResolveRunAsUser(realModelUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer, err := modelrun.ResolveReviewerUser(realReviewUser, producer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []*user.User{producer, reviewer} {
+		cmd, err := modelrun.Command(context.Background(), modelrun.Spec{
+			RunAs: u, Binary: "/bin/sh", Args: []string{"-c", "sleep 600 & exit 0"},
+			Scratch: true, Timeout: 30 * time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("%s model call failed: %v", u.Username, err)
+		}
+		if left := processesOf(u.Username); left != "" {
+			t.Fatalf("%s left background processes after clean exit:\n%s", u.Username, left)
+		}
+		if left := scratchDirsOf(t, u.Username); left != "" {
+			t.Fatalf("%s left scratch dirs after clean exit: %s", u.Username, left)
+		}
 	}
 }
 

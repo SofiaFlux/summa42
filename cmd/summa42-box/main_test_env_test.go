@@ -10,5 +10,6 @@ import (
 // model flags passes the fail-closed run-as-user check.
 func TestMain(m *testing.M) {
 	os.Setenv("SUMMA42_MODEL_USER", "nobody")
+	os.Setenv("SUMMA42_REVIEW_MODEL_USER", "daemon")
 	os.Exit(m.Run())
 }

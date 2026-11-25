@@ -166,6 +166,25 @@ func TestValidationRefusesWhenTheValidationUserCanReadTheModelHome(t *testing.T)
 	}
 }
 
+func TestValidationRefusesWhenTheValidationUserCanReadTheReviewerHome(t *testing.T) {
+	dir, c := validationFixture(t)
+	_, _, cleanup, err := modelruntest.Install()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if err := modelruntest.LockModelHome(); err != nil {
+		t.Fatal(err)
+	}
+	v, err := NewValidatorWithReviewer(modelruntest.ValidationUser, modelruntest.User, modelruntest.ReviewerUser, nil, 0, filepath.Join(t.TempDir(), "validation.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.ValidateCandidate(context.Background(), dir, c, [][]string{{"true"}}); err == nil || !strings.Contains(err.Error(), "can read") {
+		t.Fatalf("validation ran with a readable reviewer home: %v", err)
+	}
+}
+
 // Whatever the outcome, every process of the validation user is killed and
 // its scratch removed afterwards, through sudo as that user.
 func TestValidationSweepsTheValidationUserAfterEveryRun(t *testing.T) {

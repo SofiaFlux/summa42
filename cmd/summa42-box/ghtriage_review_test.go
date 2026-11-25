@@ -140,3 +140,31 @@ func TestRunGHTriageReviewRefusesToRunWithoutAMissionOrContext(t *testing.T) {
 		t.Fatal("run-gh-triage-review ran with no context")
 	}
 }
+
+func TestSingleStageCommandsEnforceDistinctRoleUsers(t *testing.T) {
+	t.Setenv("SUMMA42_REVIEW_MODEL_USER", "")
+	if _, _, err := parseGHTriageReviewFlags([]string{"--mission", "mission-1"}); err == nil || !strings.Contains(err.Error(), "SUMMA42_REVIEW_MODEL_USER") {
+		t.Fatalf("triage review accepted empty SUMMA42_REVIEW_MODEL_USER: %v", err)
+	}
+	t.Setenv("SUMMA42_MODEL_USER", "nobody")
+	t.Setenv("SUMMA42_REVIEW_MODEL_USER", "daemon")
+	t.Setenv("SUMMA42_VALIDATION_USER", "summa42-validate")
+	if _, _, err := parseGHTriageReviewFlags([]string{"--mission", "mission-1", "--model-user", "nobody"}); err == nil {
+		t.Fatal("triage review accepted producer user")
+	}
+	if _, _, err := parseGHTriageReviewFlags([]string{"--mission", "mission-1", "--model-user", "summa42-validate"}); err == nil {
+		t.Fatal("triage review accepted validation user")
+	}
+	if _, _, _, _, err := parseGHPlanReviewFlags([]string{"--mission", "mission-1", "--model-user", "nobody"}); err == nil {
+		t.Fatal("plan review accepted producer user")
+	}
+	if _, _, _, _, err := parseGHCodeReviewFlags([]string{"--case", "c1", "--source-repo", "/tmp", "--model-user", "nobody"}); err == nil {
+		t.Fatal("code review accepted producer user")
+	}
+	if _, _, _, err := parseGHPlanFlags([]string{"--mission", "mission-1", "--source-repo", "/tmp", "--allowed-prefix", "docs/", "--model-user", "daemon"}); err == nil {
+		t.Fatal("plan accepted reviewer user")
+	}
+	if _, _, _, _, _, err := parseGHImplementFlags([]string{"--case", "c1", "--source-repo", "/tmp", "--workspace-root", "/tmp", "--model-user", "daemon"}); err == nil {
+		t.Fatal("implement accepted reviewer user")
+	}
+}

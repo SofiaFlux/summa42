@@ -14,19 +14,27 @@ import (
 
 const (
 	User = "summa42-model-test"
-	// ValidationUser is the fake second dedicated user (candidate code).
+	// ReviewerUser is the fake second dedicated model user (reviewer).
+	ReviewerUser = "summa42-review-test"
+	// ValidationUser is the fake third dedicated user (candidate code).
 	ValidationUser = "summa42-validate-test"
 )
 
-var validationHome, modelHome string
+var validationHome, modelHome, reviewerHome string
 
 // LockModelHome makes the fake model home unreadable (mode 0), as the real one
 // is for the validation user. Validation refuses to run otherwise, because the
 // fake sudo keeps the test's own uid. The cleanup from Install restores it.
 func LockModelHome() error { return os.Chmod(modelHome, 0) }
 
+// LockReviewHome makes the fake reviewer home unreadable (mode 0).
+func LockReviewHome() error { return os.Chmod(reviewerHome, 0) }
+
 // ValidationHome is the fake validation user's home of the latest Install.
 func ValidationHome() string { return validationHome }
+
+// ReviewHome is the fake reviewer user's home of the latest Install.
+func ReviewHome() string { return reviewerHome }
 
 // Install configures the seams and returns the fake model home and the file the
 // fake sudo appends its argv to. Call cleanup when done.
@@ -45,6 +53,10 @@ func InstallScript(body string) (home, sudoLog string, cleanup func(), err error
 	home = filepath.Join(dir, "home")
 	modelHome = home
 	if err := os.MkdirAll(filepath.Join(home, "tmp"), 0o755); err != nil {
+		return "", "", nil, err
+	}
+	reviewerHome = filepath.Join(dir, "review-home")
+	if err := os.MkdirAll(filepath.Join(reviewerHome, "tmp"), 0o755); err != nil {
 		return "", "", nil, err
 	}
 	validationHome = filepath.Join(dir, "validate-home")
@@ -66,6 +78,8 @@ func InstallScript(body string) (home, sudoLog string, cleanup func(), err error
 		switch name {
 		case User:
 			return &user.User{Uid: "4242", Username: name, HomeDir: home}, nil
+		case ReviewerUser:
+			return &user.User{Uid: "4444", Username: name, HomeDir: reviewerHome}, nil
 		case ValidationUser:
 			return &user.User{Uid: "4343", Username: name, HomeDir: validationHome}, nil
 		case "root":
@@ -73,5 +87,5 @@ func InstallScript(body string) (home, sudoLog string, cleanup func(), err error
 		}
 		return user.Lookup(name)
 	})
-	return home, sudoLog, func() { os.Chmod(home, 0o700); os.RemoveAll(dir) }, nil
+	return home, sudoLog, func() { os.Chmod(home, 0o700); os.Chmod(reviewerHome, 0o700); os.RemoveAll(dir) }, nil
 }

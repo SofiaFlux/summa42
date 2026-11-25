@@ -81,8 +81,8 @@ func TestPipelineStageErrorDoesNotSkipLaterStages(t *testing.T) {
 	if !slices.Contains(reviews[0], "--model-binary=/bin/reviewer") || slices.Contains(reviews[0], "--model-binary=/bin/producer") {
 		t.Fatalf("plan review argv %v does not use the review model", reviews[0])
 	}
-	if !slices.Contains(reviews[0], "--model-user=nobody") {
-		t.Fatalf("plan review argv %v does not forward the model user", reviews[0])
+	if !slices.Contains(reviews[0], "--model-user=daemon") {
+		t.Fatalf("plan review argv %v does not forward the review model user", reviews[0])
 	}
 	want := []string{"recover", "triage-driver", "worker", "triage-review", "plan", "plan-review"}
 	if !slices.Equal(f.calls, want) {
@@ -423,5 +423,32 @@ func TestPipelineForwardsTheRepairLimitToBothReviewStages(t *testing.T) {
 	}
 	if _, _, err := parsePipelineFlags(append(validPipelineArgs(t), "--max-repairs=-1")); err == nil {
 		t.Fatal("a negative repair limit was accepted")
+	}
+}
+
+func TestPipelineRequiresDistinctUsersAcrossAllRoles(t *testing.T) {
+	if _, _, err := parsePipelineFlags(append(validPipelineArgs(t), "--model-user=nobody", "--review-model-user=nobody")); err == nil || !strings.Contains(err.Error(), "differ") {
+		t.Fatalf("same producer and reviewer user accepted: %v", err)
+	}
+	if _, _, err := parsePipelineFlags(append(validPipelineArgs(t), "--model-user=nobody", "--review-model-user=daemon", "--validation-user=nobody")); err == nil {
+		t.Fatal("validation user matching producer accepted")
+	}
+	if _, _, err := parsePipelineFlags(append(validPipelineArgs(t), "--model-user=nobody", "--review-model-user=daemon", "--validation-user=daemon")); err == nil {
+		t.Fatal("validation user matching reviewer accepted")
+	}
+	// Explicit distinct flags override env vars even when producer and reviewer are swapped relative to env.
+	t.Setenv("SUMMA42_MODEL_USER", "nobody")
+	t.Setenv("SUMMA42_REVIEW_MODEL_USER", "daemon")
+	p, _, err := parsePipelineFlags(append(validPipelineArgs(t), "--model-user=daemon", "--review-model-user=nobody"))
+	if err != nil {
+		t.Fatalf("swapped distinct flag override rejected: %v", err)
+	}
+	ctx := withPipelineValidatedUsers(context.Background())
+	for _, s := range p.stages {
+		if s.name == "plan-review" {
+			if _, _, _, _, err := parseGHPlanReviewFlagsCtx(ctx, s.args); err != nil {
+				t.Fatalf("pipeline-validated plan-review rejected swapped user: %v", err)
+			}
+		}
 	}
 }
