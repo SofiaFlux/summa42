@@ -4,29 +4,32 @@
 # Run as:  sudo scripts/setup-model-user.sh [--yes|--default-approve]
 #            [--summa-home DIR] [--db FILE] [--evidence DIR] [--toolchain-dirs DIRS]
 #
-# Idempotent. It prints every step. It creates two system users, each with its
+# Idempotent. It prints every step. It creates three system users, each with its
 # own home, no login shell and no extra groups:
-#   summa42-model     runs the model CLIs (may hold their copied logins)
+#   summa42-model     runs the producer CLIs (may hold their copied logins)
+#   summa42-review    runs the reviewer CLIs and Copilot (isolated home)
 #   summa42-validate  runs validation commands, i.e. candidate code; it has NO
 #                     credentials, never receives a copy of any, and a scan
 #                     refuses if it finds any in its home
 # It authorises the invoking user to run commands as each of them (and only as
 # them) via sudoers, locks the invoking user's ~/.summa42 and ~/.config/gh and
-# the model home to mode 0700, and then PROVES neither user can read the Box
-# secrets and that the validation user cannot read the model home. It exits
-# non-zero if any secret is readable or if a configured secret path cannot be
-# evaluated.
+# the model/review homes to mode 0700, and then PROVES neither can read the Box
+# secrets, model and review cannot read each other's homes, and validate cannot
+# read either model or review home. It exits non-zero if any secret is readable
+# or if a configured secret path cannot be evaluated.
 #
-# Trust boundary: the model user owns its home and a prompt-injected model can
-# plant symlinks there. Root therefore never reads, writes, chmods or chowns
-# anything inside the model home after `useradd`: every file operation there is
-# done BY the model user (run_as_model). Root only creates the user and writes
-# /etc/sudoers.d.
+# Trust boundary: each dedicated user owns its home and a prompt-injected model
+# can plant symlinks there. Root therefore never reads, writes, chmods or chowns
+# anything inside those homes after `useradd`: every file operation there is
+# done BY that user (run_as_model / run_as_review). Root only creates the users
+# and writes /etc/sudoers.d.
 set -euo pipefail
 
 MODEL_USER="${SUMMA42_MODEL_USER:-summa42-model}"
+REVIEW_USER="${SUMMA42_REVIEW_MODEL_USER:-summa42-review}"
 VALIDATE_USER="${SUMMA42_VALIDATION_USER:-summa42-validate}"
 SUDOERS_FILE="/etc/sudoers.d/summa42-model"
+SUDOERS_REVIEW_FILE="/etc/sudoers.d/summa42-review"
 SUDOERS_VALIDATE_FILE="/etc/sudoers.d/summa42-validate"
 # Colon-separated absolute directories holding the Go toolchain the validation
 # user runs (sudo strips the environment, so --toolchain-dirs also sets it).
@@ -158,6 +161,91 @@ run_as() {
   )
 }
 run_as_model() { run_as "$MODEL_USER" "$MODEL_HOME" "$@"; }
+run_as_review() { run_as "$REVIEW_USER" "$REVIEW_HOME" "$@"; }
+
+role_home() {
+  case "${1:-model}" in
+    review) printf '%s' "$REVIEW_HOME" ;;
+    validate) printf '%s' "$VALIDATE_HOME" ;;
+    *) printf '%s' "$MODEL_HOME" ;;
+  esac
+}
+
+# audit_scope_tokens SCOPE...: return 0 if any token declares a write/admin/CI scope.
+has_write_scopes() {
+  local tok
+  for tok in "$@"; do
+    tok="$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]' | tr -d '",')"
+    case "$tok" in
+      repo|public_repo|workflow|delete_repo|gist|write:*|admin:*|vso.code_write|vso.code_manage|vso.build_execute|*_write)
+        return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# audit_login_scopes FILE...: inspect JSON payloads recursively for scope/scopes
+# declaring repo-write or CI-write privileges. Exits 2 and names offending files.
+audit_login_scopes() {
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$@" <<'PY'
+import json, re, sys
+
+FORBIDDEN_EXACT = {"repo", "public_repo", "workflow", "delete_repo", "gist", "vso.code_write", "vso.code_manage", "vso.build_execute"}
+def is_forbidden(tok: str) -> bool:
+    s = tok.strip().lower()
+    return bool(s) and (s in FORBIDDEN_EXACT or s.startswith("write:") or s.startswith("admin:") or s.endswith("_write"))
+
+def walk(obj):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if str(k).lower() in ("scope", "scopes"):
+                if isinstance(v, str):
+                    for part in re.split(r"[\s,]+", v):
+                        if is_forbidden(part):
+                            yield part
+                elif isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, str) and is_forbidden(item):
+                            yield item
+            yield from walk(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from walk(item)
+
+bad = []
+for path in sys.argv[1:]:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        continue
+    found = sorted(set(walk(data)))
+    if found:
+        bad.append(f"{path}: {','.join(found)}")
+if bad:
+    for line in bad:
+        print(line, file=sys.stderr)
+    sys.exit(2)
+PY
+}
+
+# check_github_oauth_scopes TOKEN: ask GitHub API via curl config on stdin so the
+# token never lands on argv, and print X-OAuth-Scopes on HTTP 200.
+check_github_oauth_scopes() {
+  local tok="$1" headers status scopes
+  command -v curl >/dev/null 2>&1 || return 1
+  headers="$(curl -sS --max-time 10 -I -K - 2>/dev/null <<CFG | tr -d '\r' || true
+url = "https://api.github.com/"
+header = "User-Agent: summa42-setup"
+header = "Authorization: token $tok"
+CFG
+)"
+  status="$(printf '%s\n' "$headers" | awk 'toupper($1) ~ /^HTTP\// {code=$2} END{print code}')"
+  [ "$status" = "200" ] || return 1
+  scopes="$(printf '%s\n' "$headers" | awk 'BEGIN{IGNORECASE=1} /^x-oauth-scopes:[[:space:]]*/{sub(/^[^:]*:[[:space:]]*/, ""); print; exit}')"
+  printf '%s\n' "$scopes"
+}
 run_as_validate() { run_as "$VALIDATE_USER" "$VALIDATE_HOME" "$@"; }
 
 # The validation user must hold no credentials at all: refuse if its home has
@@ -192,9 +280,10 @@ chmod 0600 -- "$stage/$rel" || exit 1
 mv -T -- "$stage/$rel" "$dest"
 '
 
-# copy_file SRCROOT REL: stream SRCROOT/REL into the model home as the model user.
+# copy_file SRCROOT REL [ROLE]: stream SRCROOT/REL into the role home as that user.
 copy_file() {
-  tar -C "$1" -cf - -- "$2" | run_as_model sh -c "$MODEL_INSTALL_SH" sh "$2"
+  local role="${3:-model}"
+  tar -C "$1" -cf - -- "$2" | "run_as_$role" sh -c "$MODEL_INSTALL_SH" sh "$2"
 }
 
 # Safe source files: regular, not symlinks, inside the owner's home, and not a
@@ -251,23 +340,23 @@ ask() {
   case "$answer" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac
 }
 
-# import_cli NAME: copy one CLI's auth files after the content scan. Returns 2
-# when a token pattern was found, 3 when any step failed. Called as
-# `import_cli x || rc=$?`, which switches errexit off for the whole body, so
-# every step here ends in an explicit `|| return 3`.
+# import_cli NAME [ROLE]: copy one CLI's auth files after secret + scope audits.
+# ROLE defaults to model; review installs into REVIEW_HOME as REVIEW_USER.
+# Returns 2 when a token pattern was found, 3 when any step failed.
 import_cli() {
   local rc=0
   stagedir="$(mktemp -d)" || return 3
   if [ -z "$stagedir" ] || [ "$stagedir" = / ] || [ ! -d "$stagedir" ]; then
     printf 'cannot create a staging directory\n' >&2; return 3
   fi
-  _import_cli "$1" || rc=$?
+  _import_cli "$1" "${2:-model}" || rc=$?
   rm -rf -- "$stagedir"
   return "$rc"
 }
 
 _import_cli() {
-  local name="$1" rel files=() mode=default
+  local name="$1" role="${2:-model}" rel files=() mode=default dest_home
+  dest_home="$(role_home "$role")"
   for rel in $(group_files "$name"); do
     if safe_source "$OWNER_HOME/$rel"; then files+=("$rel"); fi
   done
@@ -302,32 +391,126 @@ _import_cli() {
     printf 'refusing to copy %s: token patterns found in:\n%s\n' "$name" "$hits" >&2
     return 2
   fi
+  if [ "$name" = copilot ]; then
+    local audited_files=() audited_scan=() i toks tok verified scopes
+    for ((i = 0; i < ${#files[@]}; i++)); do
+      rel="${files[$i]}"
+      if [ "$rel" != ".copilot/mcp-config.json" ]; then
+        toks="$(grep -oE 'gho_[A-Za-z0-9]{20,}' -- "${scan[$i]}" 2>/dev/null || true)"
+        if [ -n "$toks" ]; then
+          verified=1
+          while IFS= read -r tok; do
+            [ -n "$tok" ] || continue
+            if ! scopes="$(check_github_oauth_scopes "$tok")"; then
+              verified=0; break
+            fi
+            # Split commas/spaces carefully before checking scopes.
+            local scope_words=()
+            IFS=', ' read -ra scope_words <<<"$scopes"
+            if [ "${#scope_words[@]}" -gt 0 ] && has_write_scopes "${scope_words[@]}"; then
+              verified=0; break
+            fi
+          done <<<"$toks"
+          if [ "$verified" -eq 0 ]; then
+            warn "dropping $rel for $role ($dest_home): GitHub OAuth token is over-scoped or could not be verified read-only"
+            continue
+          fi
+        fi
+      fi
+      audited_files+=("$rel"); audited_scan+=("${scan[$i]}")
+    done
+    files=("${audited_files[@]}")
+    scan=("${audited_scan[@]}")
+    if [ "${#files[@]}" -eq 0 ]; then skipped+=("$role:$name"); return 0; fi
+  fi
+  if hits="$(audit_login_scopes "${scan[@]}" 2>&1)"; then
+    :
+  else
+    warn "dropping $name for $role ($dest_home): login declares write scopes ($hits)"
+    skipped+=("$role:$name")
+    return 0
+  fi
   local verb=copy dest_exists=0
   for rel in "${files[@]}"; do
-    if run_as_model test -e "$MODEL_HOME/$rel"; then dest_exists=1; fi
+    if "run_as_$role" test -e "$dest_home/$rel"; then dest_exists=1; fi
   done
   [ "$dest_exists" -eq 1 ] && verb=refresh
   if [ "$name" = copilot ]; then
     warn "copilot's login is a GitHub OAuth credential; copying it hands the model a GitHub credential."
     if [ "$ASSUME_YES" -eq 1 ]; then
       say "  skipped copilot: never copied under --yes; re-run without --yes to be asked"
-      skipped+=("$name"); return 0
+      skipped+=("$role:$name"); return 0
     fi
-    ask "$verb $name auth (${files[*]})" "$MODEL_HOME" || { say "  skipped $name"; skipped+=("$name"); return 0; }
+    ask "$verb $name auth (${files[*]})" "$dest_home" || { say "  skipped $name"; skipped+=("$role:$name"); return 0; }
   else
-    approve "$verb $name auth (${files[*]})" "$MODEL_HOME" || { say "  skipped $name (any existing copy is left untouched)"; skipped+=("$name"); return 0; }
+    approve "$verb $name auth (${files[*]})" "$dest_home" || { say "  skipped $name (any existing copy is left untouched)"; skipped+=("$role:$name"); return 0; }
   fi
   local n=0
   for rel in "${files[@]}"; do
     if [[ " ${staged[*]:-} " == *" $rel "* ]]; then
-      copy_file "$stagedir" "$rel" || { printf 'copying %s failed\n' "$rel" >&2; return 3; }
+      copy_file "$stagedir" "$rel" "$role" || { printf 'copying %s failed\n' "$rel" >&2; return 3; }
     else
-      copy_file "$OWNER_HOME" "$rel" || { printf 'copying %s failed\n' "$rel" >&2; return 3; }
+      copy_file "$OWNER_HOME" "$rel" "$role" || { printf 'copying %s failed\n' "$rel" >&2; return 3; }
     fi
     n=$((n + 1))
   done
-  say "  done: $verb $name ($n file(s))"
-  copied+=("$name")
+  say "  done: $verb $name for $role ($n file(s))"
+  copied+=("$role:$name")
+}
+
+# purge_overscoped_logins ROLE HOME: remove previously copied login files whose
+# JSON scopes or Copilot gho_ tokens are over-scoped (or unverified).
+purge_overscoped_logins() {
+  local role="$1" home="$2" rel tmp
+  tmp="$(mktemp)" || return 1
+  for rel in $(model_home_login_files); do
+    [ "$rel" = ".copilot/mcp-config.json" ] && continue
+    if "run_as_$role" test -f "$home/$rel"; then
+      if "run_as_$role" cat "$home/$rel" >"$tmp" 2>/dev/null; then
+        local bad=0
+        if ! audit_login_scopes "$tmp" >/dev/null 2>&1; then
+          bad=1
+        elif [[ "$rel" == *copilot* || "$rel" == *github-copilot* ]]; then
+          local toks tok scopes
+          toks="$(grep -oE 'gho_[A-Za-z0-9]{20,}' -- "$tmp" 2>/dev/null || true)"
+          if [ -n "$toks" ]; then
+            while IFS= read -r tok; do
+              [ -n "$tok" ] || continue
+              if ! scopes="$(check_github_oauth_scopes "$tok")"; then
+                bad=1; break
+              fi
+              local scope_words=()
+              IFS=', ' read -ra scope_words <<<"$scopes"
+              if [ "${#scope_words[@]}" -gt 0 ] && has_write_scopes "${scope_words[@]}"; then
+                bad=1; break
+              fi
+            done <<<"$toks"
+          fi
+        fi
+        if [ "$bad" -eq 1 ]; then
+          warn "removing stale over-scoped login $home/$rel"
+          "run_as_$role" rm -f -- "$home/$rel"
+        fi
+      fi
+    fi
+  done
+  rm -f -- "$tmp"
+}
+
+verify_cross_home_isolation() {
+  local rel
+  say "verifying $VALIDATE_USER cannot read $MODEL_HOME or $REVIEW_HOME"
+  require_unreadable "$MODEL_HOME" required validate
+  require_unreadable "$REVIEW_HOME" required validate
+  say "verifying $MODEL_USER and $REVIEW_USER cannot read each other's homes"
+  require_unreadable "$MODEL_HOME" required review
+  require_unreadable "$REVIEW_HOME" required model
+  for rel in $(model_home_login_files); do
+    require_unreadable "$MODEL_HOME/$rel" optional validate
+    require_unreadable "$REVIEW_HOME/$rel" optional validate
+    require_unreadable "$MODEL_HOME/$rel" optional review
+    require_unreadable "$REVIEW_HOME/$rel" optional model
+  done
 }
 
 # Resolve one configured path as the invoking user. Prints the path or nothing.
@@ -447,15 +630,18 @@ main() {
     shift
   done
   valid_model_user "$MODEL_USER" || die "SUMMA42_MODEL_USER=$MODEL_USER is not a valid system user name (^[a-z_][a-z0-9_-]{0,31}\$)"
-
+  valid_model_user "$REVIEW_USER" || die "SUMMA42_REVIEW_MODEL_USER=$REVIEW_USER is not a valid system user name (^[a-z_][a-z0-9_-]{0,31}\$)"
   valid_model_user "$VALIDATE_USER" || die "SUMMA42_VALIDATION_USER=$VALIDATE_USER is not a valid system user name (^[a-z_][a-z0-9_-]{0,31}\$)"
+  [ "$REVIEW_USER" != "$MODEL_USER" ] || die "the review model user must differ from the model user: reviewer and producer must be isolated"
   [ "$VALIDATE_USER" != "$MODEL_USER" ] || die "the validation user must differ from the model user: candidate code must not run with the model's logins"
+  [ "$VALIDATE_USER" != "$REVIEW_USER" ] || die "the validation user must differ from the review model user: candidate code must not run with the reviewer's logins"
 
   [ "$(id -u)" -eq 0 ] || die "run with sudo: sudo $0"
   OWNER="${SUDO_USER:-}"
   [ -n "$OWNER" ] && [ "$OWNER" != root ] || die "run via sudo from the Box owner's account (SUDO_USER is unset or root)"
   valid_owner_name "$OWNER" || die "unusual owner account name: $OWNER"
   [ "$OWNER" != "$MODEL_USER" ] || die "the model user must differ from the Box owner"
+  [ "$OWNER" != "$REVIEW_USER" ] || die "the review model user must differ from the Box owner"
   [ "$OWNER" != "$VALIDATE_USER" ] || die "the validation user must differ from the Box owner"
   OWNER_HOME="$(getent passwd "$OWNER" | cut -d: -f6)"
   [ -d "$OWNER_HOME" ] || die "cannot find the home directory of $OWNER"
@@ -465,14 +651,24 @@ main() {
   if is_wsl; then wsl_warning; fi
 
   # 1. The users. Root creates them and their homes, nothing more.
-  ensure_user "$MODEL_USER" "runs the model CLIs"
+  ensure_user "$MODEL_USER" "runs the producer CLIs"
   MODEL_HOME="$ENSURED_HOME"
+  ensure_user "$REVIEW_USER" "runs the reviewer CLIs and Copilot"
+  REVIEW_HOME="$ENSURED_HOME"
   ensure_user "$VALIDATE_USER" "runs validation commands, i.e. candidate code; holds no credentials"
   VALIDATE_HOME="$ENSURED_HOME"
+  [ "$MODEL_HOME" != "$REVIEW_HOME" ] || die "the model and review users share the home $MODEL_HOME"
   [ "$MODEL_HOME" != "$VALIDATE_HOME" ] || die "the model and validation users share the home $MODEL_HOME"
+  [ "$REVIEW_HOME" != "$VALIDATE_HOME" ] || die "the review and validation users share the home $REVIEW_HOME"
+  [ "$(id -u "$MODEL_USER")" -ne "$(id -u "$REVIEW_USER")" ] || die "the model and review users share uid $(id -u "$MODEL_USER")"
+  [ "$(id -u "$MODEL_USER")" -ne "$(id -u "$VALIDATE_USER")" ] || die "the model and validation users share uid $(id -u "$MODEL_USER")"
+  [ "$(id -u "$REVIEW_USER")" -ne "$(id -u "$VALIDATE_USER")" ] || die "the review and validation users share uid $(id -u "$REVIEW_USER")"
   say "ensuring $MODEL_HOME and $MODEL_HOME/tmp are private to $MODEL_USER (0700), as $MODEL_USER"
   run_as_model chmod 0700 "$MODEL_HOME"
   run_as_model mkdir -p -m 0700 "$MODEL_HOME/tmp"
+  say "ensuring $REVIEW_HOME and $REVIEW_HOME/tmp are private to $REVIEW_USER (0700), as $REVIEW_USER"
+  run_as_review chmod 0700 "$REVIEW_HOME"
+  run_as_review mkdir -p -m 0700 "$REVIEW_HOME/tmp"
   say "ensuring $VALIDATE_HOME and $VALIDATE_HOME/tmp are private to $VALIDATE_USER (0700), as $VALIDATE_USER"
   run_as_validate chmod 0700 "$VALIDATE_HOME"
   run_as_validate mkdir -p -m 0700 "$VALIDATE_HOME/tmp"
@@ -480,32 +676,38 @@ main() {
 
   # 2. sudoers drop-ins, one per user.
   install_sudoers "$SUDOERS_FILE" "$MODEL_USER"
+  install_sudoers "$SUDOERS_REVIEW_FILE" "$REVIEW_USER"
   install_sudoers "$SUDOERS_VALIDATE_FILE" "$VALIDATE_USER"
 
   # 3. Lock the Box owner's secret directories (never through a symlink).
   chmod_owner_dir "$SUMMA_HOME"
   chmod_owner_dir "$OWNER_HOME/.config/gh"
 
-  # 3b. Optionally copy the minimal auth files of the invoking user's model CLIs.
+  # 3b. Purge stale over-scoped logins, then copy minimal role-separated auth.
+  purge_overscoped_logins model "$MODEL_HOME"
+  purge_overscoped_logins review "$REVIEW_HOME"
   copied=(); skipped=()
-  say "CLI auth import (asks per CLI; --yes approves all except Copilot; nothing is copied without a TTY or --yes)"
-  local cli rc
-  for cli in claude codex commandcode gemini copilot; do
-    rc=0; import_cli "$cli" || rc=$?
-    case "$rc" in
-      0) ;;
-      2) die "refusing to continue; a token pattern was found in $cli's files and nothing from $cli was copied" ;;
-      *) die "copying the $cli auth files failed (exit $rc); the copy may be incomplete; fix the error above and re-run" ;;
-    esac
+  say "CLI auth import (asks per CLI and role; --yes approves non-Copilot CLIs; nothing is copied without a TTY or --yes)"
+  local cli role rc
+  for role in model review; do
+    for cli in claude codex commandcode gemini copilot; do
+      [ "$cli" = copilot ] && [ "$role" = model ] && continue
+      rc=0; import_cli "$cli" "$role" || rc=$?
+      case "$rc" in
+        0) ;;
+        2) die "refusing to continue; a token pattern was found in $cli's files and nothing from $cli was copied" ;;
+        *) die "copying the $cli auth files for $role failed (exit $rc); the copy may be incomplete; fix the error above and re-run" ;;
+      esac
+    done
   done
   if [ "${#skipped[@]}" -gt 0 ]; then
-    say "skipped (log in as $MODEL_USER instead, or re-run): ${skipped[*]}"
+    say "skipped (log in directly as $MODEL_USER / $REVIEW_USER instead, or re-run): ${skipped[*]}"
   fi
 
-  # 4. Prove the model user cannot read the secrets. Every path is resolved as
-  # the invoking user and the check fails if one cannot be evaluated.
-  say "verifying $MODEL_USER and $VALIDATE_USER cannot read the Box secrets"
+  # 4. Prove dedicated users cannot read the secrets or cross-role homes.
+  say "verifying $MODEL_USER, $REVIEW_USER and $VALIDATE_USER cannot read the Box secrets"
   run_as_model test -r /etc/passwd || die "cannot run commands as $MODEL_USER; the readability check would be vacuous"
+  run_as_review test -r /etc/passwd || die "cannot run commands as $REVIEW_USER; the readability check would be vacuous"
   run_as_validate test -r /etc/passwd || die "cannot run commands as $VALIDATE_USER; the readability check would be vacuous"
   local db evidence
   db="${arg_db:-$(owner_config_value database_path)}"
@@ -513,7 +715,7 @@ main() {
   [ -n "$db" ] || die "cannot determine the state DB path (no database_path in $SUMMA_HOME/config.json); pass --db FILE"
   [ -n "$evidence" ] || die "cannot determine the evidence path; pass --evidence DIR"
   local who
-  for who in model validate; do
+  for who in model review validate; do
     require_unreadable "$SUMMA_HOME" required "$who"
     require_unreadable "$SUMMA_HOME/keys" required "$who"
     require_unreadable "$SUMMA_HOME/keys/owner.key" optional "$who"
@@ -537,35 +739,31 @@ main() {
     leaked="$("run_as_$who" find "$SUMMA_HOME" "$OWNER_HOME/.config/gh" "$(dirname "$db")" "$evidence" -readable 2>/dev/null | head -5 || true)"
     if [ -n "$leaked" ]; then printf '  READABLE by %s (BAD):\n%s\n' "$who" "$leaked" >&2; fail=1; fi
   done
-  # Candidate code must not reach the model's logins: the validation user may
-  # not read the model home (mode 0700), nor any copied login file in it.
-  say "verifying $VALIDATE_USER cannot read the model home $MODEL_HOME"
-  require_unreadable "$MODEL_HOME" required validate
-  local rel
-  for rel in $(model_home_login_files); do
-    require_unreadable "$MODEL_HOME/$rel" optional validate
-  done
+  verify_cross_home_isolation
   check_toolchain
   if is_wsl && run_as_model test -r /mnt/c 2>/dev/null; then
     warn "$MODEL_USER can read /mnt/c (see the WSL warning above)."
   fi
+  if is_wsl && run_as_review test -r /mnt/c 2>/dev/null; then
+    warn "$REVIEW_USER can read /mnt/c (see the WSL warning above)."
+  fi
   if is_wsl && run_as_validate test -r /mnt/c 2>/dev/null; then
     warn "$VALIDATE_USER can read /mnt/c (see the WSL warning above)."
   fi
-  [ "$fail" -eq 0 ] || die "a dedicated user can read Box secrets (or the validation user the model home) or a secret path could not be evaluated; fix the lines above and re-run"
+  [ "$fail" -eq 0 ] || die "a dedicated user can read Box secrets (or a role home) or a secret path could not be evaluated; fix the lines above and re-run"
 
   cat <<NEXT
 
 Done. Next steps (as the Box owner, not root):
 
-  1. For any CLI whose login was not copied, log it in AS the model user (credentials live in $MODEL_HOME):
+  1. For any CLI whose login was not copied, log it in AS its role user (producer in $MODEL_HOME, reviewer in $REVIEW_HOME):
        sudo -u $MODEL_USER -H codex login
-       sudo -u $MODEL_USER -H agy        # sign in
-       sudo -u $MODEL_USER -H claude     # /login
-     The Copilot executor also needs its MCP server definition in $MODEL_HOME/.copilot/mcp-config.json
-     (offered above with the same content scan, or create it as the model user).
+       sudo -u $REVIEW_USER -H claude     # /login
+       sudo -u $MODEL_USER -H agy         # sign in
+     The Copilot executor runs as $REVIEW_USER and needs its MCP server definition in $REVIEW_HOME/.copilot/mcp-config.json
+     (offered above with the same content scan, or create it as $REVIEW_USER).
      Never log in as $VALIDATE_USER: it must hold no credentials (this script refuses if it finds any).
-  2. Make sure the model binaries are executable by $MODEL_USER (not under $OWNER_HOME).
+  2. Make sure the model binaries are executable by $MODEL_USER and $REVIEW_USER (not under $OWNER_HOME).
   3. Validation runs candidate code as $VALIDATE_USER with GOTOOLCHAIN=local. Install the Go toolchain this
      repository needs where $VALIDATE_USER can execute it (summa42 itself needs go1.27.x, e.g. under
      /usr/local/go1.27; /usr/bin/go is usually older) and list its bin directory:
@@ -574,8 +772,9 @@ Done. Next steps (as the Box owner, not root):
      The Go build cache is per run, inside the scratch directory, and removed with it.
   4. Tell Summa42 which users to use:
        export SUMMA42_MODEL_USER=$MODEL_USER
+       export SUMMA42_REVIEW_MODEL_USER=$REVIEW_USER
        export SUMMA42_VALIDATION_USER=$VALIDATE_USER
-     or pass --model-user=$MODEL_USER and --validation-user=$VALIDATE_USER to summa42-box.
+     or pass --model-user=$MODEL_USER, --review-model-user=$REVIEW_USER and --validation-user=$VALIDATE_USER to summa42-box.
   5. Verify on this real host: see "Verify isolation on a real host" in the README.
 NEXT
 }

@@ -409,5 +409,107 @@ class Copy(unittest.TestCase):
         self.assertEqual(Path(self.model + "/.codex/auth.json").read_text(), "old")
 
 
+class ReviewerRoleAndScopeAudit(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = self.tmp.name
+        self.owner, self.model, self.review, self.validate, self.summa = (
+            os.path.join(d, n) for n in ("owner", "model", "review", "validate", "owner/.summa42")
+        )
+        for p in (self.owner + "/.codex", self.owner + "/.copilot", self.model, self.review, self.validate, self.summa):
+            os.makedirs(p)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_review_user_must_be_valid_and_differ_from_other_users(self):
+        env = dict(os.environ, SUMMA42_REVIEW_MODEL_USER="x;ALL")
+        r = subprocess.run(["bash", SCRIPT], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("SUMMA42_REVIEW_MODEL_USER", r.stderr)
+        for bad_env in (
+            dict(os.environ, SUMMA42_MODEL_USER="same-user", SUMMA42_REVIEW_MODEL_USER="same-user"),
+            dict(os.environ, SUMMA42_MODEL_USER="prod-user", SUMMA42_REVIEW_MODEL_USER="val-user", SUMMA42_VALIDATION_USER="val-user"),
+        ):
+            r = subprocess.run(["bash", SCRIPT], capture_output=True, text=True, env=bad_env, stdin=subprocess.DEVNULL)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("differ", r.stderr)
+
+    def test_audit_login_scopes_rejects_write_scopes_and_allows_read_only(self):
+        bad_arr = os.path.join(self.tmp.name, "bad-arr.json")
+        bad_str = os.path.join(self.tmp.name, "bad-str.json")
+        good = os.path.join(self.tmp.name, "good.json")
+        Path(bad_arr).write_text('{"oauth":{"scopes":["read:user","repo"]}}')
+        Path(bad_str).write_text('{"tokens":{"scope":"user:email vso.code_write"}}')
+        Path(good).write_text('{"oauth":{"scopes":["read:user","user:email"]}}')
+        self.assertNotEqual(bash(f"audit_login_scopes {bad_arr}").returncode, 0)
+        self.assertNotEqual(bash(f"audit_login_scopes {bad_str}").returncode, 0)
+        self.assertEqual(bash(f"audit_login_scopes {good}").returncode, 0)
+
+    def test_check_github_oauth_scopes_passes_token_on_stdin_not_argv(self):
+        bindir = os.path.join(self.tmp.name, "bin")
+        os.makedirs(bindir)
+        argv_log = os.path.join(self.tmp.name, "curl.argv")
+        stdin_log = os.path.join(self.tmp.name, "curl.stdin")
+        tok = "gho_" + "a" * 30
+        curl = os.path.join(bindir, "curl")
+        Path(curl).write_text(f"""#!/bin/sh
+printf '%s\\n' "$*" > {argv_log}
+cat > {stdin_log}
+printf 'HTTP/2 200\\r\\nX-OAuth-Scopes: read:user, user:email\\r\\n\\r\\n'
+""")
+        os.chmod(curl, 0o755)
+        r = bash(f'PATH="{bindir}:$PATH"; check_github_oauth_scopes "{tok}"')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("read:user", r.stdout)
+        self.assertNotIn(tok, Path(argv_log).read_text())
+        self.assertIn(tok, Path(stdin_log).read_text())
+
+    def test_copilot_drops_write_and_offline_gho_tokens_but_keeps_mcp_config(self):
+        tok = "gho_" + "b" * 30
+        Path(self.owner + "/.copilot/config.json").write_text('{"oauth_token":"' + tok + '"}')
+        Path(self.owner + "/.copilot/mcp-config.json").write_text('{"mcpServers":{"ado":{"command":"/usr/bin/ado-mcp"}}}')
+        for stub in ("echo 'repo, read:user'", "return 1"):
+            with tempfile.TemporaryDirectory() as dest:
+                r = bash(f"""
+                    OWNER_HOME={self.owner}; MODEL_HOME={dest}; REVIEW_HOME={dest}; SUMMA_HOME={self.summa}; ASSUME_YES=0
+                    copied=(); skipped=()
+                    run_as_model() {{ env HOME="$MODEL_HOME" "$@"; }}
+                    run_as_review() {{ env HOME="$REVIEW_HOME" "$@"; }}
+                    ask() {{ return 0; }}
+                    check_github_oauth_scopes() {{ {stub}; }}
+                    import_cli copilot review
+                """)
+                self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+                self.assertFalse(os.path.exists(dest + "/.copilot/config.json"), stub)
+                self.assertTrue(os.path.exists(dest + "/.copilot/mcp-config.json"), stub)
+
+    def test_stale_over_scoped_logins_are_purged_on_rerun(self):
+        os.makedirs(self.model + "/.codex")
+        stale = self.model + "/.codex/auth.json"
+        Path(stale).write_text('{"scopes":["repo"]}')
+        r = bash(f"""
+            MODEL_HOME={self.model}; REVIEW_HOME={self.review}
+            run_as_model() {{ env HOME="$MODEL_HOME" "$@"; }}
+            run_as_review() {{ env HOME="$REVIEW_HOME" "$@"; }}
+            purge_overscoped_logins model "$MODEL_HOME"
+        """)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertFalse(os.path.exists(stale))
+
+    def test_cross_home_unreadability_verifies_model_and_review_roles(self):
+        r = bash(f"""
+            MODEL_HOME={self.model}; REVIEW_HOME={self.review}; VALIDATE_HOME={self.validate}
+            MODEL_USER=summa42-model; REVIEW_USER=summa42-review; VALIDATE_USER=summa42-validate
+            fail=0
+            run_as_model() {{ return 0; }}
+            run_as_review() {{ return 1; }}
+            run_as_validate() {{ return 1; }}
+            verify_cross_home_isolation
+            echo "fail=$fail"
+        """)
+        self.assertIn("fail=1", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
