@@ -3,9 +3,11 @@ package modelrun_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -158,6 +160,41 @@ func atomicPIDWrite(path string) string {
 	return "echo $$ > " + path + ".tmp && mv " + path + ".tmp " + path + "\n"
 }
 
+func pidAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	if syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	if runtime.GOOS == "linux" {
+		// In a container whose PID 1 does not reap reparented children, a killed
+		// process stays a zombie ('Z') indefinitely; syscall.Kill(pid, 0) still
+		// succeeds on zombies even though the process is already dead.
+		if raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); err == nil {
+			if i := bytes.LastIndexByte(raw, ')'); i >= 0 && len(raw) > i+2 {
+				if state := raw[i+2]; state == 'Z' || state == 'X' {
+					return false
+				}
+			}
+		} else if errors.Is(err, os.ErrNotExist) {
+			if _, procErr := os.Stat("/proc/self/stat"); procErr == nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func TestPidAliveGuardsNonPositivePIDs(t *testing.T) {
+	if pidAlive(0) || pidAlive(-1) {
+		t.Fatal("non-positive PID reported alive")
+	}
+	if !pidAlive(os.Getpid()) {
+		t.Fatal("current process reported dead")
+	}
+}
+
 func pidFileAlive(t *testing.T, path string) (alive bool) {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -168,9 +205,9 @@ func pidFileAlive(t *testing.T, path string) (alive bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A killed process is a zombie until its parent reaps it; give that a moment.
+	// Wait briefly for a signalled process to finish exiting or enter zombie state.
 	for i := 0; i < 100; i++ {
-		if syscall.Kill(pid, 0) != nil {
+		if !pidAlive(pid) {
 			return false
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -537,5 +574,5 @@ func pidFileAlive2(path string) bool {
 		return false
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	return err == nil && syscall.Kill(pid, 0) == nil
+	return err == nil && pidAlive(pid)
 }

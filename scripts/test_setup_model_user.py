@@ -19,7 +19,14 @@ SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "setup-model-u
 def bash(body, env=None, cwd=None):
     full = dict(os.environ)
     full.update(env or {})
-    return subprocess.run(["bash", "-c", f"source {SCRIPT}\n{body}"], capture_output=True, text=True, env=full, cwd=cwd)
+    return subprocess.run(
+        ["bash", "-c", f"source {SCRIPT}\n{body}"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=full,
+        cwd=cwd,
+    )
 
 
 class Pure(unittest.TestCase):
