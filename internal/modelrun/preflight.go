@@ -16,10 +16,12 @@ import (
 // shared with the model user then stops the Box instead of leaking silently.
 // It runs for every dedicated user (model and validation), per user and path.
 var probe struct {
-	mu       sync.Mutex
-	required []string
-	optional []string
-	results  map[string]error
+	mu           sync.Mutex
+	required     []string
+	optional     []string
+	producerHome string
+	reviewerHome string
+	results      map[string]error
 }
 
 // RequireUnreadable registers the Box paths the dedicated users must not be
@@ -41,35 +43,53 @@ func RegisterProbe(required, optional []string) {
 	probe.results = map[string]error{}
 }
 
+// RegisterRoleHomes registers the producer and reviewer home directories so
+// every launch as one role probes that the opposite role's home cannot be read
+// or traversed. Passing empty strings clears the registration.
+func RegisterRoleHomes(producerHome, reviewerHome string) {
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	probe.producerHome = producerHome
+	probe.reviewerHome = reviewerHome
+	probe.results = map[string]error{}
+}
+
 type probePath struct {
-	path     string
-	optional bool
+	path           string
+	optional       bool
+	checkTraversal bool
 }
 
 func probeIsolation(ctx context.Context, spec Spec) error {
 	probe.mu.Lock()
 	defer probe.mu.Unlock()
-	if len(probe.required)+len(probe.optional)+len(spec.Unreadable) == 0 {
+	var paths []probePath
+	for _, p := range probe.required {
+		paths = append(paths, probePath{path: p})
+	}
+	if probe.producerHome != "" && spec.RunAs.HomeDir != probe.producerHome {
+		paths = append(paths, probePath{path: probe.producerHome, checkTraversal: true})
+	}
+	if probe.reviewerHome != "" && spec.RunAs.HomeDir != probe.reviewerHome {
+		paths = append(paths, probePath{path: probe.reviewerHome, checkTraversal: true})
+	}
+	for _, p := range spec.Unreadable {
+		paths = append(paths, probePath{path: p})
+	}
+	for _, p := range probe.optional {
+		paths = append(paths, probePath{path: p, optional: true})
+	}
+	if len(paths) == 0 {
 		return nil
 	}
 	if probe.results == nil {
 		probe.results = map[string]error{}
 	}
-	var paths []probePath
-	for _, p := range probe.required {
-		paths = append(paths, probePath{p, false})
-	}
-	for _, p := range spec.Unreadable {
-		paths = append(paths, probePath{p, false})
-	}
-	for _, p := range probe.optional {
-		paths = append(paths, probePath{p, true})
-	}
 	name := spec.RunAs.Username
 	// Positive control: a failing launcher would also make `test -r` fail, which
 	// must not read as "unreadable".
 	if err := cachedProbe(ctx, name, "", func() error {
-		code, err := probeTest(ctx, spec, "/etc/passwd")
+		code, err := probeTest(ctx, spec, "/etc/passwd", false)
 		if err != nil || code != 0 {
 			return fmt.Errorf("isolation probe: cannot run commands as user %q (exit %d, %v): check the sudoers rule from scripts/setup-model-user.sh", name, code, err)
 		}
@@ -99,8 +119,12 @@ func cachedProbe(ctx context.Context, user, path string, fn func() error) error 
 	return err
 }
 
-func probeTest(ctx context.Context, spec Spec, path string) (int, error) {
-	cmd, err := build(ctx, Spec{RunAs: spec.RunAs, Binary: "/usr/bin/test", Args: []string{"-r", path}, Timeout: 30 * time.Second}, false)
+func probeTest(ctx context.Context, spec Spec, path string, checkDirTraversal bool) (int, error) {
+	args := []string{"-r", path}
+	if checkDirTraversal {
+		args = []string{"-r", path, "-o", "-x", path}
+	}
+	cmd, err := build(ctx, Spec{RunAs: spec.RunAs, Binary: "/usr/bin/test", Args: args, Timeout: 30 * time.Second}, false)
 	if err != nil {
 		return -1, err
 	}
@@ -116,13 +140,14 @@ func probeTest(ctx context.Context, spec Spec, path string) (int, error) {
 }
 
 func checkUnreadable(ctx context.Context, spec Spec, p probePath) error {
-	if _, err := os.Lstat(p.path); err != nil {
+	info, err := os.Lstat(p.path)
+	if err != nil {
 		if p.optional && os.IsNotExist(err) {
 			return nil
 		}
 		return fmt.Errorf("isolation probe: %s cannot be checked: %w", p.path, err)
 	}
-	code, err := probeTest(ctx, spec, p.path)
+	code, err := probeTest(ctx, spec, p.path, p.checkTraversal && info.IsDir())
 	switch {
 	case err != nil:
 		return fmt.Errorf("isolation probe on %s: %w", p.path, err)

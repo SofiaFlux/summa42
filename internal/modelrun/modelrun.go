@@ -7,6 +7,8 @@ package modelrun
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -70,6 +73,10 @@ const reservedPrefix = "__s42_"
 // signal another uid's processes, nor sudo, which runs as root).
 const pgidMarker = "__S42_PGID="
 
+// ErrSurvivorDetected is returned when post-call cleanup finds a live process
+// still belonging to the call's cgroup, process group, or scratch directory.
+var ErrSurvivorDetected = errors.New("modelrun: process survived post-call cleanup")
+
 // ResolveRunAsUser validates the dedicated model user: it must be named, exist,
 // and be neither the current user nor root. This is the fail-closed gate that
 // keeps a model process from ever sharing a uid with the Box's secrets.
@@ -78,17 +85,48 @@ func ResolveRunAsUser(name string) (*user.User, error) {
 }
 
 // ResolveValidationUser is the same gate for the user that runs validation
-// commands (candidate code). It must also differ from the model user: the
-// model user holds the CLI logins, which candidate code must never reach.
-func ResolveValidationUser(name string, modelUser *user.User) (*user.User, error) {
+// commands (candidate code). It must also differ from the model user (and any
+// extra excluded users such as the reviewer): candidate code must never run with
+// any model role's logins.
+func ResolveValidationUser(name string, modelUser *user.User, others ...*user.User) (*user.User, error) {
 	target, err := resolveUser(name, "validation user", "set --validation-user or SUMMA42_VALIDATION_USER to a dedicated OS user with no credentials (see scripts/setup-model-user.sh)")
 	if err != nil {
 		return nil, err
 	}
-	if modelUser == nil || modelUser.Uid == target.Uid || modelUser.Username == target.Username {
+	if modelUser == nil {
 		return nil, fmt.Errorf("validation user %q must differ from the model user: candidate code must not run with the model's logins", name)
 	}
+	for _, other := range append([]*user.User{modelUser}, others...) {
+		if other == nil {
+			continue
+		}
+		if usersOverlap(target, other) {
+			return nil, fmt.Errorf("validation user %q must differ from %q: candidate code must not run with a model role's logins", name, other.Username)
+		}
+	}
 	return target, nil
+}
+
+// ResolveReviewerUser validates the dedicated reviewer OS user and ensures it
+// shares neither UID, username, nor home directory with any other role user.
+func ResolveReviewerUser(name string, others ...*user.User) (*user.User, error) {
+	target, err := resolveUser(name, "reviewer model user", "set --review-model-user or SUMMA42_REVIEW_MODEL_USER to a dedicated OS user distinct from the producer and validation users (see scripts/setup-model-user.sh)")
+	if err != nil {
+		return nil, err
+	}
+	for _, other := range others {
+		if other == nil {
+			continue
+		}
+		if usersOverlap(target, other) {
+			return nil, fmt.Errorf("reviewer model user %q must differ from %q (same username, uid, or home directory)", name, other.Username)
+		}
+	}
+	return target, nil
+}
+
+func usersOverlap(a, b *user.User) bool {
+	return a.Uid == b.Uid || a.Username == b.Username || a.HomeDir == b.HomeDir
 }
 
 func resolveUser(name, role, hint string) (*user.User, error) {
@@ -237,15 +275,22 @@ func build(ctx context.Context, spec Spec, probed bool) (*Cmd, error) {
 	// SUDO_*, MAIL, LOGNAME, USER, SHELL are dropped with everything else). The
 	// script's own variables carry the reserved prefix so no forwarded name
 	// can shadow them.
+	callID := randomCallID()
+	var scratchDir string
 	envCall := `/usr/bin/env -i -C "$__s42_dir" HOME="$__s42_home" PATH="$__s42_path" LANG="$__s42_lang" TMPDIR="$__s42_tmp" ` +
 		strings.Join(assigns, " ") + ` "$@"`
 	script := `__s42_dir=$1; __s42_home=$2; __s42_path=$3; __s42_lang=$4; shift 4; __s42_tmp="$__s42_home/tmp"; exec ` + envCall
+	argvTail := []string{dir, home, path, lang}
 	if spec.Scratch {
-		script = `__s42_dir=$1; __s42_home=$2; __s42_path=$3; __s42_lang=$4; shift 4; ` +
-			`find "$__s42_home/tmp" -maxdepth 1 -type d -name 'run.*' -mtime +0 -exec rm -rf -- {} + >/dev/null 2>&1; ` +
-			`__s42_dir=$(mktemp -d "$__s42_home/tmp/run.XXXXXX") || exit 125; __s42_tmp=$__s42_dir; ` +
-			`trap 'chmod -R u+w -- "$__s42_dir" 2>/dev/null; rm -rf -- "$__s42_dir"' EXIT; trap 'exit 143' HUP INT TERM; ` +
+		scratchDir = filepath.Join(home, "tmp", "run."+callID)
+		script = `__s42_dir=$1; __s42_home=$2; __s42_path=$3; __s42_lang=$4; __s42_call=$5; shift 5; ` +
+			`[ ! -L "$__s42_home/tmp" ] && [ -d "$__s42_home/tmp" ] || exit 125; ` +
+			`find "$__s42_home/tmp" -maxdepth 1 -type d -name 'run.*' -mtime +0 -exec sh -c 'chmod -R u+rwX -- "$@" 2>/dev/null; rm -rf -- "$@"' sh {} + >/dev/null 2>&1; ` +
+			`__s42_dir="$__s42_home/tmp/run.$__s42_call"; ` +
+			`(umask 077 && mkdir -- "$__s42_dir") || exit 125; __s42_tmp=$__s42_dir; ` +
+			`trap 'chmod -R u+rwX -- "$__s42_dir" 2>/dev/null; rm -rf -- "$__s42_dir"' EXIT; trap 'exit 143' HUP INT TERM; ` +
 			envCall + `; exit $?`
+		argvTail = append(argvTail, callID)
 	}
 	// The outermost process prints its pid (which timeout keeps through exec and
 	// makes the process group leader) so the Box can later signal the group
@@ -254,14 +299,20 @@ func build(ctx context.Context, spec Spec, probed bool) (*Cmd, error) {
 	argv := launchPrefix(spec.RunAs.Username, preserved)
 	argv = append(argv, shellBinary, "-c", prologue, "sh",
 		timeoutBinary, "--kill-after="+strconv.FormatInt(int64(KillAfter/time.Second), 10)+"s", strconv.FormatInt(seconds, 10)+"s",
-		shellBinary, "-c", script, "sh", dir, home, path, lang, spec.Binary)
+		shellBinary, "-c", script, "sh")
+	argv = append(argv, argvTail...)
+	argv = append(argv, spec.Binary)
 	argv = append(argv, spec.Args...)
 
 	// The gate stops a running call by cancelling this context, so a refusal
 	// takes the same path as a cancel by the caller: exec runs cmd.Cancel and
 	// arms WaitDelay. Wait releases it.
 	ctx, stop := context.WithCancel(ctx)
-	c := &Cmd{Cmd: exec.CommandContext(ctx, argv[0], argv[1:]...), runAs: spec.RunAs.Username, done: make(chan struct{}), stop: stop}
+	c := &Cmd{
+		Cmd: exec.CommandContext(ctx, argv[0], argv[1:]...), runAs: spec.RunAs.Username,
+		callID: callID, scratchDir: scratchDir, trackCleanup: probed,
+		done: make(chan struct{}), stop: stop,
+	}
 	cmd := c.Cmd
 	// The launcher carries only PATH (to find sudo) and the allowlisted values.
 	// "/" because the Box's cwd may not be reachable by the model user.
@@ -295,11 +346,15 @@ func validEnvName(name string) bool {
 // methods that refuse.
 type Cmd struct {
 	*exec.Cmd
-	runAs    string
-	pgid     atomic.Int64
-	done     chan struct{}
-	doneOnce sync.Once
-	filter   *markerFilter
+	runAs        string
+	callID       string
+	scratchDir   string
+	trackCleanup bool
+	cgroupDir    string
+	pgid         atomic.Int64
+	done         chan struct{}
+	doneOnce     sync.Once
+	filter       *markerFilter
 	// stop cancels the call's context; the gate uses it to stop the process.
 	stop context.CancelFunc
 	// gateErr is set when the gate stopped the running process.
@@ -321,10 +376,27 @@ func (c *Cmd) Start() error {
 		c.stop()
 		return err
 	}
-	if err := c.Cmd.Start(); err != nil {
+	var cgFile *os.File
+	if c.trackCleanup {
+		var cgErr error
+		cgFile, cgErr = c.setupCgroup(c.callID)
+		if cgErr != nil {
+			log.Printf("modelrun: cgroup v2 unavailable (%v); falling back to per-call process group", cgErr)
+		}
+	}
+	startErr := c.Cmd.Start()
+	if cgFile != nil {
+		_ = cgFile.Close()
+	}
+	if startErr != nil && c.cgroupDir != "" {
+		log.Printf("modelrun: cgroup launch failed (%v); retrying in per-call process group mode", startErr)
+		c.clearCgroupFD()
+		startErr = c.Cmd.Start()
+	}
+	if startErr != nil {
 		c.doneOnce.Do(func() { close(c.done) })
 		c.stop()
-		return err
+		return startErr
 	}
 	c.gateDone = make(chan struct{})
 	go c.watchGate(currentGate(), gateInterval, gateFailureLimit)
@@ -340,6 +412,15 @@ func (c *Cmd) Wait() error {
 	}
 	if stopped := c.gateErr.Load(); stopped != nil {
 		err = fmt.Errorf("modelrun: process stopped: %w", *stopped)
+	}
+	if c.trackCleanup {
+		if cleanupErr := c.cleanupAfterWait(); cleanupErr != nil {
+			if err == nil {
+				err = cleanupErr
+			} else if errors.Is(cleanupErr, ErrSurvivorDetected) {
+				err = errors.Join(err, cleanupErr)
+			}
+		}
 	}
 	if c.filter != nil {
 		c.filter.flush()
@@ -400,27 +481,125 @@ func (c *Cmd) killModelGroup(pgid int64) {
 	// The seams are read now, while this call still owns them. The KILL goroutine
 	// can outlive the call, and it must not read package state a later test writes.
 	grace := killGrace
-	prefix := launchPrefix(c.runAs, nil)
-	bin := killBinary
-	send := func(sig string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		argv := append(prefix, bin, "-"+sig, "--", "-"+strconv.FormatInt(pgid, 10))
-		kill := exec.CommandContext(ctx, argv[0], argv[1:]...)
-		kill.Env = []string{"PATH=" + defaultPATH}
-		kill.Dir = "/"
-		_ = kill.Run()
-	}
-	send("TERM")
+	runAs := c.runAs
+	_ = sendGroupSignal(context.Background(), runAs, "TERM", pgid)
 	go func() {
 		timer := time.NewTimer(grace)
 		defer timer.Stop()
 		select {
 		case <-c.done:
 		case <-timer.C:
-			send("KILL")
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = c.killCgroup(ctx)
+			_ = sendGroupSignal(ctx, runAs, "KILL", pgid)
 		}
 	}()
+}
+
+func sendGroupSignal(ctx context.Context, runAs, sig string, pgid int64) error {
+	if pgid <= 1 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	argv := append(launchPrefix(runAs, nil), killBinary, "-"+sig, "--", "-"+strconv.FormatInt(pgid, 10))
+	kill := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	kill.Env = []string{"PATH=" + defaultPATH}
+	kill.Dir = "/"
+	out, err := kill.CombinedOutput()
+	if err != nil && len(bytes.TrimSpace(out)) > 0 && !bytes.Contains(out, []byte("No such process")) {
+		return fmt.Errorf("signal -%s -%d as %s: %w: %s", sig, pgid, runAs, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (c *Cmd) cleanupAfterWait() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var errs []error
+	if c.cgroupDir != "" {
+		if err := c.cleanupCgroup(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	} else {
+		pgid := c.pgid.Load()
+		if pgid > 1 {
+			_ = sendGroupSignal(ctx, c.runAs, "KILL", pgid)
+		}
+		if err := detectPGIDFallbackSurvivors(ctx, c.runAs, pgid, c.scratchDir); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if c.scratchDir != "" {
+		const rmScript = `chmod -R u+rwX -- "$1" 2>/dev/null; rm -rf -- "$1"`
+		argv := append(launchPrefix(c.runAs, nil), "/usr/bin/env", "-i", "PATH="+defaultPATH, shellBinary, "-c", rmScript, "sh", c.scratchDir)
+		rmCmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		rmCmd.Env = []string{"PATH=" + defaultPATH}
+		rmCmd.Dir = "/"
+		if out, err := rmCmd.CombinedOutput(); err != nil {
+			errs = append(errs, fmt.Errorf("remove scratch %s as %s: %w: %s", c.scratchDir, c.runAs, err, strings.TrimSpace(string(out))))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func detectPGIDFallbackSurvivors(ctx context.Context, runAs string, pgid int64, scratchDir string) error {
+	if pgid <= 1 && scratchDir == "" {
+		return nil
+	}
+	const scan = `
+pg=$1; scr=$2; self=$$; survivors=""
+for p in /proc/[0-9]*; do
+  pid=${p#/proc/}
+  [ "$pid" = "$self" ] && continue
+  stat=$(cat "$p/stat" 2>/dev/null) || continue
+  tail=${stat##*) }
+  state=${tail%% *}
+  [ "$state" = "Z" ] || [ "$state" = "X" ] && continue
+  hit=0
+  if [ "$pg" -gt 1 ]; then
+    set -- $tail
+    [ "${3:-}" = "$pg" ] && hit=1
+  fi
+  if [ "$hit" -eq 0 ] && [ -n "$scr" ]; then
+    cwd=$(readlink "$p/cwd" 2>/dev/null || true)
+    if [ "$cwd" = "$scr" ]; then
+      hit=1
+    elif tr '\0' '\n' <"$p/environ" 2>/dev/null | grep -Fxq "TMPDIR=$scr"; then
+      hit=1
+    fi
+  fi
+  if [ "$hit" -eq 1 ]; then
+    kill -KILL "$pid" 2>/dev/null || true
+    survivors="$survivors $pid"
+  fi
+done
+if [ -n "$survivors" ]; then
+  printf '__S42_SURVIVOR=%s\n' "$survivors"
+  exit 42
+fi`
+	argv := append(launchPrefix(runAs, nil), "/usr/bin/env", "-i", "PATH="+defaultPATH, shellBinary, "-c", scan, "sh", strconv.FormatInt(pgid, 10), scratchDir)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = []string{"PATH=" + defaultPATH}
+	cmd.Dir = "/"
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if idx := bytes.Index(out, []byte("__S42_SURVIVOR=")); idx >= 0 {
+			pids := strings.TrimSpace(string(out[idx+len("__S42_SURVIVOR="):]))
+			return fmt.Errorf("%w: pids %s", ErrSurvivorDetected, pids)
+		}
+		return fmt.Errorf("survivor scan as %s: %w: %s", runAs, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func randomCallID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return "s42." + hex.EncodeToString(raw[:])
 }
 
 // sudoPrefix starts every line sudo itself prints (for example "sudo: unable

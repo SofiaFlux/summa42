@@ -379,7 +379,7 @@ func (a *Adapter) runOnce(ctx context.Context, prompt []byte, use *usage) ([]byt
 	}
 	cmd, err := modelrun.Command(runCtx, modelrun.Spec{
 		RunAs: a.runAs, Binary: a.binary, Args: args, Allowlist: a.allowlist, Timeout: a.timeout, Env: a.env(),
-		Scratch: a.commandCode || a.profile != nil,
+		Scratch: true,
 	})
 	if err != nil {
 		return nil, err
