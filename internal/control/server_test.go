@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -115,13 +116,27 @@ func (f *fakeAttemptReader) Attempt(context.Context, domain.ID) (domain.Attempt,
 	return f.attempt, nil
 }
 
-type fakeOperationReader struct{ operation domain.ExternalOperation }
+type fakeOperationReader struct {
+	operation   domain.ExternalOperation
+	opErr       error
+	approvalOp  *domain.ExternalOperation
+	approvalErr error
+}
 
 func (f *fakeOperationReader) ApprovalOperation(context.Context, domain.ID) (domain.ExternalOperation, error) {
+	if f.approvalErr != nil {
+		return domain.ExternalOperation{}, f.approvalErr
+	}
+	if f.approvalOp != nil {
+		return *f.approvalOp, nil
+	}
 	return f.operation, nil
 }
 
 func (f *fakeOperationReader) Operation(context.Context, domain.ID) (domain.ExternalOperation, error) {
+	if f.opErr != nil {
+		return domain.ExternalOperation{}, f.opErr
+	}
 	return f.operation, nil
 }
 
@@ -600,6 +615,48 @@ func TestApprovalDTOIncludesCanonicalIntent(t *testing.T) {
 	decodeJSON(t, response, &operation)
 	if string(operation.CanonicalIntent) != `{"branch":"fix/x"}` || operation.Attributes["caller"] != "cube" {
 		t.Fatalf("operation DTO lacks intent: %+v", operation)
+	}
+}
+
+func TestApprovalDTOShowsLiveAdoptedOperationAndFallsBackToSubject(t *testing.T) {
+	server, _, _, approvals, _, operations, _ := newTestServer(t)
+	approvals.record.SubjectID = "op-cancelled"
+	operations.operation = domain.ExternalOperation{
+		ID: "op-cancelled", State: domain.OperationCancelled,
+		Provider: "github", EffectSlotID: "slot-subject", DescriptorType: "github.pr.create",
+		IntentFingerprint: "fp-1", IntentRevision: 1, CanonicalIntent: []byte(`{"pr":"subject"}`),
+	}
+	live := domain.ExternalOperation{
+		ID: "op-live", State: domain.OperationPrepared,
+		Provider: "github", EffectSlotID: "slot-live", DescriptorType: "github.pr.create",
+		IntentFingerprint: "fp-1", IntentRevision: 1, CanonicalIntent: []byte(`{"pr":"live"}`),
+		Attributes: map[string]any{"adopted": true},
+	}
+	operations.approvalOp = &live
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+
+	response := doRequest(t, http.MethodGet, httpServer.URL+"/approvals", "control-secret", nil)
+	var pending []ApprovalDTO
+	decodeJSON(t, response, &pending)
+	if len(pending) != 1 || pending[0].EffectSlotID != "slot-live" || string(pending[0].CanonicalIntent) != `{"pr":"live"}` {
+		t.Fatalf("GET /approvals = %+v, want 1 entry with live operation", pending)
+	}
+
+	response = doRequest(t, http.MethodGet, httpServer.URL+"/approvals/approval-1", "control-secret", nil)
+	var got ApprovalDTO
+	decodeJSON(t, response, &got)
+	if got.EffectSlotID != "slot-live" || string(got.CanonicalIntent) != `{"pr":"live"}` || got.Attributes["adopted"] != true {
+		t.Fatalf("GET /approvals/approval-1 = %+v, want live operation fields", got)
+	}
+
+	// Fallback when no operation currently carries approval_id.
+	operations.approvalOp = nil
+	operations.approvalErr = sql.ErrNoRows
+	response = doRequest(t, http.MethodGet, httpServer.URL+"/approvals/approval-1", "control-secret", nil)
+	decodeJSON(t, response, &got)
+	if got.EffectSlotID != "slot-subject" || string(got.CanonicalIntent) != `{"pr":"subject"}` {
+		t.Fatalf("fallback DTO = %+v, want subject operation fields", got)
 	}
 }
 

@@ -247,7 +247,7 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 				}
 				if latest.AttemptID == request.AttemptID && reflect.DeepEqual(storedAttributes, callerAttributes) {
 					matches, matchErr := s.preparedApprovalMatchesInTx(
-						ctx, tx, latest, decision, callerRequired, provider,
+						ctx, tx, latest, now, decision, callerRequired, provider,
 						request.Intent.DescriptorType(), canonical,
 					)
 					if matchErr != nil {

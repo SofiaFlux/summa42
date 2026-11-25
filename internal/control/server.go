@@ -679,6 +679,9 @@ func (s *Server) approvalDTO(ctx context.Context, record domain.ApprovalRequestR
 	}
 	if record.SubjectKind == "EXTERNAL_OPERATION" {
 		operation, err := s.deps.Operations.ApprovalOperation(ctx, record.ID)
+		if errors.Is(err, sql.ErrNoRows) && record.SubjectID != "" {
+			operation, err = s.deps.Operations.Operation(ctx, record.SubjectID)
+		}
 		if err != nil {
 			log.Printf("control: load operation for approval %s: %v", record.ID, err)
 		} else {

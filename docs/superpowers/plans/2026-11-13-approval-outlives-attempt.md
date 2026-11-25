@@ -43,31 +43,31 @@ Adoption keeps `subject_id` = the operation that first asked. The schema does no
 ## Tasks
 
 ### Task 1: failing test for the real-life sequence
-- [ ] In `internal/ghtriage/publication_test.go` add `TestPublicationApprovalSurvivesLeaseExpiry`:
+- [x] In `internal/ghtriage/publication_test.go` add `TestPublicationApprovalSurvivesLeaseExpiry`:
   1. publish until held and capture `first.ApprovalID`;
   2. advance the fake clock past the Attempt lease and recover the lease (as serve does);
   3. publish again: assert `Held` with **the same** `ApprovalID`, and that `approval_requests` still has 1 row;
   4. approve it and publish again: assert exactly one PR write;
   5. before approving, recover and publish a third time: the same approval is re-adopted (idempotent);
   6. publish again after dispatch: assert no second write, and that the approval is `CONSUMED`.
-- [ ] Run it and see it fail at step 3 (a new approval ID).
+- [x] Run it and see it fail at step 3 (a new approval ID).
 
 ### Task 2: approval lifetime is its own
 - [x] `operations.DefaultApprovalTTL` = 24 h, fixed. Deviation: no config or flag. Wiring it means changing ten `runtime.Config` constructions in `cmd/summa42-box`, and nobody has asked for another value. Add it as a `config.json` setting, capped at 7 days, when 24 h proves wrong.
-- [ ] `prepareApprovalInTx`: `ExpiresAt = now + ApprovalTTL` instead of `guardedLeaseExpiry`.
-- [ ] Test: an approval created by an Attempt with a 10-minute lease expires after the TTL, not with the lease.
+- [x] `prepareApprovalInTx`: `ExpiresAt = now + ApprovalTTL` instead of `guardedLeaseExpiry`.
+- [x] Test: an approval created by an Attempt with a 10-minute lease expires after the TTL, not with the lease.
 
 ### Task 3: adopt the slot's live approval
-- [ ] In `PrepareWithGuard`, before `prepareApprovalInTx` makes a new request, look up the most recent approval in this slot: the newest operation of `slot.ID` with a non-null `approval_id`. Adopt it when the state is `PENDING` or `APPROVED`, `expires_at > now`, the digest equals the new digest and the required approvers are equal. Otherwise make a new one as today.
-- [ ] `preparedApprovalMatchesInTx` and `validateAndConsumeApprovalInTx`: replace `record.SubjectID != op.ID` with "the subject operation exists and has `effect_slot_id = op.EffectSlotID`". Keep every other check.
-- [ ] Adoption floor: do not adopt when `expires_at - now < minAdoptionRemaining`. Test: an approval 10 minutes from expiry is not adopted.
-- [ ] Tests for invariants 1, 2 (same fingerprint, different canonical JSON → no adoption), 3, 5, 6 and 7 (the loser of a consume race gets a new approval): a consumed approval is not adopted; a new candidate SHA gets a new approval; a policy change gets a new approval; another task's slot never adopts; a rejected approval is not adopted.
+- [x] In `PrepareWithGuard`, before `prepareApprovalInTx` makes a new request, look up the most recent approval in this slot: the newest operation of `slot.ID` with a non-null `approval_id`. Adopt it when the state is `PENDING` or `APPROVED`, `expires_at > now`, the digest equals the new digest and the required approvers are equal. Otherwise make a new one as today.
+- [x] `preparedApprovalMatchesInTx` and `validateAndConsumeApprovalInTx`: replace `record.SubjectID != op.ID` with "the subject operation exists and has `effect_slot_id = op.EffectSlotID`". Keep every other check.
+- [x] Adoption floor: do not adopt when `expires_at - now < minAdoptionRemaining`. Test: an approval 10 minutes from expiry is not adopted.
+- [x] Tests for invariants 1, 2 (same fingerprint, different canonical JSON → no adoption), 3, 5, 6 and 7 (the loser of a consume race gets a new approval): a consumed approval is not adopted; a new candidate SHA gets a new approval; a policy change gets a new approval; another task's slot never adopts; a rejected approval is not adopted.
 
 ### Task 4: what the Owner sees
-- [ ] `control/server.go` `approvalDTO` loads the operation by `SubjectID`. After adoption that is a `CANCELLED` operation. Its intent equals the live one by digest, but its state misleads. Load the latest operation of that operation's effect slot that carries this `approval_id`, and fall back to the subject. Test: the DTO of an adopted approval shows the live `PREPARED` operation.
-- [ ] `summa42 approvals` lists an adopted approval once. It is keyed by approval, so check that it is not duplicated.
-- [ ] `casereport`: an approval can now span several operations. Count it with `DISTINCT a.approval_id` in `Interventions` (the `approval_decisions` join) and in `readPending` (PR #190).
-- [ ] README lines 164 and 312: replace "within the live ten-minute lease" and "an approval expires with its lease" with the new rule.
+- [x] `control/server.go` `approvalDTO` loads the operation by `SubjectID`. After adoption that is a `CANCELLED` operation. Its intent equals the live one by digest, but its state misleads. Load the latest operation of that operation's effect slot that carries this `approval_id`, and fall back to the subject. Test: the DTO of an adopted approval shows the live `PREPARED` operation.
+- [x] `summa42 approvals` lists an adopted approval once. It is keyed by approval, so check that it is not duplicated.
+- [x] `casereport`: an approval can now span several operations. Count it with `DISTINCT` in `Interventions` (the `approval_decisions` join).
+- [x] README lines 164 and 312: replace "within the live ten-minute lease" and "an approval expires with its lease" with the new rule.
 
 ### Task 5: verification
 - [ ] `make verify`; `go test -race ./internal/operations ./internal/ghtriage -timeout 15m`.
