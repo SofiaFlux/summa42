@@ -309,7 +309,7 @@ func build(ctx context.Context, spec Spec, probed bool) (*Cmd, error) {
 	// arms WaitDelay. Wait releases it.
 	ctx, stop := context.WithCancel(ctx)
 	c := &Cmd{
-		Cmd: exec.CommandContext(ctx, argv[0], argv[1:]...), runAs: spec.RunAs.Username,
+		Cmd: exec.CommandContext(ctx, argv[0], argv[1:]...), runCtx: ctx, runAs: spec.RunAs.Username,
 		callID: callID, scratchDir: scratchDir, trackCleanup: probed,
 		done: make(chan struct{}), stop: stop,
 	}
@@ -322,18 +322,24 @@ func build(ctx context.Context, spec Spec, probed bool) (*Cmd, error) {
 	if cmd.WaitDelay <= 0 {
 		cmd.WaitDelay = DefaultWaitDelay
 	}
+	c.attachCancel(cmd)
+	return c, nil
+}
+
+func (c *Cmd) attachCancel(cmd *exec.Cmd) {
 	isolateProcessTree(cmd)
 	local := cmd.Cancel
 	cmd.Cancel = func() error {
-		if pgid := c.awaitMarker(); pgid > 1 {
-			c.killModelGroup(pgid)
+		cgDir := c.cgroupDir
+		pgid := c.awaitMarker()
+		if pgid > 1 || cgDir != "" {
+			c.killModelGroup(pgid, cgDir)
 		}
 		if local != nil {
 			return local()
 		}
 		return nil
 	}
-	return c, nil
 }
 
 func validEnvName(name string) bool {
@@ -346,6 +352,7 @@ func validEnvName(name string) bool {
 // methods that refuse.
 type Cmd struct {
 	*exec.Cmd
+	runCtx       context.Context
 	runAs        string
 	callID       string
 	scratchDir   string
@@ -361,6 +368,20 @@ type Cmd struct {
 	gateErr atomic.Pointer[error]
 	// gateDone is closed when the gate watcher has ended; nil before Start.
 	gateDone chan struct{}
+}
+
+func (c *Cmd) rebuildForFallback(origStderr io.Writer) {
+	fresh := exec.CommandContext(c.runCtx, c.Cmd.Args[0], c.Cmd.Args[1:]...)
+	fresh.Env = c.Cmd.Env
+	fresh.Dir = c.Cmd.Dir
+	fresh.Stdin = c.Cmd.Stdin
+	fresh.Stdout = c.Cmd.Stdout
+	fresh.ExtraFiles = c.Cmd.ExtraFiles
+	fresh.WaitDelay = c.Cmd.WaitDelay
+	c.filter = &markerFilter{dst: origStderr, found: func(pgid int64) { c.pgid.Store(pgid) }}
+	fresh.Stderr = c.filter
+	c.attachCancel(fresh)
+	c.Cmd = fresh
 }
 
 // Start wraps the caller's stderr to strip the pgid marker line.
@@ -391,6 +412,7 @@ func (c *Cmd) Start() error {
 	if startErr != nil && c.cgroupDir != "" {
 		log.Printf("modelrun: cgroup launch failed (%v); retrying in per-call process group mode", startErr)
 		c.clearCgroupFD()
+		c.rebuildForFallback(dst)
 		startErr = c.Cmd.Start()
 	}
 	if startErr != nil {
@@ -419,6 +441,8 @@ func (c *Cmd) Wait() error {
 				err = cleanupErr
 			} else if errors.Is(cleanupErr, ErrSurvivorDetected) {
 				err = errors.Join(err, cleanupErr)
+			} else {
+				log.Printf("modelrun: post-call cleanup for %s: %v", c.runAs, cleanupErr)
 			}
 		}
 	}
@@ -477,12 +501,16 @@ func (c *Cmd) awaitMarker() int64 {
 // TERM now, KILL after killGrace unless the call has ended. The sudoers rule
 // lets the Box act as the model user, which is the only way across the uid
 // boundary (a direct signal to root's sudo is EPERM).
-func (c *Cmd) killModelGroup(pgid int64) {
+func (c *Cmd) killModelGroup(pgid int64, cgDir string) {
 	// The seams are read now, while this call still owns them. The KILL goroutine
 	// can outlive the call, and it must not read package state a later test writes.
 	grace := killGrace
 	runAs := c.runAs
-	_ = sendGroupSignal(context.Background(), runAs, "TERM", pgid)
+	if pgid > 1 {
+		if err := sendGroupSignal(context.Background(), runAs, "TERM", pgid); err != nil {
+			log.Printf("modelrun: %v", err)
+		}
+	}
 	go func() {
 		timer := time.NewTimer(grace)
 		defer timer.Stop()
@@ -491,8 +519,14 @@ func (c *Cmd) killModelGroup(pgid int64) {
 		case <-timer.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			_ = c.killCgroup(ctx)
-			_ = sendGroupSignal(ctx, runAs, "KILL", pgid)
+			if err := killCgroupDir(ctx, runAs, cgDir); err != nil {
+				log.Printf("modelrun: cgroup kill %s: %v", cgDir, err)
+			}
+			if pgid > 1 {
+				if err := sendGroupSignal(ctx, runAs, "KILL", pgid); err != nil {
+					log.Printf("modelrun: %v", err)
+				}
+			}
 		}
 	}()
 }
@@ -519,13 +553,15 @@ func (c *Cmd) cleanupAfterWait() error {
 	defer cancel()
 	var errs []error
 	if c.cgroupDir != "" {
-		if err := c.cleanupCgroup(ctx); err != nil {
+		if err := cleanupCgroupDir(ctx, c.runAs, c.cgroupDir, c.pgid.Load()); err != nil {
 			errs = append(errs, err)
 		}
 	} else {
 		pgid := c.pgid.Load()
 		if pgid > 1 {
-			_ = sendGroupSignal(ctx, c.runAs, "KILL", pgid)
+			if err := sendGroupSignal(ctx, c.runAs, "KILL", pgid); err != nil {
+				errs = append(errs, err)
+			}
 		}
 		if err := detectPGIDFallbackSurvivors(ctx, c.runAs, pgid, c.scratchDir); err != nil {
 			errs = append(errs, err)

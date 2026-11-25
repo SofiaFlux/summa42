@@ -139,8 +139,8 @@ func (c *Cmd) killUntilDone(tick <-chan time.Time) {
 			return
 		case <-tick:
 		}
-		if pgid := c.pgid.Load(); pgid > 1 {
-			c.killModelGroup(pgid)
+		if pgid := c.pgid.Load(); pgid > 1 || c.cgroupDir != "" {
+			c.killModelGroup(pgid, c.cgroupDir)
 		}
 	}
 }

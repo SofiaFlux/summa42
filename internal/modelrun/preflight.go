@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -60,6 +61,17 @@ type probePath struct {
 	checkTraversal bool
 }
 
+var roleLoginRelPaths = []string{
+	".claude/.credentials.json",
+	".claude.json",
+	".codex/auth.json",
+	".commandcode/auth.json",
+	".gemini/oauth_creds.json",
+	".copilot/config.json",
+	".config/github-copilot/hosts.json",
+	".config/github-copilot/apps.json",
+}
+
 func probeIsolation(ctx context.Context, spec Spec) error {
 	probe.mu.Lock()
 	defer probe.mu.Unlock()
@@ -67,14 +79,20 @@ func probeIsolation(ctx context.Context, spec Spec) error {
 	for _, p := range probe.required {
 		paths = append(paths, probePath{path: p})
 	}
+	appendOppositeHome := func(home string) {
+		paths = append(paths, probePath{path: home, checkTraversal: true})
+		for _, rel := range roleLoginRelPaths {
+			paths = append(paths, probePath{path: filepath.Join(home, rel), optional: true})
+		}
+	}
 	if probe.producerHome != "" && spec.RunAs.HomeDir != probe.producerHome {
-		paths = append(paths, probePath{path: probe.producerHome, checkTraversal: true})
+		appendOppositeHome(probe.producerHome)
 	}
 	if probe.reviewerHome != "" && spec.RunAs.HomeDir != probe.reviewerHome {
-		paths = append(paths, probePath{path: probe.reviewerHome, checkTraversal: true})
+		appendOppositeHome(probe.reviewerHome)
 	}
 	for _, p := range spec.Unreadable {
-		paths = append(paths, probePath{path: p})
+		paths = append(paths, probePath{path: p, checkTraversal: true})
 	}
 	for _, p := range probe.optional {
 		paths = append(paths, probePath{path: p, optional: true})
@@ -98,7 +116,11 @@ func probeIsolation(ctx context.Context, spec Spec) error {
 		return err
 	}
 	for _, p := range paths {
-		if err := cachedProbe(ctx, name, p.path, func() error { return checkUnreadable(ctx, spec, p) }); err != nil {
+		key := p.path
+		if p.checkTraversal {
+			key = "dir:" + p.path
+		}
+		if err := cachedProbe(ctx, name, key, func() error { return checkUnreadable(ctx, spec, p) }); err != nil {
 			return err
 		}
 	}
@@ -141,13 +163,26 @@ func probeTest(ctx context.Context, spec Spec, path string, checkDirTraversal bo
 
 func checkUnreadable(ctx context.Context, spec Spec, p probePath) error {
 	info, err := os.Lstat(p.path)
+	isDir := false
 	if err != nil {
 		if p.optional && os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("isolation probe: %s cannot be checked: %w", p.path, err)
+		if !p.optional || !os.IsPermission(err) {
+			return fmt.Errorf("isolation probe: %s cannot be checked: %w", p.path, err)
+		}
+		// An optional login file inside another role's 0700 home cannot be statted
+		// by the Box user; still probe it as the target user so any unexpected
+		// traversal+read succeeds in tripping code == 0.
+	} else {
+		isDir = info.IsDir()
+		if !isDir && info.Mode()&os.ModeSymlink != 0 {
+			if target, statErr := os.Stat(p.path); statErr == nil && target.IsDir() {
+				isDir = true
+			}
+		}
 	}
-	code, err := probeTest(ctx, spec, p.path, p.checkTraversal && info.IsDir())
+	code, err := probeTest(ctx, spec, p.path, p.checkTraversal && isDir)
 	switch {
 	case err != nil:
 		return fmt.Errorf("isolation probe on %s: %w", p.path, err)

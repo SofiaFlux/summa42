@@ -20,7 +20,9 @@ type CgroupTestConfig struct {
 // SetCgroupForTest is a no-op on non-Linux hosts.
 func SetCgroupForTest(CgroupTestConfig) func() { return func() {} }
 
-func (c *Cmd) setupCgroup(string) (*os.File, error) { return nil, nil }
-func (c *Cmd) clearCgroupFD()                       {}
-func (c *Cmd) killCgroup(context.Context) error     { return nil }
-func (c *Cmd) cleanupCgroup(context.Context) error  { return nil }
+func (c *Cmd) setupCgroup(string) (*os.File, error)       { return nil, nil }
+func (c *Cmd) clearCgroupFD()                             {}
+func killCgroupDir(context.Context, string, string) error { return nil }
+func cleanupCgroupDir(context.Context, string, string, int64) error {
+	return nil
+}

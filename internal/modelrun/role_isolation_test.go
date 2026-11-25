@@ -305,6 +305,7 @@ func TestNothingSurvivesAModelCall(t *testing.T) {
 		if _, statErr := os.Stat(seenCallDir); statErr != nil {
 			t.Fatalf("cgroup dir %s should stay for inspection on survivor: %v", seenCallDir, statErr)
 		}
+		_ = os.RemoveAll(seenCallDir)
 		logged, _ := os.ReadFile(sudoLog2)
 		if !strings.Contains(string(logged), "/bin/kill -KILL") {
 			t.Fatalf("expected sudo /bin/kill fallback when cgroup.kill missing: %q", logged)
@@ -325,6 +326,60 @@ func TestNothingSurvivesAModelCall(t *testing.T) {
 		}
 		if err := cmd3.Run(); err != nil {
 			t.Fatalf("EBUSY cgroup fallback failed: %v", err)
+		}
+
+		// 4. Start() failure with UseCgroupFD=true on a non-cgroupfs dir rebuilds a fresh exec.Cmd and retries cleanly.
+		defer modelrun.SetCgroupForTest(modelrun.CgroupTestConfig{
+			Root:        cgRoot,
+			SelfRelPath: "/box.slice",
+			ValidMagic:  true,
+			UseKernelFD: true,
+		})()
+		echoScript := script(t, "cat\n")
+		cmd4, err := modelrun.Command(context.Background(), modelrun.Spec{
+			RunAs: fakeUser(home2), Binary: echoScript, Timeout: 20 * time.Second, Scratch: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out4, err4 bytes.Buffer
+		cmd4.Stdin = strings.NewReader("retry-ok")
+		cmd4.Stdout = &out4
+		cmd4.Stderr = &err4
+		if err := cmd4.Run(); err != nil {
+			t.Fatalf("Start() cgroup retry failed: %v (stderr=%q)", err, err4.String())
+		}
+		if out4.String() != "retry-ok" {
+			t.Fatalf("Start() retry stdout = %q, want retry-ok", out4.String())
+		}
+		if entries, _ := os.ReadDir(boxCg); len(entries) != 0 {
+			t.Fatalf("cgroup dir left behind after Start() retry: %+v", entries)
+		}
+	})
+
+	t.Run("pgid survivor detected when child escapes pgid keeping scratch cwd", func(t *testing.T) {
+		home, _, cleanup, err := modelruntest.Install()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cleanup()
+
+		escapedPIDFile := filepath.Join(t.TempDir(), "escaped.pid")
+		// setsid detaches from the call's pgid while keeping cwd inside scratchDir.
+		bin := script(t, "setsid sh -c 'echo $$ > "+escapedPIDFile+".tmp && mv "+escapedPIDFile+".tmp "+escapedPIDFile+"; sleep 600' </dev/null >/dev/null 2>&1 &\n"+
+			"i=0; while [ ! -s "+escapedPIDFile+" ] && [ $i -lt 50 ]; do sleep 0.02; i=$((i+1)); done\n")
+		cmd, err := modelrun.Command(context.Background(), modelrun.Spec{
+			RunAs: fakeUser(home), Binary: bin, Timeout: 20 * time.Second, Scratch: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = cmd.Run()
+		if !errors.Is(err, modelrun.ErrSurvivorDetected) {
+			t.Fatalf("expected ErrSurvivorDetected for setsid escapee, got %v", err)
+		}
+		if nonZombiePIDFileAlive(t, escapedPIDFile) {
+			t.Fatal("escaped setsid survivor stayed alive after ErrSurvivorDetected cleanup")
 		}
 	})
 }

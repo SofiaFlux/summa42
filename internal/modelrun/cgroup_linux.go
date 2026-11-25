@@ -140,11 +140,11 @@ func detectWritableBoxCgroup() (boxDir string, useKernelFD bool, err error) {
 	return dir, true, nil
 }
 
-func (c *Cmd) killCgroup(ctx context.Context) error {
-	if c.cgroupDir == "" {
+func killCgroupDir(ctx context.Context, runAs, cgroupDir string) error {
+	if cgroupDir == "" {
 		return nil
 	}
-	killPath := filepath.Join(c.cgroupDir, "cgroup.kill")
+	killPath := filepath.Join(cgroupDir, "cgroup.kill")
 	f, err := os.OpenFile(killPath, os.O_WRONLY, 0)
 	if err == nil {
 		_, writeErr := f.WriteString("1")
@@ -158,7 +158,7 @@ func (c *Cmd) killCgroup(ctx context.Context) error {
 		return err
 	}
 	// Kernels < 5.14 lack cgroup.kill: signal cgroup PIDs via sudo as the model user.
-	pids, err := liveCgroupPIDs(c.cgroupDir)
+	pids, err := liveCgroupPIDs(cgroupDir)
 	if err != nil || len(pids) == 0 {
 		return err
 	}
@@ -166,49 +166,54 @@ func (c *Cmd) killCgroup(ctx context.Context) error {
 	for _, p := range pids {
 		args = append(args, strconv.Itoa(p))
 	}
-	argv := append(launchPrefix(c.runAs, nil), append([]string{killBinary}, args...)...)
+	argv := append(launchPrefix(runAs, nil), append([]string{killBinary}, args...)...)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = []string{"PATH=" + defaultPATH}
 	cmd.Dir = "/"
-	_ = cmd.Run()
+	if out, runErr := cmd.CombinedOutput(); runErr != nil && len(bytes.TrimSpace(out)) > 0 && !bytes.Contains(out, []byte("No such process")) {
+		return fmt.Errorf("kill cgroup pids as %s: %w: %s", runAs, runErr, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 
-func (c *Cmd) cleanupCgroup(ctx context.Context) error {
-	if c.cgroupDir == "" {
+func cleanupCgroupDir(ctx context.Context, runAs, cgroupDir string, pgid int64) error {
+	if cgroupDir == "" {
 		return nil
 	}
-	_ = c.killCgroup(ctx)
-	if pgid := c.pgid.Load(); pgid > 1 {
-		_ = sendGroupSignal(ctx, c.runAs, "KILL", pgid)
+	var killErr error
+	if err := killCgroupDir(ctx, runAs, cgroupDir); err != nil {
+		killErr = err
+	}
+	if pgid > 1 {
+		if err := sendGroupSignal(ctx, runAs, "KILL", pgid); err != nil && killErr == nil {
+			killErr = err
+		}
 	}
 	var alive []int
 	for i := 0; i < 25; i++ {
 		var err error
-		alive, err = liveCgroupPIDs(c.cgroupDir)
-		if err != nil && errors.Is(err, os.ErrNotExist) {
-			c.cgroupDir = ""
-			return nil
+		alive, err = liveCgroupPIDs(cgroupDir)
+		if err != nil {
+			return err
 		}
 		if len(alive) == 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
-		_ = c.killCgroup(ctx)
+		_ = killCgroupDir(ctx, runAs, cgroupDir)
 	}
 	if len(alive) > 0 {
-		return fmt.Errorf("%w: pids %v in cgroup %s", ErrSurvivorDetected, alive, c.cgroupDir)
+		return fmt.Errorf("%w: pids %v in cgroup %s", ErrSurvivorDetected, alive, cgroupDir)
 	}
 	removeFn := os.Remove
 	if cgroupCfg.active {
 		// Fake cgroup dirs on a regular filesystem contain test files (cgroup.kill, cgroup.procs).
 		removeFn = os.RemoveAll
 	}
-	if err := removeFn(c.cgroupDir); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Printf("modelrun: remove cgroup %s: %v", c.cgroupDir, err)
+	if err := removeFn(cgroupDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Printf("modelrun: remove cgroup %s: %v", cgroupDir, err)
 	}
-	c.cgroupDir = ""
-	return nil
+	return killErr
 }
 
 func liveCgroupPIDs(cgroupDir string) ([]int, error) {
