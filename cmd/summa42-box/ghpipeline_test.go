@@ -13,6 +13,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/ghtriage"
 	"github.com/SofiaFlux/summa42/internal/ghtriage/climodel"
+	"github.com/SofiaFlux/summa42/internal/modelrun/modelruntest"
 	"github.com/SofiaFlux/summa42/internal/workflow"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
@@ -337,7 +338,12 @@ func TestPipelineRequiresPublicationAndSourceFlagsAtStartup(t *testing.T) {
 }
 
 func TestPipelineForwardsTheValidationSettingsToTheImplementStage(t *testing.T) {
-	args := append(validPipelineArgs(t), "--validation-user", "summa42-validate", "--validation-timeout", "20m")
+	_, _, cleanup, err := modelruntest.Install()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	args := append(validPipelineArgs(t), "--validation-user", modelruntest.ValidationUser, "--validation-timeout", "20m")
 	p, _ := parsedPipeline(t, args)
 	var implement []string
 	for _, s := range p.perCase {
@@ -345,13 +351,13 @@ func TestPipelineForwardsTheValidationSettingsToTheImplementStage(t *testing.T) 
 			implement = s.args
 		}
 	}
-	for _, want := range []string{"--validation-user=summa42-validate", "--validation-timeout=20m0s"} {
+	for _, want := range []string{"--validation-user=" + modelruntest.ValidationUser, "--validation-timeout=20m0s"} {
 		if !slices.Contains(implement, want) {
 			t.Fatalf("implement argv %v lacks %s", implement, want)
 		}
 	}
 	_, _, _, _, validation, err := parseGHImplementFlags(slices.Concat([]string{"--case", "c1"}, implement))
-	if err != nil || validation.User != "summa42-validate" || validation.Timeout != 20*time.Minute {
+	if err != nil || validation.User != modelruntest.ValidationUser || validation.Timeout != 20*time.Minute {
 		t.Fatalf("%+v %v", validation, err)
 	}
 }
@@ -436,6 +442,11 @@ func TestPipelineRequiresDistinctUsersAcrossAllRoles(t *testing.T) {
 	if _, _, err := parsePipelineFlags(append(validPipelineArgs(t), "--model-user=nobody", "--review-model-user=daemon", "--validation-user=daemon")); err == nil {
 		t.Fatal("validation user matching reviewer accepted")
 	}
+	for _, badVal := range []string{"root", "no-such-user-xyz"} {
+		if _, _, err := parsePipelineFlags(append(validPipelineArgs(t), "--validation-user="+badVal)); err == nil {
+			t.Fatalf("invalid --validation-user=%s accepted at parse time", badVal)
+		}
+	}
 	// Explicit distinct flags override env vars even when producer and reviewer are swapped relative to env.
 	t.Setenv("SUMMA42_MODEL_USER", "nobody")
 	t.Setenv("SUMMA42_REVIEW_MODEL_USER", "daemon")
@@ -443,12 +454,23 @@ func TestPipelineRequiresDistinctUsersAcrossAllRoles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("swapped distinct flag override rejected: %v", err)
 	}
-	ctx := withPipelineValidatedUsers(context.Background())
+	ctx := withPipelineRoles(context.Background(), p.producerUser, p.reviewerUser)
 	for _, s := range p.stages {
 		if s.name == "plan-review" {
 			if _, _, _, _, err := parseGHPlanReviewFlagsCtx(ctx, s.args); err != nil {
 				t.Fatalf("pipeline-validated plan-review rejected swapped user: %v", err)
 			}
 		}
+	}
+	for _, s := range p.perCase {
+		if s.name == "implement" {
+			if _, _, _, _, _, err := parseGHImplementFlagsCtx(ctx, slices.Concat([]string{"--case", "c1"}, s.args)); err != nil {
+				t.Fatalf("pipeline-validated implement rejected swapped user: %v", err)
+			}
+		}
+	}
+	t.Setenv("SUMMA42_COPILOT_PATH", "/bin/true")
+	if got, err := workerCopilotReviewerUser(ctx, p.producerUser); err != nil || got != "nobody" {
+		t.Fatalf("workerCopilotReviewerUser with swapped pipeline roles = %q, %v; want nobody", got, err)
 	}
 }

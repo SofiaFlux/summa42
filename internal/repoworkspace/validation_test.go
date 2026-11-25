@@ -168,20 +168,44 @@ func TestValidationRefusesWhenTheValidationUserCanReadTheModelHome(t *testing.T)
 
 func TestValidationRefusesWhenTheValidationUserCanReadTheReviewerHome(t *testing.T) {
 	dir, c := validationFixture(t)
-	_, _, cleanup, err := modelruntest.Install()
+	_, _, cleanup1, err := modelruntest.Install()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
 	if err := modelruntest.LockModelHome(); err != nil {
+		cleanup1()
 		t.Fatal(err)
 	}
 	v, err := NewValidatorWithReviewer(modelruntest.ValidationUser, modelruntest.User, modelruntest.ReviewerUser, nil, 0, filepath.Join(t.TempDir(), "validation.lock"))
 	if err != nil {
+		cleanup1()
 		t.Fatal(err)
 	}
 	if _, err := v.ValidateCandidate(context.Background(), dir, c, [][]string{{"true"}}); err == nil || !strings.Contains(err.Error(), "can read") {
+		cleanup1()
 		t.Fatalf("validation ran with a readable reviewer home: %v", err)
+	}
+	cleanup1()
+
+	// Fresh probe cache when both homes are locked must succeed.
+	_, _, cleanup2, err := modelruntest.Install()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup2()
+	if err := modelruntest.LockModelHome(); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelruntest.LockReviewHome(); err != nil {
+		t.Fatal(err)
+	}
+	v2, err := NewValidatorWithReviewer(modelruntest.ValidationUser, modelruntest.User, modelruntest.ReviewerUser, nil, 0, filepath.Join(t.TempDir(), "validation.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := v2.ValidateCandidate(context.Background(), dir, c, [][]string{{"true"}})
+	if err != nil || len(results) != 1 || !results[0].Passed {
+		t.Fatalf("validation with both homes locked: results=%+v err=%v", results, err)
 	}
 }
 

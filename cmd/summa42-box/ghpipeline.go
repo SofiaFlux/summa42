@@ -171,13 +171,8 @@ func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
 		return nil, 0, fmt.Errorf("review model user must differ from producer model user: %w", err)
 	}
 	if validation.User != "" {
-		if validation.User == producer.RunAsUser || validation.User == reviewer.RunAsUser {
-			return nil, 0, fmt.Errorf("--validation-user %q must differ from producer (%q) and reviewer (%q)", validation.User, producer.RunAsUser, reviewer.RunAsUser)
-		}
-		if _, err := resolveOptionalRoleUser(validation.User); err == nil {
-			if _, err := modelrun.ResolveValidationUser(validation.User, prodU, revU); err != nil {
-				return nil, 0, err
-			}
+		if _, err := modelrun.ResolveValidationUser(validation.User, prodU, revU); err != nil {
+			return nil, 0, err
 		}
 	}
 	if sameModel(producer, reviewer) {

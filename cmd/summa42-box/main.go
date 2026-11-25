@@ -1017,8 +1017,17 @@ func checkStandaloneRoleDistinct(ctx context.Context, role, runAs string) error 
 		}
 	}
 	if len(blockers) > 0 {
-		if _, err := modelrun.ResolveReviewerUser(runAs, blockers...); err != nil {
+		selfU, err := modelrun.ResolveRunAsUser(runAs)
+		if err != nil {
 			return fmt.Errorf("%s user: %w", role, err)
+		}
+		for _, b := range blockers {
+			if b == nil {
+				continue
+			}
+			if selfU.Username == b.Username || selfU.Uid == b.Uid || (selfU.HomeDir != "" && selfU.HomeDir == b.HomeDir) {
+				return fmt.Errorf("%s user %q must differ from %q (same username, uid, or home)", role, runAs, b.Username)
+			}
 		}
 	}
 	return nil
@@ -1051,7 +1060,16 @@ func workerCopilotReviewerUser(ctx context.Context, producerUser string) (string
 	if err != nil {
 		return "", err
 	}
-	if _, err := modelrun.ResolveReviewerUser(copilotUser, prodU); err != nil {
+	others := []*user.User{prodU}
+	if valName := strings.TrimSpace(os.Getenv("SUMMA42_VALIDATION_USER")); valName != "" {
+		if valName == copilotUser {
+			return "", fmt.Errorf("SUMMA42_REVIEW_MODEL_USER for copilot (%q) must differ from validation user SUMMA42_VALIDATION_USER", copilotUser)
+		}
+		if valU, err := resolveOptionalRoleUser(valName); err == nil && valU != nil {
+			others = append(others, valU)
+		}
+	}
+	if _, err := modelrun.ResolveReviewerUser(copilotUser, others...); err != nil {
 		return "", fmt.Errorf("SUMMA42_REVIEW_MODEL_USER for copilot: %w", err)
 	}
 	return copilotUser, nil
