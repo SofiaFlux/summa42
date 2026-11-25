@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/SofiaFlux/summa42/internal/texthygiene"
 )
 
 const (
@@ -173,5 +175,5 @@ func (d *Decision) Validate() error {
 	if !d.Stage3.Disposition.valid() {
 		return fmt.Errorf("decision stage 3 disposition %q is outside the closed set", d.Stage3.Disposition)
 	}
-	return nil
+	return texthygiene.Check("decision stage 2 rationale", d.Stage2.Rationale)
 }

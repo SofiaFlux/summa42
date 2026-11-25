@@ -21,36 +21,54 @@ type ContainmentSignal interface {
 	ApplySignal(ctx context.Context, attemptID, taskID domain.ID, signalName, enforcedBy string, step containment.LadderStep, details map[string]any) error
 }
 
+func appendBoundedFindings(dst []texthygiene.DirectiveFinding, more ...texthygiene.DirectiveFinding) []texthygiene.DirectiveFinding {
+	for _, f := range more {
+		if len(dst) >= texthygiene.MaxDirectiveFindings {
+			return dst
+		}
+		dst = append(dst, f)
+	}
+	return dst
+}
+
 func scanPlanHygiene(plan Plan) []texthygiene.DirectiveFinding {
 	var findings []texthygiene.DirectiveFinding
-	findings = append(findings, texthygiene.ScanRoleDirectives("plan.summary", plan.Summary)...)
+	findings = appendBoundedFindings(findings, texthygiene.ScanRoleDirectives("plan.summary", plan.Summary)...)
 	for i, step := range plan.Steps {
-		findings = append(findings, texthygiene.ScanRoleDirectives(fmt.Sprintf("plan.steps[%d].objective", i), step.Objective)...)
-		findings = append(findings, texthygiene.ScanRoleDirectives(fmt.Sprintf("plan.steps[%d].done_when", i), step.DoneWhen)...)
+		findings = appendBoundedFindings(findings, texthygiene.ScanRoleDirectives(fmt.Sprintf("plan.steps[%d].objective", i), step.Objective)...)
+		findings = appendBoundedFindings(findings, texthygiene.ScanRoleDirectives(fmt.Sprintf("plan.steps[%d].done_when", i), step.DoneWhen)...)
 	}
 	return findings
 }
 
-func scanImplementationHygiene(plan Plan, impl ImplementationRecord, changes []repoworkspace.FileChange) []texthygiene.DirectiveFinding {
-	findings := scanPlanHygiene(plan)
-	findings = append(findings, texthygiene.ScanRoleDirectives("implementation.summary", impl.Summary)...)
+// scanCodeAndPlanHygiene separates implementation-owned findings (which attribute
+// rogue containment signals to the implementation attempt) from inherited plan
+// findings, returning both capped at texthygiene.MaxDirectiveFindings for review.
+func scanCodeAndPlanHygiene(plan Plan, impl ImplementationRecord, changes []repoworkspace.FileChange) (codeFindings, allFindings []texthygiene.DirectiveFinding) {
+	codeFindings = appendBoundedFindings(codeFindings, texthygiene.ScanRoleDirectives("implementation.summary", impl.Summary)...)
 	for i, cmd := range impl.Commands {
-		findings = append(findings, texthygiene.ScanRoleDirectives(fmt.Sprintf("implementation.commands[%d].output", i), cmd.Output)...)
+		codeFindings = appendBoundedFindings(codeFindings, texthygiene.ScanRoleDirectives(fmt.Sprintf("implementation.commands[%d].output", i), cmd.Output)...)
 	}
 	for _, change := range changes {
 		if change.After != nil {
-			findings = append(findings, texthygiene.ScanRoleDirectives("changes["+change.Path+"]", change.After.Content)...)
+			codeFindings = appendBoundedFindings(codeFindings, texthygiene.ScanRoleDirectives("changes["+change.Path+"]", change.After.Content)...)
 		}
 	}
-	return findings
+	allFindings = appendBoundedFindings(nil, codeFindings...)
+	allFindings = appendBoundedFindings(allFindings, scanPlanHygiene(plan)...)
+	return codeFindings, allFindings
 }
 
-func emitHygieneSignal(ctx context.Context, emitter ContainmentSignal, attemptID, taskID domain.ID, stage string, findings []texthygiene.DirectiveFinding) error {
+func emitHygieneSignal(ctx context.Context, emitter ContainmentSignal, attemptID, taskID domain.ID, stage string, findings []texthygiene.DirectiveFinding, extra map[string]any) error {
 	if emitter == nil || len(findings) == 0 || attemptID == "" || taskID == "" {
 		return nil
 	}
-	return emitter.ApplySignal(ctx, attemptID, taskID, SignalReviewerDirectedInstruction, "output_hygiene", containment.StepWarn, map[string]any{
+	details := map[string]any{
 		"stage":    stage,
 		"findings": findings,
-	})
+	}
+	for k, v := range extra {
+		details[k] = v
+	}
+	return emitter.ApplySignal(ctx, attemptID, taskID, SignalReviewerDirectedInstruction, "output_hygiene", containment.StepWarn, details)
 }

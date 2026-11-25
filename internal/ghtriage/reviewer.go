@@ -12,7 +12,9 @@ import (
 	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/evidence"
+	"github.com/SofiaFlux/summa42/internal/execution"
 	"github.com/SofiaFlux/summa42/internal/ghissue"
+	"github.com/SofiaFlux/summa42/internal/texthygiene"
 	"github.com/SofiaFlux/summa42/internal/workflow"
 	"github.com/SofiaFlux/summa42/internal/workflowcase"
 )
@@ -66,10 +68,24 @@ type ReviewResult struct {
 }
 
 type Reviewer struct {
-	cases    *workflowcase.Service
-	evidence *evidence.Store
-	index    ReviewIndexStore
-	model    ReviewerModel
+	cases       *workflowcase.Service
+	evidence    *evidence.Store
+	index       ReviewIndexStore
+	model       ReviewerModel
+	exec        *execution.Service
+	containment ContainmentSignal
+}
+
+// WithContainment attaches a containment signal sink for output-hygiene tripwires.
+func (r *Reviewer) WithContainment(c ContainmentSignal) *Reviewer {
+	r.containment = c
+	return r
+}
+
+// WithExecution provides task lookup so triage hygiene signals attribute to the producing triage attempt.
+func (r *Reviewer) WithExecution(exec *execution.Service) *Reviewer {
+	r.exec = exec
+	return r
 }
 
 // NewReviewer builds the reviewer over the four collaborators it uses. The
@@ -175,6 +191,26 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (outcome
 	if err != nil {
 		return noDecision, err
 	}
+	var findings []texthygiene.DirectiveFinding
+	if decision.Stage2 != nil {
+		findings = texthygiene.ScanRoleDirectives("decision.stage2.rationale", decision.Stage2.Rationale)
+	}
+	if len(findings) > 0 && r.containment != nil && r.exec != nil {
+		if idxRaw, idxFound, idxErr := findAcceptedIndex(ctx, r.evidence, c); idxErr != nil {
+			return noDecision, idxErr
+		} else if idxFound {
+			var accepted acceptedIndex
+			if err := json.Unmarshal(idxRaw, &accepted); err == nil && accepted.TaskID != "" {
+				if triageTask, found, tErr := r.exec.FindByIdempotencyKey(ctx, string(accepted.TaskID)); tErr != nil {
+					return noDecision, tErr
+				} else if found && triageTask.CurrentAttemptID != "" {
+					if err := emitHygieneSignal(ctx, r.containment, triageTask.CurrentAttemptID, triageTask.ID, "triage-review", findings, map[string]any{"decision_evidence_id": decisionID}); err != nil {
+						return noDecision, err
+					}
+				}
+			}
+		}
+	}
 	// The decision is handed over as it was recorded, whatever identity it claims:
 	// it is the document under review, and a record claiming another issue's is
 	// exactly what the question should be able to see against this issue's text.
@@ -182,11 +218,12 @@ func (r *Reviewer) reviewCase(ctx context.Context, c workflowcase.Case) (outcome
 	// before the model is asked, because a reviewer that edited the record it is
 	// reviewing would be answering a different question than the one it reports.
 	plausible, err := r.model.Review(ctx, ReviewInput{
-		Schema:   ReviewSchema,
-		Title:    snap.Title,
-		Body:     snap.Body,
-		Question: ReviewerQuestion,
-		Decision: *decision,
+		Schema:          ReviewSchema,
+		Title:           snap.Title,
+		Body:            snap.Body,
+		Question:        ReviewerQuestion,
+		Decision:        *decision,
+		HygieneFindings: findings,
 	})
 	if err != nil {
 		// No verdict document and no index row, so the next tick retries.

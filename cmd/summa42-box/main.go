@@ -1948,7 +1948,8 @@ func runGHTriageReview(ctx context.Context, args []string) error {
 	defer box.Close()
 	adapter = adapter.WithLedger(box.Store, "triage-review", "")
 	reviewer := ghtriage.NewReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose),
-		box.Evidence, ghtriage.NewReviewIndex(box.Store, box.Clock), adapter, box.Clock)
+		box.Evidence, ghtriage.NewReviewIndex(box.Store, box.Clock), adapter, box.Clock).
+		WithExecution(box.Execution).WithContainment(box.Containment)
 	result, err := reviewer.Tick(ctx, missionID)
 	if err != nil {
 		return err

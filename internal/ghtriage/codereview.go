@@ -225,6 +225,13 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 			if task.State != domain.TaskEligible {
 				return CodeReviewResult{}, fmt.Errorf("review task %s needs operator recovery", task.State)
 			}
+			codeFindings, allFindings := scanCodeAndPlanHygiene(input.Plan, *impl.Record, changes)
+			if err := emitHygieneSignal(ctx, r.containment, impl.Record.AttemptID, impl.Record.TaskID, "code-review", codeFindings, map[string]any{
+				"case_id":                    c.ID,
+				"implementation_evidence_id": impl.EvidenceID,
+			}); err != nil {
+				return CodeReviewResult{}, err
+			}
 			attempt, err := r.exec.StartAttempt(ctx, task.ID, "github-issue-code-review", CodeReviewLease(r.modelTimeout))
 			if err != nil {
 				current, e := r.exec.Task(ctx, task.ID)
@@ -235,19 +242,16 @@ func (r *CodeReviewer) Review(ctx context.Context, id domain.ID, sourceRepo stri
 			}
 			task.CurrentAttemptID = attempt.ID
 			task.CurrentFence = attempt.FenceGeneration
-			findings := scanImplementationHygiene(input.Plan, *impl.Record, changes)
-			if err := emitHygieneSignal(ctx, r.containment, impl.Record.AttemptID, impl.Record.TaskID, "code-review", findings); err != nil {
-				return CodeReviewResult{}, err
-			}
-			canonical := CodeReviewInput{Schema: CodeReviewVersion, Question: CodeReviewQuestion, Plan: input.Plan, Snapshot: input.Snapshot, Context: input.Context, Implementation: *impl.Record, Changes: changes, HygieneFindings: findings}
+			canonical := CodeReviewInput{Schema: CodeReviewVersion, Question: CodeReviewQuestion, Plan: input.Plan, Snapshot: input.Snapshot, Context: input.Context, Implementation: *impl.Record, Changes: changes, HygieneFindings: allFindings}
 			frozen, _ := json.Marshal(canonical)
 			var modelInput CodeReviewInput
-			if err := json.Unmarshal(frozen, &modelInput); err != nil {
-				return CodeReviewResult{}, err
+			err = json.Unmarshal(frozen, &modelInput)
+			var output PlanReviewOutput
+			if err == nil {
+				callCtx, cancel := context.WithTimeout(ctx, CodeReviewLease(r.modelTimeout)-time.Minute)
+				output, err = r.model.ReviewCode(callCtx, modelInput)
+				cancel()
 			}
-			callCtx, cancel := context.WithTimeout(ctx, CodeReviewLease(r.modelTimeout)-time.Minute)
-			output, err := r.model.ReviewCode(callCtx, modelInput)
-			cancel()
 			if err == nil {
 				if verr := output.Validate(); verr != nil {
 					err = &planFailure{class: "validation", err: verr}
