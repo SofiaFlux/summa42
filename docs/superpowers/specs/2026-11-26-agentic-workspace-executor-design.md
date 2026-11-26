@@ -2,7 +2,7 @@
 
 **Card:** `M1A-T1` (`DESIGN`) — [development plan](../plans/2026-11-11-development-plan.md#m1a-agentic-execution)
 **Date:** 2026-11-26 (revised after five independent adversarial review passes by Claude)
-**Status:** Proposed, reviewed (`ACCEPT` by Claude, 2026-11-26) — awaiting Owner approval; approval includes the explicit plan amendments to `M1A-T8`, `M2-T3`, `M1A-T4`, `M1A-T3`, and `R10`/`R11` slice rules in §4
+**Status:** Approved (Owner, 2026-11-26; reviewed `ACCEPT` by Claude, 2026-11-26) — includes the explicit plan amendments to `M1A-T8`, `M2-T3`, `M1A-T4`, `M1A-T3`, and `R10`/`R11` slice rules in §4
 **Vision & Plan Alignment:** [Vision](../../VISION.md) (Articles 6, 9, 10, 11, 17, 18, 21), [Plan Section 2.5](../plans/2026-11-11-development-plan.md#25-design-goal-no-runaway-agents-no-private-channels), [Plan Section 2.6](../plans/2026-11-11-development-plan.md#26-design-goal-full-capability-inside-the-boundary)
 
 ---
