@@ -141,10 +141,11 @@ func TestRunWorkerHeartbeatEndToEnd(t *testing.T) {
 	const mod = `package summa42` + "\n" + `default decision := {"outcome": "DENY", "reason_codes": ["deny"]}`
 	modSum := sha256.Sum256([]byte(mod))
 
-	// Use the real wall clock (clock.System) and real time.Ticker so wall-clock
-	// heartbeat renewals keep a 120ms lease alive across a 280ms execution.
+	// Use the real wall clock (clock.System) and real time.Timer so wall-clock
+	// heartbeat renewals keep a 1s lease alive across a 1.5s execution (giving
+	// enough headroom for parallel -race CPU and SQLite contention).
 	exec := systemExecutor{fn: func(_ context.Context, _ executors.AttemptEnvelope) (executors.ExecutionResult, error) {
-		time.Sleep(280 * time.Millisecond)
+		time.Sleep(1500 * time.Millisecond)
 		return executors.ExecutionResult{
 			ExitCode: 0,
 			Stdout:   "wall-clock renewed",
@@ -158,7 +159,7 @@ func TestRunWorkerHeartbeatEndToEnd(t *testing.T) {
 		Clock:            clock.System{},
 		CollectiveID:     "collective-e2e-hb",
 		OwnerPrincipalID: "owner-e2e-hb",
-		LeaseDuration:    120 * time.Millisecond,
+		LeaseDuration:    time.Second,
 		Executors:        map[string]executors.Executor{"long-shell": exec},
 		PolicyEngine: policy.NewOPAEngine(policy.OPAConfig{
 			ModuleName:    "summa42.rego",
@@ -192,7 +193,7 @@ func TestRunWorkerHeartbeatEndToEnd(t *testing.T) {
 	}
 	task, err := box.Execution.CreateTask(ctx, execution.TaskRequest{
 		Purpose:              domain.PurposeRef{Kind: domain.PurposeMission, ID: missionID},
-		Objective:            "survive past 120ms lease",
+		Objective:            "survive past 1s lease",
 		AcceptanceCriteria:   []string{"done"},
 		RequiredCapabilities: []string{"long-shell"},
 		RequiredEnforcement:  domain.EnforcementPartial,
@@ -206,7 +207,7 @@ func TestRunWorkerHeartbeatEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker.WithLeaseHeartbeat(30*time.Millisecond, 2*time.Second)
+	worker.WithLeaseHeartbeat(200*time.Millisecond, 10*time.Second)
 
 	capSnap, err := workerCapacity(box)
 	if err != nil {
@@ -217,6 +218,6 @@ func TestRunWorkerHeartbeatEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res.Outcome != scheduler.StepCompleted || res.TaskID != task.ID {
-		t.Fatalf("outcome=%s task=%s, want COMPLETED and %s (wall-clock heartbeat should have kept lease alive past 120ms)", res.Outcome, res.TaskID, task.ID)
+		t.Fatalf("outcome=%s task=%s, want COMPLETED and %s (wall-clock heartbeat should have kept lease alive past 1s)", res.Outcome, res.TaskID, task.ID)
 	}
 }
