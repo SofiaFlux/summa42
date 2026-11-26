@@ -2,7 +2,7 @@
 
 **Card:** `M1A-T1` (`DESIGN`) — [development plan](../plans/2026-11-11-development-plan.md#m1a-agentic-execution)
 **Date:** 2026-11-26 (revised after five independent adversarial review passes by Claude)
-**Status:** Proposed (awaiting Owner approval; approval includes the explicit plan amendments to `M1A-T8`, `M2-T3`, `M1A-T4`, and `M1A-T3` in §4)
+**Status:** Proposed, reviewed (`ACCEPT` by Claude, 2026-11-26) — awaiting Owner approval; approval includes the explicit plan amendments to `M1A-T8`, `M2-T3`, `M1A-T4`, `M1A-T3`, and `R10`/`R11` slice rules in §4
 **Vision & Plan Alignment:** [Vision](../../VISION.md) (Articles 6, 9, 10, 11, 17, 18, 21), [Plan Section 2.5](../plans/2026-11-11-development-plan.md#25-design-goal-no-runaway-agents-no-private-channels), [Plan Section 2.6](../plans/2026-11-11-development-plan.md#26-design-goal-full-capability-inside-the-boundary)
 
 ---
@@ -39,7 +39,8 @@ Extend `OCIRequest` and `ExecutionRequest` (wiring the currently unused `Executi
 - **Root filesystem & privileges:** `--read-only`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--user=65532:65532`, `--init` (reaps zombies), `--pull=never` (no implicit registry pulls at run time), explicit `--entrypoint` (from the audited image spec), and `--log-driver=none` (prevents unbounded Docker `json-file` host disk growth).
 - **Resource & kernel limits:** `--pids-limit`, `--memory`, `--memory-swap=<memory>` (no swap bypass), `--cpus`, `--shm-size=64m`, `--ulimit fsize=<cap>` and `--ulimit nofile=<cap>`.
 - **Network isolation (`--network=none`):** `--network=none` gives the container **loopback `127.0.0.1` only** and zero routes to the internet, host LAN, host loopback/wildcard daemons (`sshd`, `ollama`, Box control API), IPv6, or Docker's embedded DNS (`127.0.0.11` is absent on `--network=none`). Unlike an `--internal` bridge + host `nftables` rules, `--network=none` works identically under **rootless Docker, rootless Podman, and rootful Docker** without requiring root network namespaces or privileged firewall helpers.
-- **Lifecycle tracking:** `--name=s42-attempt-<attemptID>`, `--cidfile=<box-run-dir>/<attemptID>-<nonce>.cid` (fresh unique path per invocation; fail if the path already exists), and `--label=summa42.attempt=<attemptID>`, `--label=summa42.role=agent`.
+- **Lifecycle tracking:** `--name=s42-attempt-<attemptID>`, `--cidfile=<box-run-dir>/<attemptID>-<nonce>.cid` (fresh unique path per invocation; fail if the path already exists), `--label=summa42.attempt=<attemptID>`, `--label=summa42.role=agent`, and `--label=summa42.pid=<box-pid>`.
+- **Watcher registration order:** register the Attempt watcher in-process **before** calling `docker create` so periodic reaper ticks cannot race between `create` and watcher registration.
 - **Mounts during the agentic execution step (Step 1):**
   - `/workspace`: bind-mounted `rw` from a quota-limited Box-managed workspace directory (`--mount=type=bind,src=<attempt-workspace>,dst=/workspace`, `--workdir=/workspace`), populated by a **full clone** at `BaseSHA` (not shallow, avoiding bundle boundary/prerequisite pitfalls) with `core.hooksPath=/dev/null`, repo-local `user.name`/`user.email` configured in `.git/config` (never `GIT_AUTHOR_*` env vars), and zero remotes or credentials.
   - `/run/s42-proxy`: bind-mounted **`readonly`** (`ro`; Unix domain socket `connect()` works on a `ro` mount) from a per-Attempt Box-owned directory holding `proxy.sock` (§2.3).
@@ -221,7 +222,7 @@ type ProxyUsageSink interface {
 - A watcher goroutine checks every `<= 5s` for: break-glass `FROZEN` / safe mode, Attempt containment (`containment`), `RenewLease` failure (including `domain.ErrLeaseInactive` / `ErrStaleAttempt` when an expired lease is no longer active), or envelope exhaustion.
 - On **any** trigger (or `ctx.Done()`), `DockerBackend.Run` and the watcher read the `--cidfile` and immediately run `docker kill <cid>` + `docker rm -f <cid>` (`context.WithoutCancel(ctx)` with bounded timeout). Stopping lease renewal alone is never enough.
 - **No export on kill:** if killed by freeze, containment, or lease loss, Step 2 bundle export is **not** run.
-- **Box crash recovery & startup/periodic orphan reaper:** after a Box crash, an Attempt row can remain `ACTIVE` until its ~10-minute lease expires. Therefore, at Box / `serve` startup (and on a periodic reaper tick), the reaper scans all containers with label `summa42.attempt` and **immediately kills and removes every container that does not have a live in-process watcher in the current Box process**, regardless of whether its Attempt row is `ACTIVE`, `EXPIRED`, or terminal. `TestBoxCrashLeavesNoRunningSandbox` explicitly verifies immediate termination on Box restart even while the Attempt is still `ACTIVE`.
+- **Box crash recovery & startup/periodic orphan reaper:** after a Box crash, an Attempt row can remain `ACTIVE` until its ~10-minute lease expires. Therefore, at Box / `serve` startup (and on a periodic reaper tick), the reaper scans all containers with label `summa42.attempt` and **immediately kills and removes every container that has no live in-process watcher in the current Box process**, regardless of whether its Attempt row is `ACTIVE`, `EXPIRED`, or terminal. To prevent races with concurrent standalone CLI invocations (`agentic-probe`, `agentic-collect`), the periodic reaper checks label `summa42.pid` (skipping containers created by a still-alive sibling `summa42-box` PID, while startup/crash recovery sweeps dead PIDs) and skips containers created within a short startup grace window unless the owning PID is dead. `TestBoxCrashLeavesNoRunningSandbox` explicitly verifies immediate termination on Box restart even while the Attempt is still `ACTIVE`.
 
 ---
 
@@ -256,7 +257,7 @@ To ensure `EnforcementEnforced` is never self-reported from requested flags (`te
    - **Named tests:** `TestResultIsCollectedViaBundleAndFsckNotAgentGit`, `TestResultIsReadFromGitNotFromAgentClaim`, `TestHostileGitConfigIsNotExecuted`, `TestBundlePathSymlinkFifoDirectoryRefused`, `TestBundleWithoutBasePrerequisiteRefused`, `TestPackBombRefused` (high-compression-ratio pack bomb), `TestCandidateWithSymlinkOrGitlinkRefused`, `TestMultiCommitHistoryCollapsedByBox`.
 2. **Zero credentials inside sandbox; Unix-socket proxy injects & meters:**
    - **Closure:** Placeholders only inside container; per-Attempt Unix-socket reverse proxy injects real provider tokens + `anthropic-beta` OAuth header and settles/persists usage outside the sandbox; verified by live `agentic-probe`.
-   - **Named tests:** `TestNoCredentialReachableInside`, `TestCredentialInjectedOutsideSandbox`, `TestProxyMeasuresProviderUsage`, proxy tests for `Rewrite` / `Connection:` header smuggling, path traversal, redirect refusal, and SSE metering.
+   - **Named tests:** `TestNoCredentialReachableInside`, `TestCredentialInjectedOutsideSandbox`, `TestDockerArgsRefusesNonPlaceholderCredentialEnv`, `TestProxyMeasuresProviderUsage`, proxy tests for `Rewrite` / `Connection:` header smuggling, path traversal, redirect refusal, and SSE metering.
 3. **Total network isolation (`--network=none`), registry containment, and mediated fetch:**
    - **Closure:** `--network=none` + `/run/s42-proxy:ro` Unix-socket bridge; cache-only registries for `private` projects and lockfile-scoped `GET`/`HEAD` reverse proxy for others; `/s42/fetch` `https:443` `GET`-only, allowlisted domain, no IP literals/userinfo, decoded size/rate/URL caps, total refusal for `data_class == "private"`, `agent.fetch.v1` evidence + untrusted marking.
    - **Named tests:** `TestSandboxHasNoRouteButProxy`, `TestOnlyAllowlistedHostsReachable`, `TestRegistryPathCannotReachArbitraryModuleHost`, `TestRegistryLockfileDerivedFromBaseSHANotWorkspace`, `TestFetchRefusedForPrivateDataClass`, `TestFetchOutsideAllowlistRefused`, `TestMediatedFetchEnforcesMethodLengthAndRate`.
@@ -270,10 +271,10 @@ To ensure `EnforcementEnforced` is never self-reported from requested flags (`te
    - **Closure:** One shared protected-pipeline JSON file `internal/repoworkspace/protected_pipeline_paths.json` (embedded via `//go:embed` in Go, read from `base/` by `scripts/check_protected_paths.py`, and itself listed in `PROTECTED_FILES` + `.github/CODEOWNERS`) covering all of `.github/` (workflows, actions, dependabot), `azure-pipelines*.yml`/`.yaml`, `.gitlab-ci.yml`, `Jenkinsfile`, `.circleci/`, and manifest-declared `pipeline_paths` (case-insensitive normalized match).
    - **Named tests:** `TestProtectedPipelineFilesRejectedInEveryProject` (`M1A-T3`), `TestProtectedPipelineFilesRejectedInGreenfieldProject` (`M1A-T5`).
 7. **Freeze, containment, lease expiry, crash, and exhausted budget kill the sandbox:**
-   - **Closure:** Active watcher (`<= 5s` bound), `docker kill` via unique `--cidfile`, proxy immediate refusal on `ErrLeaseInactive`, startup orphan reaper + in-container `timeout -s KILL`, no export on kill, quota-backed disk caps, and pre-start `inspect`-backed `EnforcementEnforced`.
+   - **Closure:** Active watcher (`<= 5s` bound), `docker kill` via unique `--cidfile`, proxy immediate refusal on `ErrLeaseInactive`, startup/periodic orphan reaper + in-container `timeout -s KILL` (benign-crash backstop), no export on kill, quota-backed disk caps, and pre-start `inspect`-backed `EnforcementEnforced`.
    - **Named tests:** `TestFreezeKillsSandbox`, `TestContainmentOrBudgetExhaustionKillsSandbox`, `TestBoxCrashLeavesNoRunningSandbox`, `TestKillLatencyBounded`, `TestWorkspaceCannotExceedQuota`, `TestEnforcedClaimRequiresInspectEvidence`, plus `M1A-T2` lease tests (`TestHeartbeatKeepsLeaseForHours`, `TestMissedHeartbeatExpires`, `TestFreezeStopsRenewal`, `TestRenewalRefusedWhenEnvelopeSpent`, `TestExpiredAttemptCannotRecordResult`).
 8. **Prepaid-only gate until money ledger (`M3-T2`):**
-   - **Closure:** Agentic executor refuses any profile without `profile.CostControl == "PREPAID_QUOTA"` and enforces external + in-container wall-time deadlines.
+   - **Closure:** Agentic executor refuses any profile without `profile.CostControl == "PREPAID_QUOTA"` and enforces the authoritative external wall-time deadline (with in-container `timeout` as a benign-crash backstop).
    - **Named tests:** `TestPaidProfileRefusedWithoutMoneyLedger`, `TestImageAuditRefusesSetuidOrContainerCLI`.
 
 ---
@@ -288,6 +289,7 @@ Because `docs/superpowers/plans/2026-11-11-development-plan.md` is R5-protected,
 3. **`M1A-T4` amendment:** replace live extraction of every commit from a killed container's `.git` with periodic offline Step 2 checkpoint capture (§2.5) so post-kill resume never touches tainted workspace `.git` state.
 4. **`M1A-T3` vs `M1A-T5` size-cap clarification:** candidates exceeding `Export.Validate` (`64` files / `256 KiB`) or `repoworkspace/review.go:27` (`64` paths) are **held** rather than published/reviewed until `M1A-T5` replaces per-file publication with Git push.
 5. **`M9-T7` and `M3-T6` status:** explicitly unaffected by `M1A-T1` — `M9-T7` (host egress firewall) and `M3-T6` (direct API providers) govern native OS-user (`summa42-model` / `summa42-review`) calls, whereas `M1A` governs OCI-sandboxed agentic runs.
+6. **Rules `R10` / `R11` for split cards (`M1A-T8`, `M1A-T3`):** per-slice `Depends` lists govern intermediate slice ordering (while the card-level `Depends` governs final integration in `M1A-T3-f`), intermediate slice PRs cite `Part of #<card issue>`, and only the final slice (`M1A-T2`, `M1A-T8-c`, `M1A-T3-f`) writes `Closes #<card issue>`.
 
 ### Protected Files Touched by Downstream BUILD PRs (Rule R5)
 
