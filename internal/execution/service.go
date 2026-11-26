@@ -59,9 +59,9 @@ type LeaseGate interface {
 }
 
 // EnvelopeChecker verifies inside a renewal transaction that the Task's
-// resource envelope still has remaining capacity before extending a lease.
+// resource envelope still permits continuing the Attempt.
 type EnvelopeChecker interface {
-	AvailableInTx(ctx context.Context, tx *sql.Tx, envelopeID domain.ID) (int64, error)
+	AllowRenewalInTx(ctx context.Context, tx *sql.Tx, envelopeID domain.ID) (bool, error)
 }
 
 type Service struct {
@@ -295,12 +295,12 @@ func (s *Service) RenewLease(ctx context.Context, attemptID domain.ID, leaseDura
 			).Scan(&envelopeID); err != nil {
 				return err
 			}
-			available, err := s.envelopeChecker.AvailableInTx(ctx, tx, envelopeID)
+			allowed, err := s.envelopeChecker.AllowRenewalInTx(ctx, tx, envelopeID)
 			if err != nil {
 				return err
 			}
-			if available < 1 {
-				return fmt.Errorf("%w: envelope %s has %d remaining", ErrEnvelopeExhausted, envelopeID, available)
+			if !allowed {
+				return fmt.Errorf("%w: envelope %s exhausted", ErrEnvelopeExhausted, envelopeID)
 			}
 		}
 		expires := s.clock.Now().UTC().Add(leaseDuration)

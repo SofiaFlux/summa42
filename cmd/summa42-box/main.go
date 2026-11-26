@@ -674,8 +674,8 @@ func parseWorkerFlagsCtx(ctx context.Context, args []string) (workerFlags, error
 	if wf.heartbeatInterval < 0 || wf.maxWallTime < 0 {
 		return workerFlags{}, errors.New("run-worker requires non-negative --heartbeat-interval and --max-wall-time")
 	}
-	if wf.maxWallTime > 0 && wf.heartbeatInterval <= 0 {
-		return workerFlags{}, errors.New("run-worker requires a positive --heartbeat-interval when --max-wall-time is set")
+	if (wf.heartbeatInterval > 0) != (wf.maxWallTime > 0) {
+		return workerFlags{}, errors.New("run-worker requires both --heartbeat-interval and --max-wall-time together")
 	}
 	if strings.TrimSpace(wf.workspaceRoot) == "" {
 		return workerFlags{}, errors.New("run-worker requires --workspace-root")
@@ -683,6 +683,19 @@ func parseWorkerFlagsCtx(ctx context.Context, args []string) (workerFlags, error
 	var err error
 	if wf.modelConfig, err = triageModelConfig(flags); err != nil {
 		return workerFlags{}, err
+	}
+	if wf.heartbeatInterval > 0 {
+		effectiveLease := wf.leaseDuration
+		if effectiveLease == 0 {
+			if wf.modelConfig.Timeout > 0 {
+				effectiveLease = wf.modelConfig.Timeout + 5*time.Minute
+			} else {
+				effectiveLease = summa42runtime.DefaultLeaseDuration
+			}
+		}
+		if wf.heartbeatInterval > effectiveLease/2 {
+			return workerFlags{}, fmt.Errorf("run-worker --heartbeat-interval (%s) must be at most half the effective lease duration (%s)", wf.heartbeatInterval, effectiveLease)
+		}
 	}
 	if err := checkStandaloneRoleDistinct(ctx, "producer", wf.modelConfig.RunAsUser); err != nil {
 		return workerFlags{}, err

@@ -258,23 +258,40 @@ func TestFreezeStopsRenewal(t *testing.T) {
 			t.Fatalf("attempt lease state after containment = %s, want REVOKED", got.LeaseState)
 		}
 	})
+	t.Run("safe mode lease gate runs before envelope check even when spent", func(t *testing.T) {
+		h := newLongAttemptHarness(t, 1)
+		if _, err := h.store.DB().ExecContext(h.ctx,
+			`UPDATE dead_man_switch SET heartbeat_timeout_seconds = 3600 WHERE singleton = 1`,
+		); err != nil {
+			t.Fatal(err)
+		}
+		_, attempt := h.startAttempt(t, 3*time.Hour)
+		if err := h.store.WithTx(h.ctx, func(tx *sql.Tx) error {
+			res, err := h.resources.ReserveInTx(h.ctx, tx, h.envelopeID, 1, resources.Enforceability{
+				CostControl: resources.CostPrepaidQuota, RequireHardCap: true, Source: "profile:claude",
+			})
+			if err != nil {
+				return err
+			}
+			return h.resources.SettleInTx(h.ctx, tx, res.ID, 1)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		h.clk.Advance(2 * time.Hour)
+		err := h.exec.RenewLease(h.ctx, attempt.ID, 10*time.Minute)
+		if !errors.Is(err, emergency.ErrSafeModeRestricted) {
+			t.Fatalf("RenewLease frozen+spent = %v, want ErrSafeModeRestricted before envelope check", err)
+		}
+	})
 }
 
 func TestRenewalRefusedWhenEnvelopeSpent(t *testing.T) {
 	h := newLongAttemptHarness(t, 2)
 	_, attempt := h.startAttempt(t, 10*time.Minute)
 
-	// With 2 units remaining, renewal succeeds.
-	h.clk.Advance(3 * time.Minute)
-	if err := h.exec.RenewLease(h.ctx, attempt.ID, 10*time.Minute); err != nil {
-		t.Fatalf("RenewLease with remaining budget failed: %v", err)
-	}
-	afterGoodRenew, err := h.exec.Attempt(h.ctx, attempt.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Spend the entire envelope (2 units).
+	// An active HELD reservation consuming the full hard_limit is still within
+	// budget and must allow renewal (H1).
+	var resID domain.ID
 	if err := h.store.WithTx(h.ctx, func(tx *sql.Tx) error {
 		res, err := h.resources.ReserveInTx(h.ctx, tx, h.envelopeID, 2, resources.Enforceability{
 			CostControl: resources.CostPrepaidQuota, RequireHardCap: true, Source: "profile:claude",
@@ -282,7 +299,23 @@ func TestRenewalRefusedWhenEnvelopeSpent(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return h.resources.SettleInTx(h.ctx, tx, res.ID, 2)
+		resID = res.ID
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.clk.Advance(3 * time.Minute)
+	if err := h.exec.RenewLease(h.ctx, attempt.ID, 10*time.Minute); err != nil {
+		t.Fatalf("RenewLease with active HELD reservation within limit failed: %v", err)
+	}
+	afterGoodRenew, err := h.exec.Attempt(h.ctx, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Settling the full envelope (2 units) spends it and blocks renewal.
+	if err := h.store.WithTx(h.ctx, func(tx *sql.Tx) error {
+		return h.resources.SettleInTx(h.ctx, tx, resID, 2)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +323,7 @@ func TestRenewalRefusedWhenEnvelopeSpent(t *testing.T) {
 	h.clk.Advance(3 * time.Minute)
 	err = h.exec.RenewLease(h.ctx, attempt.ID, 10*time.Minute)
 	if !errors.Is(err, execution.ErrEnvelopeExhausted) {
-		t.Fatalf("RenewLease when envelope spent = %v, want ErrEnvelopeExhausted", err)
+		t.Fatalf("RenewLease when envelope settled/spent = %v, want ErrEnvelopeExhausted", err)
 	}
 
 	got, err := h.exec.Attempt(h.ctx, attempt.ID)
@@ -299,6 +332,24 @@ func TestRenewalRefusedWhenEnvelopeSpent(t *testing.T) {
 	}
 	if !got.LeaseExpiresAt.Equal(afterGoodRenew.LeaseExpiresAt) {
 		t.Fatalf("refused renewal mutated lease expiry: got %s, want %s", got.LeaseExpiresAt, afterGoodRenew.LeaseExpiresAt)
+	}
+
+	// Unresolved exposure equal to hard_limit also blocks renewal.
+	h2 := newLongAttemptHarness(t, 2)
+	_, attempt2 := h2.startAttempt(t, 10*time.Minute)
+	if err := h2.store.WithTx(h2.ctx, func(tx *sql.Tx) error {
+		res, err := h2.resources.ReserveInTx(h2.ctx, tx, h2.envelopeID, 2, resources.Enforceability{
+			CostControl: resources.CostPrepaidQuota, RequireHardCap: true, Source: "profile:claude",
+		})
+		if err != nil {
+			return err
+		}
+		return h2.resources.MarkUnresolvedInTx(h2.ctx, tx, res.ID)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h2.exec.RenewLease(h2.ctx, attempt2.ID, 10*time.Minute); !errors.Is(err, execution.ErrEnvelopeExhausted) {
+		t.Fatalf("RenewLease when envelope unresolved = %v, want ErrEnvelopeExhausted", err)
 	}
 }
 

@@ -40,7 +40,11 @@ import (
 	"github.com/SofiaFlux/summa42/internal/wake"
 )
 
-const defaultLeaseDuration = 5 * time.Minute
+// DefaultLeaseDuration is the default Attempt lease duration when callers do
+// not specify one.
+const DefaultLeaseDuration = 5 * time.Minute
+
+const defaultLeaseDuration = DefaultLeaseDuration
 
 type Config struct {
 	StatePath           string

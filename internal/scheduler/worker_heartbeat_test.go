@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -181,5 +182,129 @@ func TestWorkerHeartbeatCancelsOnEnvelopeExhausted(t *testing.T) {
 	}
 	if res.Outcome != scheduler.StepFailed || !cancelled.Load() {
 		t.Fatalf("outcome=%s cancelled=%v, want FAILED and cancelled=true", res.Outcome, cancelled.Load())
+	}
+	var failureClass, signature string
+	if err := store.DB().QueryRowContext(ctx,
+		`SELECT failure_class, signature FROM attempt_failures WHERE attempt_id = ?`, res.AttemptID,
+	).Scan(&failureClass, &signature); err != nil {
+		t.Fatal(err)
+	}
+	if domain.FailureClass(failureClass) != domain.FailureResource || !strings.HasPrefix(signature, "worker:budget:") {
+		t.Fatalf("failure_class=%q signature=%q, want RESOURCE and worker:budget:...", failureClass, signature)
+	}
+}
+
+func TestWorkerHeartbeatRejectsInvalidConfigAndCapsBelowLease(t *testing.T) {
+	ctx := context.Background()
+	store := testutil.OpenStore(t)
+	clk := testutil.NewClock(time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC))
+	purposes := purpose.New(store, clk)
+	execSvc := execution.New(store, clk, purposes)
+	resSvc := resources.New(store, clk)
+	schedSvc := scheduler.New(store, clk, purposes, execSvc, resSvc, 10*time.Minute)
+	evidenceStore, err := evidence.New(store, t.TempDir(), clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifySvc := verification.New(store, clk, execSvc)
+
+	envelopeID := domain.NewID("envelope")
+	if _, err := store.DB().ExecContext(ctx,
+		`INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at) VALUES (?, 5, ?)`,
+		envelopeID, clk.Now().UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execSvc.CreateTask(ctx, execution.TaskRequest{
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeOwnerDirective, ID: "owner-hb-cfg"},
+		Objective:            "validate heartbeat config",
+		AcceptanceCriteria:   []string{"done"},
+		RequiredCapabilities: []string{"shell"},
+		RequiredEnforcement:  domain.EnforcementPartial,
+		ResourceEnvelopeID:   envelopeID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	capSnap := scheduler.CapacitySnapshot{Capabilities: map[string]scheduler.CapabilityCapacity{
+		"shell": {Accessible: true, Enforcement: domain.EnforcementPartial},
+	}}
+
+	// Missing maxWallTime must error.
+	w1, err := scheduler.NewWorker(schedSvc, execSvc, evidenceStore, verifySvc,
+		map[string]executors.Executor{"shell": &fakeExecutor{}}, clk, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w1.WithLeaseHeartbeat(10*time.Millisecond, 0)
+	if _, err := w1.StepOnce(ctx, capSnap); err == nil {
+		t.Fatal("StepOnce succeeded with heartbeatInterval > 0 and maxWallTime == 0")
+	}
+
+	// Re-make eligible by testing on a fresh task/worker where interval >= lease.
+	task2, err := execSvc.CreateTask(ctx, execution.TaskRequest{
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeOwnerDirective, ID: "owner-hb-cfg2"},
+		Objective:            "validate interval < lease",
+		AcceptanceCriteria:   []string{"done"},
+		RequiredCapabilities: []string{"shell"},
+		RequiredEnforcement:  domain.EnforcementPartial,
+		ResourceEnvelopeID:   envelopeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = task2
+	w2, err := scheduler.NewWorker(schedSvc, execSvc, evidenceStore, verifySvc,
+		map[string]executors.Executor{"shell": &fakeExecutor{}}, clk, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2.WithLeaseHeartbeat(15*time.Minute, time.Hour)
+	if _, err := w2.StepOnce(ctx, capSnap); err == nil {
+		t.Fatal("StepOnce succeeded with heartbeatInterval >= leaseDuration")
+	}
+
+	// maxWallTime shorter than leaseDuration cancels execution cleanly at maxWallTime.
+	task3, err := execSvc.CreateTask(ctx, execution.TaskRequest{
+		Purpose:              domain.PurposeRef{Kind: domain.PurposeOwnerDirective, ID: "owner-hb-cap"},
+		Objective:            "cap below lease",
+		AcceptanceCriteria:   []string{"done"},
+		RequiredCapabilities: []string{"shell"},
+		RequiredEnforcement:  domain.EnforcementPartial,
+		ResourceEnvelopeID:   envelopeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var timedOut atomic.Bool
+	w3, err := scheduler.NewWorker(schedSvc, execSvc, evidenceStore, verifySvc,
+		map[string]executors.Executor{"shell": callbackExecutor{fn: func(runCtx context.Context, _ executors.AttemptEnvelope) (executors.ExecutionResult, error) {
+			select {
+			case <-runCtx.Done():
+				timedOut.Store(errors.Is(runCtx.Err(), context.DeadlineExceeded))
+				return executors.ExecutionResult{ExitCode: 1}, runCtx.Err()
+			case <-time.After(2 * time.Second):
+				return executors.ExecutionResult{ExitCode: 0}, nil
+			}
+		}}}, clk, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w3.WithLeaseHeartbeat(10*time.Millisecond, 40*time.Millisecond)
+	// Cancel task1 and task2 (returned/left ELIGIBLE because w1/w2 errored on
+	// invalid heartbeat config before execution completed) so task3 runs.
+	for _, id := range []domain.ID{task2.ID} {
+		_, _ = execSvc.CancelEligibleTask(ctx, id)
+	}
+	res3, err := w3.StepOnce(ctx, capSnap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// If task1 ran first (priority order), cancel/verify timedOut was reached.
+	if res3.TaskID != task3.ID && !timedOut.Load() {
+		t.Fatalf("unexpected task %s ran without timing out", res3.TaskID)
+	}
+	if res3.Outcome != scheduler.StepFailed || !timedOut.Load() {
+		t.Fatalf("outcome=%s timedOut=%v, want FAILED and timedOut=true", res3.Outcome, timedOut.Load())
 	}
 }
