@@ -139,7 +139,10 @@ func (w *Worker) executeAttempt(ctx context.Context, executor executors.Executor
 	var hbMu sync.Mutex
 	var hbErr error
 	var hbDone chan struct{}
+	var stopHB context.CancelFunc
 	if w.heartbeatInterval > 0 {
+		var hbCtx context.Context
+		hbCtx, stopHB = context.WithCancel(ctx)
 		hbDone = make(chan struct{})
 		go func() {
 			defer close(hbDone)
@@ -147,14 +150,16 @@ func (w *Worker) executeAttempt(ctx context.Context, executor executors.Executor
 			defer ticker.Stop()
 			for {
 				select {
-				case <-execCtx.Done():
+				case <-hbCtx.Done():
 					return
 				case <-ticker.C:
-					if rerr := w.execution.RenewLease(execCtx, attempt.ID, w.scheduler.leaseDuration); rerr != nil {
-						hbMu.Lock()
-						hbErr = rerr
-						hbMu.Unlock()
-						cancel()
+					if rerr := w.execution.RenewLease(hbCtx, attempt.ID, w.scheduler.leaseDuration); rerr != nil {
+						if hbCtx.Err() == nil {
+							hbMu.Lock()
+							hbErr = rerr
+							hbMu.Unlock()
+							cancel()
+						}
 						return
 					}
 				}
@@ -163,6 +168,9 @@ func (w *Worker) executeAttempt(ctx context.Context, executor executors.Executor
 	}
 
 	outcome, execErr := w.runExecutor(execCtx, executor, envelope)
+	if stopHB != nil {
+		stopHB()
+	}
 	cancel()
 	if hbDone != nil {
 		<-hbDone
