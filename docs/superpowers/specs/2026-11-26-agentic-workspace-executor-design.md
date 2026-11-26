@@ -1,7 +1,7 @@
 # M1A-T1 Design: Agentic Workspace Executor
 
 **Card:** `M1A-T1` (`DESIGN`) — [development plan](../plans/2026-11-11-development-plan.md#m1a-agentic-execution)
-**Date:** 2026-11-26 (revised after three independent adversarial review passes by Claude)
+**Date:** 2026-11-26 (revised after four independent adversarial review passes by Claude)
 **Status:** Proposed (awaiting Owner approval; approval includes the explicit plan amendments to `M1A-T8`, `M2-T3`, `M1A-T4`, and `M1A-T3` in §4)
 **Vision & Plan Alignment:** [Vision](../../VISION.md) (Articles 6, 9, 10, 11, 17, 18, 21), [Plan Section 2.5](../plans/2026-11-11-development-plan.md#25-design-goal-no-runaway-agents-no-private-channels), [Plan Section 2.6](../plans/2026-11-11-development-plan.md#26-design-goal-full-capability-inside-the-boundary)
 
@@ -64,7 +64,7 @@ Running `docker` as the Box user against a root-owned `/var/run/docker.sock` gra
 
 Summa42 **never** fakes `ENFORCED` containment when Docker/OCI is absent:
 
-1. Project manifests (`M2-T3`, amended in §4) declare `agentic: required | preferred | off`.
+1. Project manifests (`M2-T3`, amended in §4) declare `agentic: required | preferred | off`, **defaulting to `"off"` when omitted** (fail-safe).
 2. If `teb.DockerProvider.Available(ctx)` is `false` (or OCI is unavailable):
    - When `agentic == required` (or a Task declares `RequiredEnforcement: domain.EnforcementEnforced`), the Attempt **fails closed** (`teb.ErrProviderUnavailable`) and never runs write/auto-approve CLIs on the host.
    - When `agentic == preferred`, `Implementer` explicitly downgrades to the existing **complete-file JSON edit stage** (`internal/ghtriage/implementation.go`, `UNENFORCED` model call + host validation) and records the downgrade (`mode: json_edits`, `enforcement: UNENFORCED`) as immutable case evidence so a non-sandboxed run is never mistaken for an agentic sandbox run.
@@ -78,7 +78,7 @@ Images are **Owner-approved Project data**, never agent-selected:
 1. **Image reference:** the Project manifest (`M2-T3`, §4) pins an immutable digest (`<registry>/<image>@sha256:<digest>`), installed/pulled beforehand by the Owner/operator.
 2. **Image-adoption audit (mandatory before use):** before an image digest is accepted in a manifest or run, Box trusted code inspects (`docker image inspect`) and runs a read-only audit scan inside the image (`--network=none --user=65532:65532`) verifying:
    - no `VOLUME` declarations in the image config (prevents anonymous unquotaed host writes under `/var/lib/docker`),
-   - expected `ENTRYPOINT` (a small Box-verified entrypoint that creates `/tmp/home` and starts the audited local `127.0.0.1` -> `/run/s42-proxy/proxy.sock` TCP-to-UDS bridge before `exec`-ing the harness),
+   - expected `ENTRYPOINT` (`/usr/local/bin/s42-entrypoint`: a small Box-verified entrypoint that creates `/tmp/home`, starts the audited local `127.0.0.1` -> `/run/s42-proxy/proxy.sock` TCP-to-UDS bridge, and wraps the harness invocation with `timeout -s KILL <wall_seconds>` from the Box-supplied wall-time argument before `exec`),
    - no setuid or setgid binaries (`find / -perm /6000`),
    - no `docker`, `podman`, `nerdctl`, `ssh`, or `sudo` binaries,
    - no pre-baked CLI auth/login files (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.copilot`, `~/.commandcode`).
@@ -105,7 +105,7 @@ All proxy paths enforce:
 - **`httputil.ReverseProxy.Rewrite` (never `Director`):** prevents `Connection: Authorization` header smuggling from stripping Box-injected auth headers.
 - **Header allowlist:** only explicitly allowlisted request headers pass (`Content-Type`, `Accept`, `User-Agent`, `Anthropic-Version`, `Anthropic-Beta`, `OpenAI-Beta`); `Authorization`, `x-api-key`, `Proxy-Authorization`, `Cookie`, `Host`, org/project override headers, `Upgrade` (no WebSockets), and `Connection`-named headers are stripped.
 - **Route, method & path hygiene:** reject absolute-form request targets, `..`, `%2e`, `//`, and encoded slashes (`%2f`); match provider routes on `r.URL.Path` (preserving allowlisted query parameters such as `?beta=true` after segment validation) strictly by whole path segment; set `CheckRedirect` to `http.ErrUseLastResponse`; cap request body size and dial/header/idle timeouts; redact upstream `401`/`403` response bodies so upstream errors cannot echo key fragments.
-- **Active-lease & hard-cap check on every request:** before forwarding any request, the proxy checks in-process budget/in-flight limits and verifies via `ProxyUsageSink.IsLeaseActive` (§2.6) that the Attempt lease is still active (immediately refusing upon `ErrLeaseInactive` or freeze rather than waiting for the next watcher poll).
+- **Active-lease & hard-cap check on every request:** before forwarding any request, the proxy calls `ProxyUsageSink.ReserveRequest` (§2.6), which atomically checks that the Attempt lease is still active and reserves `1` request unit against the Attempt's envelope (immediately refusing upon `ErrLeaseInactive`, freeze, or envelope exhaustion rather than waiting for the next watcher poll).
 
 #### First-slice harness, subscription OAuth (`PREPAID_QUOTA`), and telemetry suppression
 
@@ -120,7 +120,7 @@ Until `M3-T2` (money ledger) ships, agentic Attempts allow **only** profiles cla
 #### Package registry path
 
 - **Private projects (`data_class == "private"`):** **cache-only** (zero live registry proxy access; dependencies come solely from Box pre-staged read-only cache mounts or vendored trees), preventing exfiltration via module lookup URLs (e.g., `proxy.golang.org/<attacker-host>/<secret>/@v/list`).
-- **Non-private projects:** plain-HTTP proxy endpoint on the same Unix-socket server (`GOPROXY=http://127.0.0.1:<port>/registry/go`, `npm_config_registry=http://127.0.0.1:<port>/registry/npm`, etc.) permitting **`GET` and `HEAD` only**, restricted strictly to module/package names enumerated in the Project manifest `registry_allowlist` or repository lockfile (`go.mod`, `package-lock.json`, etc.), dialing upstream **HTTPS port 443 only** after `publicEgressIP` DNS validation, with per-Attempt request count and byte-transfer caps.
+- **Non-private projects:** plain-HTTP proxy endpoint on the same Unix-socket server (`GOPROXY=http://127.0.0.1:<port>/registry/go`, `npm_config_registry=http://127.0.0.1:<port>/registry/npm`, etc.) permitting **`GET` and `HEAD` only**, scoped by the Project manifest's `registry_allowlist` mode: either `lockfile` (only module/package names already present in `go.mod`, `package-lock.json`, etc.) or explicit Owner-allowlisted package/module prefixes (needed for greenfield projects or tasks permitted to add new dependencies, which remain gated by `M1A-T7` at collection), dialing upstream **HTTPS port 443 only** after `publicEgressIP` DNS validation, with per-Attempt request count and byte-transfer caps.
 - **Test:** `TestRegistryPathCannotReachArbitraryModuleHost`.
 
 #### Mediated fetch tool (`/s42/fetch`)
@@ -167,7 +167,7 @@ Because the agent had write access to `/workspace` (including `/workspace/.git`)
    - Uncommitted working-tree changes left when the agent exits are **dropped** (never committed by the host or an extra helper). Note that `repoworkspace` checks out `BaseSHA` as a detached `HEAD`, so an agent advancing `HEAD` leaves an advanced detached `HEAD` (which is accepted!). Bundle export is skipped and the Attempt records **no candidate** only if `HEAD` is unborn, `BaseSHA` is not an ancestor of `HEAD`, or `HEAD^{tree} == BaseSHA^{tree}`.
 2. **Offline bundle export container (Step 2 — periodic checkpoint or normal/wall-time exit only):**
    - Never run after break-glass freeze, containment, or lease loss (§2.6).
-   - Starts a separate short-lived `--network=none --read-only --user=65532:65532` container with distinct lifecycle identity (`--name=s42-export-<attemptID>-<seq>`, `--cidfile=<box-run-dir>/export-<attemptID>-<seq>.cid`, `--label=summa42.attempt=<attemptID>`, `--label=summa42.role=export`), mounting `--tmpfs /tmp:rw,nosuid,nodev,size=64m`, mounting `/workspace` **`readonly`**, and mounting a fresh Box-created export directory at `/out` **`rw`** (§2.1 ownership). Covered by the same freeze watcher so break glass kills an active export container immediately.
+   - Starts a separate short-lived `--network=none --read-only --user=65532:65532` container overriding `--entrypoint=/bin/sh` (so `/usr/local/bin/s42-entrypoint` does **not** run or expect `/run/s42-proxy`) with distinct lifecycle identity (`--name=s42-export-<attemptID>-<seq>`, `--cidfile=<box-run-dir>/export-<attemptID>-<seq>.cid`, `--label=summa42.attempt=<attemptID>`, `--label=summa42.role=export`), mounting `--tmpfs /tmp:rw,nosuid,nodev,size=64m`, mounting `/workspace` **`readonly`**, and mounting a fresh Box-created export directory at `/out` **`rw`** (§2.1 ownership). Inspected before `docker start` via the dedicated Step-2 inspect profile (§2.8) and covered by the same freeze watcher so break glass kills an active export container immediately.
    - Runs (with explicit `umask 022` so `/out/candidate.bundle` is `0644`):
      `git -C /workspace -c core.hooksPath=/dev/null -c safe.directory=/workspace bundle create /out/candidate.bundle <BaseSHA>..HEAD` with `GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_REPLACE_OBJECTS=1`.
 3. **Host-side safe consumption of `<export-dir>/candidate.bundle`:**
@@ -197,8 +197,8 @@ Agentic Attempts run for hours while bounded across four axes:
 
 | Limit | Mechanism | Enforcement Point |
 | --- | --- | --- |
-| **Wall time & liveness** | Short initial lease (e.g. `10m`) renewed via `execution.Service.RenewLease` (`M1A-T2`), plus external hard `max_attempt_wall_time` (`context.WithDeadline`) and an in-container dead-man wall timer (`timeout -s KILL <wall>`) | Outer Box context + `RenewLease` + in-container `timeout` |
-| **Request-unit envelope & proxy usage** | Unit is **integer request units** (`1` unit per forwarded model proxy request, matching `00005_resources.sql`). Export `resources.Service.AvailableInTx(ctx, tx, envelopeID)` so `execution.Service.RenewLease` (via an `EnvelopeChecker` interface) calls `leaseGate.CheckLeaseAllowedTx` and checks `available >= 1` **inside the same SQLite transaction** as updating `lease_expires_at`. Before forwarding each proxy request, the proxy reserves `1` unit via `ReserveInTx` (with `RequireHardCap: true` from `profile.CostControl`); for non-streamed responses it records tokens on completion, and for SSE streams it parses `message_stop` / `response.completed` events as they stream, settling tokens on completion (or settling as `UNKNOWN` with the `1`-unit reservation retained on early disconnect/parse failure). Proxy telemetry persists to `proxy_usage` (`00040+`) via `ProxyUsageSink` (keeping `internal/teb` free of SQLite imports). **Until `M3-T2` ships, only `CostPrepaidQuota` profiles are allowed** | Pre-start eligibility + every `RenewLease` tx + every proxy request |
+| **Wall time & liveness** | Short initial lease (e.g. `10m`) renewed via `execution.Service.RenewLease` (`M1A-T2`), plus external hard `max_attempt_wall_time` (`context.WithDeadline`) and an in-container `timeout -s KILL <wall_seconds>` applied by `/usr/local/bin/s42-entrypoint` from the Box-supplied argument | Outer Box context + `RenewLease` + audited entrypoint `timeout` |
+| **Request-unit envelope & proxy usage** | Unit is **integer request units** (`1` unit per forwarded model proxy request, matching `00005_resources.sql`). Export `resources.Service.AvailableInTx(ctx, tx, envelopeID)` so `execution.Service.RenewLease` (via an `EnvelopeChecker` interface) calls `leaseGate.CheckLeaseAllowedTx` and checks `available >= 1` **inside the same SQLite transaction** as updating `lease_expires_at`. Before forwarding each proxy request, `ProxyUsageSink.ReserveRequest` atomically checks that the Attempt lease is active and reserves `1` unit via `resources.Service.ReserveInTx` (with `RequireHardCap: true` derived from `profile.CostControl`); for non-streamed responses `SettleRequest` records tokens and settles on completion, and for SSE streams it parses `message_stop` / `response.completed` events as they stream, settling tokens on completion (or settling as `status: "UNKNOWN"` with the `1`-unit reservation retained on early disconnect/parse failure). Proxy telemetry persists to `proxy_usage` (`00040+`) via `ProxyUsageSink` (keeping `internal/teb` free of SQLite imports). **Until `M3-T2` ships, only `CostPrepaidQuota` profiles are allowed** | Pre-start eligibility + every `RenewLease` tx + every proxy request |
 | **Compute** | OCI `--pids-limit`, `--memory`, `--memory-swap=<memory>`, `--cpus`, `--ulimit` | Kernel cgroups inside OCI runtime |
 | **Disk** | Quota-limited workspace filesystem (XFS/ext4 project quota or pre-sized loop mount / tmpfs), bounded `/tmp` `tmpfs`, `--log-driver=none`, `--shm-size`, and no `VOLUME` in image | Filesystem quota + container runtime |
 
@@ -206,9 +206,9 @@ Agentic Attempts run for hours while bounded across four axes:
 
 ```go
 type ProxyUsageSink interface {
-	RecordModelCall(ctx context.Context, attemptID domain.ID, provider string, inTokens, outTokens int64, status string) error
+	ReserveRequest(ctx context.Context, attemptID domain.ID, provider string, costControl string) (reservationID domain.ID, err error)
+	SettleRequest(ctx context.Context, attemptID, reservationID domain.ID, provider string, inTokens, outTokens int64, status string) error
 	RecordEgressDenied(ctx context.Context, attemptID domain.ID, host, reason string) error
-	IsLeaseActive(ctx context.Context, attemptID domain.ID) (bool, error)
 }
 ```
 
@@ -235,7 +235,10 @@ type ProxyUsageSink interface {
 To ensure `EnforcementEnforced` is never self-reported from requested flags (`teb/profile.go` lines 3–5):
 
 1. After `docker create` and **before `docker start`**, `DockerProvider` runs `docker inspect <cid>` and checks:
-   - **Positive matches:** `HostConfig.ReadonlyRootfs == true`, `CapDrop == ["ALL"]`, `SecurityOpt` contains `no-new-privileges`, `Config.User == "65532:65532"`, `HostConfig.Privileged == false`, `NetworkMode == "none"`, `PidsLimit`, `Memory`, `MemorySwap == Memory`, `NanoCpus`, `HostConfig.Tmpfs` contains `/tmp` with `rw,exec,nosuid,nodev`, `Mounts` contains strictly `/workspace` and `/run/s42-proxy:ro` (plus any explicit `ro` cache mounts), and `Config.Env` equals the audited image baseline plus allowlisted non-secret Attempt vars.
+   - **Positive matches (Step-1 agent profile vs. Step-2 export/cleanup profile):**
+     - *Both steps:* `HostConfig.ReadonlyRootfs == true`, `CapDrop == ["ALL"]`, `SecurityOpt` contains `no-new-privileges`, `Config.User == "65532:65532"`, `HostConfig.Privileged == false`, `NetworkMode == "none"`, `PidsLimit`, `Memory`, `MemorySwap == Memory`, `NanoCpus`, `HostConfig.Tmpfs` contains `/tmp` (`rw,exec,nosuid,nodev` in Step 1; `rw,nosuid,nodev` in Step 2), and `Config.Env` equals the audited image baseline plus allowlisted non-secret Attempt vars.
+     - *Step-1 agent profile:* `Mounts` contains strictly `/workspace` (`rw`) and `/run/s42-proxy:ro` (plus any explicit `ro` cache mounts), and `Config.Entrypoint` matches the audited `/usr/local/bin/s42-entrypoint`.
+     - *Step-2 export / cleanup profile:* `Mounts` contains strictly `/workspace:ro` + `/out:rw` (for export; or `/workspace:rw` only for UID-65532 cleanup) and **no** `/run/s42-proxy`, and `Config.Entrypoint` matches the explicit `/bin/sh` override.
    - **Negative checks:** `HostConfig.CapAdd` empty, `HostConfig.Devices` empty, `HostConfig.PidMode == ""`, `HostConfig.IpcMode != "host"`, `SecurityOpt` contains neither `seccomp=unconfined` nor `apparmor=unconfined`, `HostConfig.ExtraHosts` empty, and `HostConfig.Dns` empty.
 2. `teb.ModelEgressAssessment` (`internal/teb/assessment.go`) is populated from actual `--network=none` + Unix-socket proxy readiness probes (`DirectGeneralEgressBlocked`, `RequiredModelEndpointsViaProxy`, `Evidence`), and `Verified()` must return `true` before `Agentic` mode is permitted.
 3. **Test:** `TestEnforcedClaimRequiresInspectEvidence`.
@@ -277,7 +280,7 @@ To ensure `EnforcementEnforced` is never self-reported from requested flags (`te
 
 Because `docs/superpowers/plans/2026-11-11-development-plan.md` is R5-protected, Owner approval of `M1A-T1` authorizes updating the plan with these exact amendments:
 1. **`M1A-T8` amendment:** replace "existing CONNECT proxy" with per-Attempt `--network=none` + Unix-socket HTTP reverse proxy (§2.3) so credential injection, `GET`/`HEAD` registry restriction, and token metering work without TLS MITM or rootless firewall incompatibility.
-2. **`M2-T3` manifest schema additions:** add `agentic` (`required | preferred | off`), `sandbox_image` (`@sha256:`), `sandbox_limits` (`pids`, `memory_bytes`, `cpus`, `tmpfs_bytes`, `workspace_quota_bytes`, `max_attempt_wall_time`), `registry_allowlist`, `fetch_allowlist`, `pipeline_paths`, and `allow_executable_edits` to `project.json`.
+2. **`M2-T3` manifest schema additions:** add `agentic` (`required | preferred | off`, defaulting to `"off"`), `sandbox_image` (`@sha256:`), `sandbox_limits` (`pids`, `memory_bytes`, `cpus`, `tmpfs_bytes`, `workspace_quota_bytes`, `max_attempt_wall_time`), `registry_allowlist`, `fetch_allowlist`, `pipeline_paths`, and `allow_executable_edits` to `project.json`.
 3. **`M1A-T4` amendment:** replace live extraction of every commit from a killed container's `.git` with periodic offline Step 2 checkpoint capture (§2.5) so post-kill resume never touches tainted workspace `.git` state.
 4. **`M1A-T3` vs `M1A-T5` size-cap clarification:** candidates exceeding `Export.Validate` (`64` files / `256 KiB`) or `repoworkspace/review.go:27` (`64` paths) are **held** rather than published/reviewed until `M1A-T5` replaces per-file publication with Git push.
 5. **`M9-T7` and `M3-T6` status:** explicitly unaffected by `M1A-T1` — `M9-T7` (host egress firewall) and `M3-T6` (direct API providers) govern native OS-user (`summa42-model` / `summa42-review`) calls, whereas `M1A` governs OCI-sandboxed agentic runs.
@@ -290,16 +293,21 @@ No new `processStartAllowlist` entries (`tests/acceptance/architecture_test.go`)
 - `internal/ghtriage/climodel/profile.go` (`AgenticSpec`, `CostControl`, `DraftProfile` refusal),
 - `.github/workflows/ci.yml` and `Makefile` (if OCI agentic acceptance target is added to `Makefile`).
 
-### Proposed PR Split per Rules R3 & R8 (ordered, ~200–400 non-test LOC each, every PR wired to `cmd/`)
+### Proposed PR Split per Rules R3 & R8
 
-1. **`M1A-T2`:** `resources.Service.AvailableInTx`, `execution.Service.RenewLease` envelope + `leaseGate` single-tx check, and the 5 lease tests (called via existing `execution.Service` in `cmd/`).
-2. **`M1A-T8-a`:** Per-Attempt Unix-socket reverse proxy (`Rewrite`, header allowlist, `anthropic-beta` OAuth injection, SSE metering, active-lease check) + `ProxyUsageSink` interface + `proxy_usage` migration (`00040+`), wired into a new `cmd/summa42-box agentic-proxy-check` / `agentic-probe` command so the package and migration have a real `cmd/` caller (R3).
-3. **`M1A-T8-b`** *(depends on `M1A-T8-a`)*: Hardened `/s42/fetch`, lockfile-scoped `GET`/`HEAD` registry proxy, and `dialAllowedTarget` IP-literal `publicEgressIP` check, wired into the `cmd/summa42-box` proxy builder.
-4. **`M1A-T3-a`** *(depends on `M1A-T8-a`, `M1A-T8-b`)*: `OCIRequest` / `DockerProvider` hardening (`docker create` -> `inspect` -> `start`, `--network=none`, `--cidfile`, `--tmpfs exec`, `--log-driver=none`, image audit, `ModelEgressAssessment` wiring, `/run/s42-proxy:ro` mount), wired into `cmd/summa42-box agentic-probe` (driving `TestSandboxHasNoRouteButProxy` and `TestEnforcedClaimRequiresInspectEvidence`).
-5. **`M1A-T3-b`** *(depends on `M1A-T3-a`)*: Offline `/out` bundle export container, `O_NOFOLLOW | O_NONBLOCK` + `fsck` + `CheckTreeHygiene` + Box-built `Candidate` + shared `protected_pipeline_paths.json` (`repoworkspace` + `check_protected_paths.py` + `CODEOWNERS`), wired into a `cmd/summa42-box` workspace-collect helper.
-6. **`M1A-T3-c`** *(depends on `M1A-T3-a`)*: `climodel` `AgenticSpec` / `CostControl` gate (`profile.go`) + `TestAutoApproveRefusedOutsideSandbox` + `TestClimodelAdapterRefusesAgenticMode`, wired into `cmd/summa42-box` profile probe/loader.
-7. **`M1A-T3-d`** *(depends on `M1A-T2`, `M1A-T3-a/b/c`, `M2-T3`, `M9-T6`)*: Active kill watcher + startup orphan reaper + `Implementer` agentic executor wiring in `cmd/summa42-box` + `.github/workflows/ci.yml` OCI acceptance gate.
-8. **`M1A-T4`, `M1A-T7`, `M1A-T6`, `M1A-T5`:** Follow-on cards as scheduled in Section 4.1.
+The split below is sized for Rule R8 (~400 non-test LOC cap per PR) and Rule R3 (every new package/migration has a live caller in `cmd/` in the same PR). It is indicative: if any slice approaches the ~400 non-test LOC ceiling during implementation, split it further before opening the PR:
+
+1. **`M1A-T2`:** `resources.Service.AvailableInTx`, `execution.Service.RenewLease` envelope + `leaseGate` single-tx check, a `cmd/summa42-box` heartbeat-renewal helper/flag (or `run-worker` lease heartbeat loop wired into `cmd/summa42-box` so `RenewLease` and `AvailableInTx` have a live `cmd/` caller in the same PR per R3), and the 5 lease tests.
+2. **`M1A-T8-a`:** Core Unix-socket reverse proxy (`Rewrite`, header/path hygiene, `ReserveRequest` active-lease + envelope check) + `ProxyUsageSink` interface + `proxy_usage` migration (`00040+`), wired into a new `cmd/summa42-box agentic-proxy-check` command (R3).
+3. **`M1A-T8-b`** *(depends on `M1A-T8-a`)*: OAuth token injection (`anthropic-beta`), host-side refresh, and SSE usage settlement (`SettleRequest`), wired into `agentic-proxy-check`.
+4. **`M1A-T8-c`** *(depends on `M1A-T8-a`, `M2-T3`)*: Hardened `/s42/fetch`, lockfile/prefix-scoped `GET`/`HEAD` registry proxy reading manifest `registry_allowlist`/`fetch_allowlist`/`data_class`, and `dialAllowedTarget` IP-literal `publicEgressIP` check, wired into the `cmd/summa42-box` proxy builder.
+5. **`M1A-T3-a`** *(depends on `M1A-T8-a`, `M1A-T8-b`, `M2-T3`)*: `OCIRequest` / `DockerProvider` `create` -> `inspect` -> `start`, `--network=none`, `--cidfile`, `--tmpfs exec`, `--log-driver=none`, `256 KiB` ring-buffer drain, and `/run/s42-proxy:ro` mount reading manifest `sandbox_image`/`sandbox_limits`, wired into `cmd/summa42-box agentic-probe`.
+6. **`M1A-T3-b`** *(depends on `M1A-T3-a`)*: Image adoption audit (`TestImageAuditRefusesSetuidOrContainerCLI`), `ModelEgressAssessment` probe wiring, and `TestSandboxHasNoRouteButProxy` / `TestEnforcedClaimRequiresInspectEvidence` inside `cmd/summa42-box agentic-probe`.
+7. **`M1A-T3-c`** *(depends on `M1A-T3-a`)*: Step-2 offline `/out` bundle export container, `O_NOFOLLOW | O_NONBLOCK` + `fsck` + `CheckTreeHygiene` + Box-built `Candidate`, wired into `cmd/summa42-box agentic-collect`.
+8. **`M1A-T3-d`** *(depends on `M1A-T3-c`)*: Shared `protected_pipeline_paths.json` (`repoworkspace` + `check_protected_paths.py` + `CODEOWNERS`), wired into `agentic-collect` & `Implementer`.
+9. **`M1A-T3-e`** *(depends on `M1A-T3-a`)*: `climodel` `AgenticSpec` / `CostControl` gate (`profile.go`) + `TestAutoApproveRefusedOutsideSandbox` + `TestClimodelAdapterRefusesAgenticMode`, wired into `cmd/summa42-box` profile loader/`agentic-probe`.
+10. **`M1A-T3-f`** *(depends on `M1A-T2`, `M1A-T3-a..e`, `M1A-T8-c`, `M2-T3`, `M9-T6`)*: Active kill watcher + startup orphan reaper + `Implementer` agentic executor wiring in `cmd/summa42-box` + `.github/workflows/ci.yml` OCI acceptance gate.
+11. **`M1A-T4`, `M1A-T7`, `M1A-T6`, `M1A-T5`:** Follow-on cards as scheduled in Section 4.1.
 
 ---
 
