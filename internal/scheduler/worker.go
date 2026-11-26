@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/clock"
@@ -34,20 +35,31 @@ type StepResult struct {
 }
 
 type Worker struct {
-	scheduler     *Service
-	execution     *execution.Service
-	evidence      *evidence.Store
-	verification  *verification.Service
-	executors     map[string]executors.Executor
-	clock         clock.Clock
-	workspaceRoot string
-	recover       func(context.Context) error
+	scheduler         *Service
+	execution         *execution.Service
+	evidence          *evidence.Store
+	verification      *verification.Service
+	executors         map[string]executors.Executor
+	clock             clock.Clock
+	workspaceRoot     string
+	recover           func(context.Context) error
+	heartbeatInterval time.Duration
+	maxWallTime       time.Duration
 }
 
 // WithRecovery makes Run call fn before every tick so expired leases and
 // unsettled operations are recovered continuously; its error is logged and the tick continues.
 func (w *Worker) WithRecovery(fn func(context.Context) error) *Worker {
 	w.recover = fn
+	return w
+}
+
+// WithLeaseHeartbeat enables periodic RenewLease heartbeats during long Attempt
+// execution, cancelling the running executor if renewal fails and bounding total
+// execution wall time by maxWallTime (when positive).
+func (w *Worker) WithLeaseHeartbeat(interval, maxWallTime time.Duration) *Worker {
+	w.heartbeatInterval = interval
+	w.maxWallTime = maxWallTime
 	return w
 }
 
@@ -111,9 +123,60 @@ func (w *Worker) executeAttempt(ctx context.Context, executor executors.Executor
 		Workspace:          workspace, VisibleCapabilities: append([]string(nil), task.RequiredCapabilities...),
 		ResourceEnvelopeID: task.ResourceEnvelopeID,
 	}
-	execCtx, cancel := context.WithTimeout(ctx, attemptBudget(ctx, w.scheduler.leaseDuration))
+	var execCtx context.Context
+	var cancel context.CancelFunc
+	if w.heartbeatInterval > 0 {
+		if w.maxWallTime > 0 {
+			execCtx, cancel = context.WithTimeout(ctx, attemptBudget(ctx, w.maxWallTime))
+		} else {
+			execCtx, cancel = context.WithCancel(ctx)
+		}
+	} else {
+		execCtx, cancel = context.WithTimeout(ctx, attemptBudget(ctx, w.scheduler.leaseDuration))
+	}
 	defer cancel()
+
+	var hbMu sync.Mutex
+	var hbErr error
+	var hbDone chan struct{}
+	if w.heartbeatInterval > 0 {
+		hbDone = make(chan struct{})
+		go func() {
+			defer close(hbDone)
+			ticker := time.NewTicker(w.heartbeatInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-execCtx.Done():
+					return
+				case <-ticker.C:
+					if rerr := w.execution.RenewLease(execCtx, attempt.ID, w.scheduler.leaseDuration); rerr != nil {
+						hbMu.Lock()
+						hbErr = rerr
+						hbMu.Unlock()
+						cancel()
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	outcome, execErr := w.runExecutor(execCtx, executor, envelope)
+	cancel()
+	if hbDone != nil {
+		<-hbDone
+	}
+	hbMu.Lock()
+	renewErr := hbErr
+	hbMu.Unlock()
+	if renewErr != nil {
+		if execErr == nil {
+			execErr = fmt.Errorf("lease heartbeat stopped: %w", renewErr)
+		} else {
+			execErr = fmt.Errorf("%w (lease heartbeat: %v)", execErr, renewErr)
+		}
+	}
 	if execErr != nil || outcome.ExitCode != 0 {
 		return w.failExecution(ctx, executor, kind, task, attempt, result, outcome, execErr)
 	}

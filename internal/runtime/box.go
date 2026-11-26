@@ -223,6 +223,7 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	}
 	// Break glass and Owner absence close Attempt leasing, not only effects.
 	executionSvc.SetLeaseGate(emergencySvc)
+	executionSvc.SetEnvelopeChecker(resourceSvc)
 	operationsSvc.SetEmergency(emergencySvc)
 	capabilityRegistry.SetEmergency(emergencySvc)
 	containmentSvc := containment.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)

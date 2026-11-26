@@ -635,38 +635,59 @@ func main() {
 	}
 }
 
-func parseWorkerArgs(args []string) (once bool, workspaceRoot, credentialFile string, pollInterval, leaseDuration time.Duration, modelConfig climodel.Config, err error) {
-	return parseWorkerArgsCtx(context.Background(), args)
+type workerFlags struct {
+	once              bool
+	workspaceRoot     string
+	credentialFile    string
+	pollInterval      time.Duration
+	leaseDuration     time.Duration
+	heartbeatInterval time.Duration
+	maxWallTime       time.Duration
+	modelConfig       climodel.Config
 }
 
-func parseWorkerArgsCtx(ctx context.Context, args []string) (once bool, workspaceRoot, credentialFile string, pollInterval, leaseDuration time.Duration, modelConfig climodel.Config, err error) {
+func parseWorkerArgs(args []string) (once bool, workspaceRoot, credentialFile string, pollInterval, leaseDuration time.Duration, modelConfig climodel.Config, err error) {
+	wf, err := parseWorkerFlagsCtx(context.Background(), args)
+	return wf.once, wf.workspaceRoot, wf.credentialFile, wf.pollInterval, wf.leaseDuration, wf.modelConfig, err
+}
+
+func parseWorkerFlagsCtx(ctx context.Context, args []string) (workerFlags, error) {
+	var wf workerFlags
 	flags := flag.NewFlagSet("run-worker", flag.ContinueOnError)
-	flags.BoolVar(&once, "once", false, "run one scheduler pass and exit")
-	flags.StringVar(&workspaceRoot, "workspace-root", "", "absolute directory for attempt workspaces")
-	flags.StringVar(&credentialFile, "credential-file", "", "private GitHub token file for feedback export (preferred over SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE)")
-	flags.DurationVar(&pollInterval, "poll-interval", 30*time.Second, "interval between scheduler polls")
-	flags.DurationVar(&leaseDuration, "lease-duration", 0, "attempt lease duration (0 uses Box default)")
+	flags.BoolVar(&wf.once, "once", false, "run one scheduler pass and exit")
+	flags.StringVar(&wf.workspaceRoot, "workspace-root", "", "absolute directory for attempt workspaces")
+	flags.StringVar(&wf.credentialFile, "credential-file", "", "private GitHub token file for feedback export (preferred over SUMMA42_FEEDBACK_GITHUB_TOKEN_FILE)")
+	flags.DurationVar(&wf.pollInterval, "poll-interval", 30*time.Second, "interval between scheduler polls")
+	flags.DurationVar(&wf.leaseDuration, "lease-duration", 0, "attempt lease duration (0 uses Box default)")
+	flags.DurationVar(&wf.heartbeatInterval, "heartbeat-interval", 0, "attempt lease-renewal heartbeat interval (0 disables renewal)")
+	flags.DurationVar(&wf.maxWallTime, "max-wall-time", 0, "maximum wall time for a heartbeat-renewed attempt (0 keeps no separate wall-time cap)")
 	registerTriageModelFlags(flags, "model binary classifying a triage issue")
-	if err = flags.Parse(args); err != nil {
-		return
+	if err := flags.Parse(args); err != nil {
+		return workerFlags{}, err
 	}
-	if pollInterval <= 0 {
-		err = errors.New("run-worker requires a positive --poll-interval")
-		return
+	if wf.pollInterval <= 0 {
+		return workerFlags{}, errors.New("run-worker requires a positive --poll-interval")
 	}
-	if leaseDuration < 0 {
-		err = errors.New("run-worker requires a non-negative --lease-duration")
-		return
+	if wf.leaseDuration < 0 {
+		return workerFlags{}, errors.New("run-worker requires a non-negative --lease-duration")
 	}
-	if strings.TrimSpace(workspaceRoot) == "" {
-		err = errors.New("run-worker requires --workspace-root")
-		return
+	if wf.heartbeatInterval < 0 || wf.maxWallTime < 0 {
+		return workerFlags{}, errors.New("run-worker requires non-negative --heartbeat-interval and --max-wall-time")
 	}
-	if modelConfig, err = triageModelConfig(flags); err != nil {
-		return
+	if wf.maxWallTime > 0 && wf.heartbeatInterval <= 0 {
+		return workerFlags{}, errors.New("run-worker requires a positive --heartbeat-interval when --max-wall-time is set")
 	}
-	err = checkStandaloneRoleDistinct(ctx, "producer", modelConfig.RunAsUser)
-	return
+	if strings.TrimSpace(wf.workspaceRoot) == "" {
+		return workerFlags{}, errors.New("run-worker requires --workspace-root")
+	}
+	var err error
+	if wf.modelConfig, err = triageModelConfig(flags); err != nil {
+		return workerFlags{}, err
+	}
+	if err := checkStandaloneRoleDistinct(ctx, "producer", wf.modelConfig.RunAsUser); err != nil {
+		return workerFlags{}, err
+	}
+	return wf, nil
 }
 
 // registerTriageModelFlags puts the three model flags on a flag set, so the
@@ -1079,10 +1100,11 @@ func runWorker(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	once, workspaceRoot, credentialFile, pollInterval, leaseDuration, modelConfig, err := parseWorkerArgsCtx(ctx, args)
+	wf, err := parseWorkerFlagsCtx(ctx, args)
 	if err != nil {
 		return err
 	}
+	once, workspaceRoot, credentialFile, pollInterval, leaseDuration, modelConfig := wf.once, wf.workspaceRoot, wf.credentialFile, wf.pollInterval, wf.leaseDuration, wf.modelConfig
 	copilotUser, err := workerCopilotReviewerUser(ctx, modelConfig.RunAsUser)
 	if err != nil {
 		return err
@@ -1196,6 +1218,9 @@ func runWorker(ctx context.Context, args []string) error {
 	worker, err := scheduler.NewWorker(box.Scheduler, box.Execution, box.Evidence, box.Verification, box.Executors, box.Clock, workspaceRoot)
 	if err != nil {
 		return err
+	}
+	if wf.heartbeatInterval > 0 {
+		worker.WithLeaseHeartbeat(wf.heartbeatInterval, wf.maxWallTime)
 	}
 	if once {
 		res, err := worker.StepOnce(ctx, capacity)

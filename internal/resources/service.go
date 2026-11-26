@@ -180,6 +180,21 @@ func (s *Service) Available(ctx context.Context, envelopeID domain.ID) (int64, e
 	return availableIn(ctx, s.store.DB(), envelopeID)
 }
 
+// AvailableInTx returns remaining capacity on envelopeID inside the caller's
+// transaction so lease-renewal and commit boundaries share the same snapshot.
+func (s *Service) AvailableInTx(ctx context.Context, tx *sql.Tx, envelopeID domain.ID) (int64, error) {
+	if err := s.configured(); err != nil {
+		return 0, err
+	}
+	if tx == nil {
+		return 0, errors.New("available budget check requires transaction")
+	}
+	if envelopeID == "" {
+		return 0, errors.New("envelope id is required")
+	}
+	return availableIn(ctx, tx, envelopeID)
+}
+
 type queryRower interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }

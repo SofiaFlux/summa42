@@ -47,6 +47,10 @@ type AttemptStartRecorder interface {
 	RecordAttemptStartInTx(context.Context, *sql.Tx, domain.Attempt, domain.Task) error
 }
 
+// ErrEnvelopeExhausted indicates a lease renewal or execution guard refused
+// continuation because the Task's resource envelope has no remaining budget.
+var ErrEnvelopeExhausted = errors.New("resource envelope has no remaining budget")
+
 // LeaseGate can refuse new Attempt leases, for example while the Owner's break
 // glass is FROZEN. It runs inside the leasing transaction, so a freeze and a
 // lease cannot interleave.
@@ -54,17 +58,29 @@ type LeaseGate interface {
 	CheckLeaseAllowedTx(ctx context.Context, tx *sql.Tx) error
 }
 
-type Service struct {
-	store          *state.Store
-	clock          clock.Clock
-	purpose        *purpose.Service
-	startRecorders []AttemptStartRecorder
-	leaseGate      LeaseGate
+// EnvelopeChecker verifies inside a renewal transaction that the Task's
+// resource envelope still has remaining capacity before extending a lease.
+type EnvelopeChecker interface {
+	AvailableInTx(ctx context.Context, tx *sql.Tx, envelopeID domain.ID) (int64, error)
 }
 
-// SetLeaseGate installs the gate every StartAttempt consults. Nil removes it.
+type Service struct {
+	store           *state.Store
+	clock           clock.Clock
+	purpose         *purpose.Service
+	startRecorders  []AttemptStartRecorder
+	leaseGate       LeaseGate
+	envelopeChecker EnvelopeChecker
+}
+
+// SetLeaseGate installs the gate every StartAttempt and RenewLease consults. Nil removes it.
 func (s *Service) SetLeaseGate(gate LeaseGate) {
 	s.leaseGate = gate
+}
+
+// SetEnvelopeChecker installs the budget checker RenewLease consults. Nil removes it.
+func (s *Service) SetEnvelopeChecker(checker EnvelopeChecker) {
+	s.envelopeChecker = checker
 }
 
 func New(store *state.Store, clk clock.Clock, purposes *purpose.Service, recorders ...AttemptStartRecorder) *Service {
@@ -260,10 +276,33 @@ func (s *Service) StartAttempt(ctx context.Context, taskID domain.ID, executorKi
 }
 
 func (s *Service) RenewLease(ctx context.Context, attemptID domain.ID, leaseDuration time.Duration) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
 	if leaseDuration <= 0 {
 		return errors.New("positive lease duration is required")
 	}
 	return s.WithGuardedAttempt(ctx, attemptID, []domain.TaskState{domain.TaskExecuting}, func(tx *sql.Tx, guarded GuardedAttempt) error {
+		if s.leaseGate != nil {
+			if err := s.leaseGate.CheckLeaseAllowedTx(ctx, tx); err != nil {
+				return err
+			}
+		}
+		if s.envelopeChecker != nil {
+			var envelopeID domain.ID
+			if err := tx.QueryRowContext(ctx,
+				`SELECT resource_envelope_id FROM tasks WHERE task_id = ?`, guarded.TaskID,
+			).Scan(&envelopeID); err != nil {
+				return err
+			}
+			available, err := s.envelopeChecker.AvailableInTx(ctx, tx, envelopeID)
+			if err != nil {
+				return err
+			}
+			if available < 1 {
+				return fmt.Errorf("%w: envelope %s has %d remaining", ErrEnvelopeExhausted, envelopeID, available)
+			}
+		}
 		expires := s.clock.Now().UTC().Add(leaseDuration)
 		_, err := tx.ExecContext(ctx,
 			`UPDATE attempts SET lease_expires_at = ? WHERE attempt_id = ? AND lease_state = ?`,
