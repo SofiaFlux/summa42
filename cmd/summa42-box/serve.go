@@ -8,11 +8,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
 	"github.com/SofiaFlux/summa42/internal/notify"
+	"github.com/SofiaFlux/summa42/internal/project"
+	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 )
 
 // summa42-box serve runs the control daemon, intake, the pipeline and the worker in one process
@@ -199,6 +204,15 @@ func runLoopOnce(ctx context.Context, loop serveLoop) (err error) {
 	return loop.run(ctx, loop.args)
 }
 
+func hasServeMarker(args []string) bool {
+	for _, a := range args {
+		if slices.Contains(serveMarkers, a) {
+			return true
+		}
+	}
+	return false
+}
+
 func runServe(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
@@ -207,25 +221,30 @@ func runServe(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	markersPresent := hasServeMarker(args)
+	if slug != "" && markersPresent {
+		return errors.New("serve: --project cannot be combined with section flags")
+	}
+	multiProjectMode := slug == "" && !markersPresent
+
 	var own []string
 	var sections map[string][]string
-	if slug != "" {
+	if slug != "" || multiProjectMode {
 		own = rest
-		for _, a := range rest {
-			if a == "--intake" || a == "--pipeline" || a == "--worker" || a == "--notify" {
-				return fmt.Errorf("serve: --project cannot be combined with %s", a)
-			}
-		}
 	} else {
 		own, sections, err = splitServeArgs(args)
 		if err != nil {
 			return err
 		}
 	}
-	var restartMin, restartMax time.Duration
+	var restartMin, restartMax, projectInterval, projectTimeout time.Duration
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.DurationVar(&restartMin, "restart-min", time.Second, "first delay before a stopped loop is started again")
 	flags.DurationVar(&restartMax, "restart-max", time.Minute, "longest delay before a stopped loop is started again")
+	if multiProjectMode {
+		flags.DurationVar(&projectInterval, "interval", 30*time.Second, "interval between multi-project round-robin passes")
+		flags.DurationVar(&projectTimeout, "project-timeout", defaultProjectPassTimeout, "maximum duration for one Project pass before yielding to the next Project")
+	}
 	if err := flags.Parse(own); err != nil {
 		return err
 	}
@@ -234,6 +253,9 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	if restartMin <= 0 || restartMax < restartMin {
 		return errors.New("serve requires 0 < --restart-min <= --restart-max")
+	}
+	if multiProjectMode && (projectInterval <= 0 || projectTimeout <= 0) {
+		return errors.New("serve requires positive --interval and --project-timeout")
 	}
 	loadHomeCfg := func() (string, localconfig.Config, error) {
 		home, err := localconfig.ResolveHome("")
@@ -266,7 +288,28 @@ func runServe(ctx context.Context, args []string) error {
 			"--worker":   worker,
 		}
 	}
-	loops := serveLoops(sections)
+	var loops []serveLoop
+	if multiProjectMode {
+		home, cfg, err = loadHomeCfg()
+		if err != nil {
+			return err
+		}
+		cfgLoaded = true
+		coord := &multiProjectCoordinator{
+			home:        home,
+			cfg:         cfg,
+			interval:    projectInterval,
+			passTimeout: projectTimeout,
+			log:         os.Stderr,
+		}
+		loops = append(serveLoops(map[string][]string{"--control": nil}), serveLoop{
+			name:     "projects",
+			validate: func([]string) error { return nil },
+			run:      func(ctx context.Context, _ []string) error { return coord.run(ctx) },
+		})
+	} else {
+		loops = serveLoops(sections)
+	}
 	for _, loop := range loops {
 		if err := loop.validate(loop.args); err != nil {
 			return fmt.Errorf("serve: %s flags: %w", loop.name, err)
@@ -288,4 +331,154 @@ func runServe(ctx context.Context, args []string) error {
 	}
 	supervise(ctx, loops, restartMin, restartMax, os.Stderr)
 	return nil
+}
+
+const defaultProjectPassTimeout = 10 * time.Minute
+
+type projectStepRunner func(ctx context.Context, slug string, intake, pipeline, worker []string) error
+
+// multiProjectCoordinator serves every ACTIVE Project with an applied manifest
+// in fair round-robin order so one busy or failing Project cannot starve peers.
+type multiProjectCoordinator struct {
+	home        string
+	cfg         localconfig.Config
+	interval    time.Duration
+	passTimeout time.Duration
+	log         io.Writer
+	runner      projectStepRunner
+
+	mu       sync.Mutex
+	lastSlug string
+}
+
+func (c *multiProjectCoordinator) run(ctx context.Context) error {
+	interval := c.interval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	if err := c.runRound(ctx); err != nil && ctx.Err() == nil && c.log != nil {
+		fmt.Fprintf(c.log, "serve: projects round error: %v\n", err)
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if err := c.runRound(ctx); err != nil && ctx.Err() == nil && c.log != nil {
+				fmt.Fprintf(c.log, "serve: projects round error: %v\n", err)
+			}
+		}
+	}
+}
+
+func (c *multiProjectCoordinator) runRound(ctx context.Context) error {
+	runnable, err := c.listRunnableProjects(ctx)
+	if err != nil {
+		return err
+	}
+	if len(runnable) == 0 {
+		return nil
+	}
+	c.mu.Lock()
+	last := c.lastSlug
+	c.mu.Unlock()
+
+	ordered := roundRobinProjects(runnable, last)
+	stepRunner := c.runner
+	if stepRunner == nil {
+		stepRunner = runProjectOncePass
+	}
+	timeout := c.passTimeout
+	if timeout <= 0 {
+		timeout = defaultProjectPassTimeout
+	}
+	for _, proj := range ordered {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		c.mu.Lock()
+		c.lastSlug = proj.Slug
+		c.mu.Unlock()
+
+		intake, pipeline, worker, err := manifestArgsForProject(ctx, c.home, c.cfg, proj.Slug, true)
+		if err != nil {
+			if c.log != nil {
+				fmt.Fprintf(c.log, "serve: skip project %s: %v\n", proj.Slug, err)
+			}
+			continue
+		}
+		passCtx, cancel := context.WithTimeout(ctx, timeout)
+		err = stepRunner(passCtx, proj.Slug, intake, pipeline, worker)
+		cancel()
+		if err != nil && ctx.Err() == nil && c.log != nil {
+			fmt.Fprintf(c.log, "serve: project %s pass error: %v\n", proj.Slug, err)
+		}
+	}
+	return nil
+}
+
+func (c *multiProjectCoordinator) listRunnableProjects(ctx context.Context) ([]project.Project, error) {
+	store, err := state.Open(ctx, c.cfg.DatabasePath)
+	if err != nil {
+		return nil, err
+	}
+	defer store.DB().Close()
+	all, err := project.New(store, clock.System{}).List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []project.Project
+	for _, p := range all {
+		if p.State == project.StateActive && strings.TrimSpace(p.ManifestSHA256) != "" {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func roundRobinProjects(projects []project.Project, lastSlug string) []project.Project {
+	sorted := slices.Clone(projects)
+	slices.SortFunc(sorted, func(a, b project.Project) int {
+		return strings.Compare(a.Slug, b.Slug)
+	})
+	if len(sorted) <= 1 || lastSlug == "" {
+		return sorted
+	}
+	idx := len(sorted)
+	for i, p := range sorted {
+		if p.Slug > lastSlug {
+			idx = i
+			break
+		}
+	}
+	if idx == len(sorted) {
+		return sorted
+	}
+	out := make([]project.Project, 0, len(sorted))
+	out = append(out, sorted[idx:]...)
+	out = append(out, sorted[:idx]...)
+	return out
+}
+
+func runProjectOncePass(ctx context.Context, slug string, intake, pipeline, worker []string) error {
+	var errs []error
+	for _, stage := range []struct {
+		name string
+		fn   func(context.Context, []string) error
+		args []string
+	}{
+		{"intake", runGHIntake, intake},
+		{"pipeline", runGHPipeline, pipeline},
+		{"worker", runWorker, worker},
+	} {
+		if ctx.Err() != nil {
+			return errors.Join(append(errs, ctx.Err())...)
+		}
+		if err := stage.fn(ctx, stage.args); err != nil {
+			errs = append(errs, fmt.Errorf("%s(%s): %w", stage.name, slug, err))
+		}
+	}
+	return errors.Join(errs...)
 }

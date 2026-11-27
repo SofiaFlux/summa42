@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/clock"
@@ -46,6 +48,9 @@ type Service struct {
 	resources     *resources.Service
 	leaseDuration time.Duration
 	preferences   []ExecutorPreference
+
+	mu          sync.Mutex
+	lastProject domain.ID
 }
 
 func New(store *state.Store, clk clock.Clock, purposes *purpose.Service, executionSvc *execution.Service, resourceSvc *resources.Service, leaseDuration time.Duration, preferences ...ExecutorPreference) *Service {
@@ -108,7 +113,49 @@ func (s *Service) Next(ctx context.Context, capacity CapacitySnapshot) (*TaskCan
 		return nil, nil
 	}
 	sort.SliceStable(candidates, func(i, j int) bool { return candidateBefore(candidates[i], candidates[j]) })
-	return &candidates[0], nil
+	if idx := slices.IndexFunc(candidates, func(c TaskCandidate) bool {
+		return c.Task.Purpose.Kind == domain.PurposeObligation
+	}); idx >= 0 {
+		return &candidates[idx], nil
+	}
+	chosen := s.selectRoundRobinCandidate(candidates)
+	return &chosen, nil
+}
+
+func (s *Service) selectRoundRobinCandidate(candidates []TaskCandidate) TaskCandidate {
+	seen := make(map[domain.ID]struct{}, len(candidates))
+	projects := make([]domain.ID, 0, len(candidates))
+	for _, c := range candidates {
+		if _, ok := seen[c.Task.ProjectID]; !ok {
+			seen[c.Task.ProjectID] = struct{}{}
+			projects = append(projects, c.Task.ProjectID)
+		}
+	}
+	if len(projects) <= 1 {
+		s.mu.Lock()
+		s.lastProject = candidates[0].Task.ProjectID
+		s.mu.Unlock()
+		return candidates[0]
+	}
+	sort.Slice(projects, func(i, j int) bool { return projects[i] < projects[j] })
+
+	s.mu.Lock()
+	pick := projects[0]
+	for _, p := range projects {
+		if p > s.lastProject {
+			pick = p
+			break
+		}
+	}
+	s.lastProject = pick
+	s.mu.Unlock()
+
+	for _, c := range candidates {
+		if c.Task.ProjectID == pick {
+			return c
+		}
+	}
+	return candidates[0]
 }
 
 func (s *Service) ChooseExecutor(ctx context.Context, task domain.Task, eligibleExecutorKinds []string) (string, error) {
@@ -162,12 +209,18 @@ func (s *Service) Lease(ctx context.Context, taskID domain.ID, executorKind stri
 
 func (s *Service) loadEligibleTasks(ctx context.Context) ([]domain.Task, error) {
 	rows, err := s.store.DB().QueryContext(ctx, `
-		SELECT task_id, COALESCE(parent_task_id, ''), purpose_kind, purpose_id, task_class,
-		       objective, payload_json, COALESCE(idempotency_key, ''), state,
-		       COALESCE(current_attempt_id, ''), current_fence, acceptance_criteria_json,
-		       required_capabilities_json, required_enforcement, authority_ceiling_json,
-		       resource_envelope_id, priority, earliest_start, deadline, created_at, updated_at
-		FROM tasks WHERE state = ?`, domain.TaskEligible)
+		SELECT t.task_id, COALESCE(t.parent_task_id, ''),
+		       COALESCE(NULLIF(t.project_id, ''), NULLIF(e.project_id, ''), ''),
+		       t.purpose_kind, t.purpose_id, t.task_class,
+		       t.objective, t.payload_json, COALESCE(t.idempotency_key, ''), t.state,
+		       COALESCE(t.current_attempt_id, ''), t.current_fence, t.acceptance_criteria_json,
+		       t.required_capabilities_json, t.required_enforcement, t.authority_ceiling_json,
+		       t.resource_envelope_id, t.priority, t.earliest_start, t.deadline, t.created_at, t.updated_at
+		FROM tasks t
+		LEFT JOIN resource_envelopes e ON e.envelope_id = t.resource_envelope_id
+		LEFT JOIN projects p ON p.project_id = COALESCE(NULLIF(t.project_id, ''), NULLIF(e.project_id, ''))
+		WHERE t.state = ?
+		  AND (COALESCE(NULLIF(t.project_id, ''), NULLIF(e.project_id, ''), '') = '' OR p.state = 'ACTIVE')`, domain.TaskEligible)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +233,7 @@ func (s *Service) loadEligibleTasks(ctx context.Context) ([]domain.Task, error) 
 		var earliest, deadline sql.NullString
 		var createdAt, updatedAt string
 		if err := rows.Scan(
-			&task.ID, &task.ParentTaskID, &task.Purpose.Kind, &task.Purpose.ID, &task.TaskClass,
+			&task.ID, &task.ParentTaskID, &task.ProjectID, &task.Purpose.Kind, &task.Purpose.ID, &task.TaskClass,
 			&task.Objective, &payloadJSON, &task.IdempotencyKey, &task.State,
 			&task.CurrentAttemptID, &task.CurrentFence, &acceptanceJSON, &capabilitiesJSON,
 			&task.RequiredEnforcement, &authorityJSON, &task.ResourceEnvelopeID, &task.Priority,
