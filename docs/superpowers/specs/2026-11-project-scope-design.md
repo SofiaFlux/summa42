@@ -2,7 +2,7 @@
 
 **Card:** `M2-T1` (`DESIGN`) — [development plan](../plans/2026-11-11-development-plan.md#m2-projects)
 **Date:** 2026-11-27
-**Status:** Proposed for Owner approval (starts no `M2-T2..T7` build card until approved)
+**Status:** Approved (Owner, 2026-11-27; reviewed `ACCEPT` by Claude Opus, 2026-11-27)
 **Vision & Plan Alignment:** [Vision](../../VISION.md) (Articles 3, 4, 5, 6, 15, 20, 22, 27), [Plan Section 2.1](../plans/2026-11-11-development-plan.md#21-three-scopes-one-kernel)
 
 ---
