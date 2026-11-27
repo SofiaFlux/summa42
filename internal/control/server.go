@@ -46,6 +46,7 @@ type CreateTaskRequest struct {
 
 type CreateMissionRequest struct {
 	Statement string `json:"statement"`
+	Standby   bool   `json:"standby,omitempty"`
 	Challenge string `json:"challenge,omitempty"`
 	Signature string `json:"signature,omitempty"`
 }
@@ -242,9 +243,12 @@ func NewServer(config ServerConfig, deps Dependencies) (*Server, error) {
 	mux.HandleFunc("GET /projects", s.handleListProjects)
 	mux.HandleFunc("POST /projects", s.handleCreateProject)
 	mux.HandleFunc("GET /projects/{ref}", s.handleGetProject)
+	mux.HandleFunc("GET /missions", s.handleListMissions)
 	mux.HandleFunc("POST /missions/challenge", s.handleMissionChallenge)
 	mux.HandleFunc("POST /missions", s.handleCreateMission)
 	mux.HandleFunc("GET /missions/active", s.handleActiveMission)
+	mux.HandleFunc("POST /missions/switch/challenge", s.handleMissionSwitchChallenge)
+	mux.HandleFunc("POST /missions/switch", s.handleSwitchMission)
 	mux.HandleFunc("POST /tasks", s.handleCreateTask)
 	mux.HandleFunc("GET /tasks/{id}", s.handleTask)
 	mux.HandleFunc("GET /approvals", s.handleApprovals)
@@ -387,7 +391,17 @@ func (s *Server) handleCreateMission(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(s.challenges, key)
 	s.mu.Unlock()
-	id, err := s.deps.Missions.CreateMission(r.Context(), statement)
+	var id domain.ID
+	if request.Standby {
+		mgr, ok := s.deps.Missions.(MissionManager)
+		if !ok {
+			writeError(w, http.StatusServiceUnavailable, "standby mission creation unavailable")
+			return
+		}
+		id, err = mgr.CreateStandbyMission(r.Context(), statement)
+	} else {
+		id, err = s.deps.Missions.CreateMission(r.Context(), statement)
+	}
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
