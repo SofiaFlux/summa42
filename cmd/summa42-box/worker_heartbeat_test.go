@@ -34,7 +34,6 @@ func (s systemExecutor) ExecutionContract() executors.Contract {
 }
 
 func TestWorkerHeartbeatFlags(t *testing.T) {
-	t.Setenv("SUMMA42_MODEL_USER", "summa42-model")
 	if _, err := parseWorkerFlagsCtx(context.Background(), []string{"--workspace-root=/ws", "--heartbeat-interval=-1s"}); err == nil {
 		t.Fatal("expected error for negative --heartbeat-interval")
 	}
