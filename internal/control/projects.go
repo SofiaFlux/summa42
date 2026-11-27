@@ -23,8 +23,22 @@ import (
 // ProjectService exposes kernel Project scope operations over control.
 type ProjectService interface {
 	CreateSigned(context.Context, project.CreateCommand) (project.Project, error)
+	ApplyManifestSigned(context.Context, project.ApplyCommand) (project.Project, error)
 	Get(context.Context, string) (project.Project, error)
 	List(context.Context) ([]project.Project, error)
+}
+
+func writeProjectError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, project.ErrUnauthorized), errors.Is(err, project.ErrExpired), errors.Is(err, project.ErrReplayed):
+		writeError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, project.ErrProjectExists):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, project.ErrProjectNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	default:
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
 }
 
 // MissionManager extends MissionService with standby creation, listing, and
@@ -127,17 +141,33 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	proj, err := s.deps.Projects.CreateSigned(r.Context(), cmd)
 	if err != nil {
-		switch {
-		case errors.Is(err, project.ErrUnauthorized), errors.Is(err, project.ErrExpired), errors.Is(err, project.ErrReplayed):
-			writeError(w, http.StatusForbidden, err.Error())
-		case errors.Is(err, project.ErrProjectExists):
-			writeError(w, http.StatusConflict, err.Error())
-		default:
-			writeError(w, http.StatusBadRequest, err.Error())
-		}
+		writeProjectError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, proj)
+}
+
+func (s *Server) handleApplyProjectManifest(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Projects == nil {
+		writeError(w, http.StatusServiceUnavailable, "project service unavailable")
+		return
+	}
+	ref := strings.TrimSpace(r.PathValue("ref"))
+	var cmd project.ApplyCommand
+	if err := decodeBody(r, &cmd); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if ref != "" && cmd.Slug != ref && string(cmd.ProjectID) != ref {
+		writeError(w, http.StatusBadRequest, "project ref in path does not match apply command")
+		return
+	}
+	proj, err := s.deps.Projects.ApplyManifestSigned(r.Context(), cmd)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, proj)
 }
 
 func (s *Server) handleListMissions(w http.ResponseWriter, r *http.Request) {
@@ -237,6 +267,12 @@ func (c *Client) CreateProject(ctx context.Context, slug, name, reason string, s
 	}
 	var result project.Project
 	err = c.doJSON(ctx, http.MethodPost, "/projects", cmd, &result, http.StatusCreated)
+	return result, err
+}
+
+func (c *Client) ApplyProjectManifest(ctx context.Context, ref string, cmd project.ApplyCommand) (project.Project, error) {
+	var result project.Project
+	err := c.doJSON(ctx, http.MethodPost, "/projects/"+url.PathEscape(strings.TrimSpace(ref))+"/apply", cmd, &result, http.StatusOK)
 	return result, err
 }
 

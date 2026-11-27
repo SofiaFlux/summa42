@@ -243,6 +243,7 @@ func NewServer(config ServerConfig, deps Dependencies) (*Server, error) {
 	mux.HandleFunc("GET /projects", s.handleListProjects)
 	mux.HandleFunc("POST /projects", s.handleCreateProject)
 	mux.HandleFunc("GET /projects/{ref}", s.handleGetProject)
+	mux.HandleFunc("POST /projects/{ref}/apply", s.handleApplyProjectManifest)
 	mux.HandleFunc("GET /missions", s.handleListMissions)
 	mux.HandleFunc("POST /missions/challenge", s.handleMissionChallenge)
 	mux.HandleFunc("POST /missions", s.handleCreateMission)

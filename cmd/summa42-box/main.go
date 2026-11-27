@@ -653,6 +653,14 @@ func parseWorkerArgs(args []string) (once bool, workspaceRoot, credentialFile st
 }
 
 func parseWorkerFlagsCtx(ctx context.Context, args []string) (workerFlags, error) {
+	if slug, rest, err := extractProjectFlag(args); err != nil {
+		return workerFlags{}, err
+	} else if slug != "" {
+		args, err = resolveManifestFlagArgs(ctx, slug, rest, "worker")
+		if err != nil {
+			return workerFlags{}, err
+		}
+	}
 	var wf workerFlags
 	flags := flag.NewFlagSet("run-worker", flag.ContinueOnError)
 	flags.BoolVar(&wf.once, "once", false, "run one scheduler pass and exit")
@@ -1375,6 +1383,14 @@ func runObserver(ctx context.Context, args []string) error {
 }
 
 func parseGHIntakeFlags(args []string) (ghissue.ObserveConfig, time.Duration, error) {
+	if slug, rest, err := extractProjectFlag(args); err != nil {
+		return ghissue.ObserveConfig{}, 0, err
+	} else if slug != "" {
+		args, err = resolveManifestFlagArgs(context.Background(), slug, rest, "intake")
+		if err != nil {
+			return ghissue.ObserveConfig{}, 0, err
+		}
+	}
 	var cfg ghissue.ObserveConfig
 	var mission, envelope, repository string
 	var maintainers, grantCaps, grantActions, workCaps stringSlice

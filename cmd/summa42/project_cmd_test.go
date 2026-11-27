@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -105,6 +106,36 @@ func TestProjectAndMissionSwitchEndToEndThroughRuntimeBox(t *testing.T) {
 	out := executeCommand(t, newRootCommandWithClient(api), "--json", "project", "create", "daas", "--name", "DaaS Product", "--owner-key", ownerKeyPath)
 	if !strings.Contains(out, `"slug":"daas"`) {
 		t.Fatalf("project create output=%s", out)
+	}
+	// Prepare valid project.json and test `summa42 project apply`.
+	repoDir := filepath.Join(dir, "repo-daas")
+	wsDir := filepath.Join(dir, "ws-daas")
+	credFile := filepath.Join(dir, "gh-token")
+	for _, p := range []string{repoDir, wsDir, filepath.Join(dir, "projects", "daas")} {
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(credFile, []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifestJSON := `{"schema_version":1,"project":"daas","mission_statement":"Launch DaaS","data_class":"public","workspace_root":"` + wsDir + `","repositories":[{"id":"main","host":"github","repository":"SofiaFlux/daas","local_path":"` + repoDir + `","base_branch":"main","credential_file":"` + credFile + `","data_class":"public","allowed_prefixes":["src/"],"intake":{"maintainers":["alice"]},"case_grants":{"capabilities":["github.issue.read"],"actions":["github.issue.read"]}}],"models":{"producer":{"binary":"codex","user":"nobody","timeout":"10m"},"reviewer":{"binary":"claude","user":"daemon","timeout":"10m"}},"limits":{"max_steps":3,"remaining_budget":10,"max_repairs":1}}`
+	if err := os.WriteFile(filepath.Join(dir, "projects", "daas", "project.json"), []byte(manifestJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Off-TTY without SUMMA42_APPROVE_NONINTERACTIVE=1 and --yes must be refused.
+	prevTTY := stdinIsTTY
+	stdinIsTTY = func() bool { return false }
+	t.Cleanup(func() { stdinIsTTY = prevTTY })
+	rootNoYes := newRootCommandWithClient(api)
+	rootNoYes.SetArgs([]string{"project", "apply", "daas", "--home", dir, "--owner-key", ownerKeyPath})
+	if err := rootNoYes.Execute(); err == nil {
+		t.Fatal("expected project apply without --yes off-TTY to fail")
+	}
+	t.Setenv("SUMMA42_APPROVE_NONINTERACTIVE", "1")
+	applyOut := executeCommand(t, newRootCommandWithClient(api), "--json", "project", "apply", "daas", "--home", dir, "--owner-key", ownerKeyPath, "--yes", "--reason", "apply daas")
+	if !strings.Contains(applyOut, `"manifest_sha256":"`) {
+		t.Fatalf("project apply output=%s", applyOut)
 	}
 	listOut := executeCommand(t, newRootCommandWithClient(api), "project", "list")
 	if !strings.Contains(listOut, "default") || !strings.Contains(listOut, "daas") {
