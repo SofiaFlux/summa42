@@ -6,11 +6,21 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/SofiaFlux/summa42/internal/clock"
 	"github.com/SofiaFlux/summa42/internal/domain"
 	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 )
+
+// Mission is a stored Collective Mission row. At most one may be active at once.
+type Mission struct {
+	ID            domain.ID  `json:"id"`
+	Statement     string     `json:"statement"`
+	Active        bool       `json:"active"`
+	CreatedAt     time.Time  `json:"created_at"`
+	DeactivatedAt *time.Time `json:"deactivated_at,omitempty"`
+}
 
 type Service struct {
 	store *state.Store
@@ -22,6 +32,16 @@ func New(store *state.Store, clk clock.Clock) *Service {
 }
 
 func (s *Service) CreateMission(ctx context.Context, statement string) (domain.ID, error) {
+	return s.createMission(ctx, statement, true)
+}
+
+// CreateStandbyMission stores a non-active Mission that may later be activated
+// by an Owner-signed switch command.
+func (s *Service) CreateStandbyMission(ctx context.Context, statement string) (domain.ID, error) {
+	return s.createMission(ctx, statement, false)
+}
+
+func (s *Service) createMission(ctx context.Context, statement string, active bool) (domain.ID, error) {
 	if err := s.configured(); err != nil {
 		return "", err
 	}
@@ -31,13 +51,93 @@ func (s *Service) CreateMission(ctx context.Context, statement string) (domain.I
 	}
 	id := domain.NewID("mission")
 	now := domain.FormatTime(s.clock.Now())
+	activeFlag := 0
+	if active {
+		activeFlag = 1
+	}
 	if _, err := s.store.DB().ExecContext(ctx,
-		`INSERT INTO missions(mission_id, statement, active, created_at) VALUES (?, ?, 1, ?)`,
-		id, statement, now,
+		`INSERT INTO missions(mission_id, statement, active, created_at) VALUES (?, ?, ?, ?)`,
+		id, statement, activeFlag, now,
 	); err != nil {
 		return "", fmt.Errorf("create Mission: %w", err)
 	}
 	return id, nil
+}
+
+// ListMissions returns all stored Collective Missions, active first.
+func (s *Service) ListMissions(ctx context.Context) ([]Mission, error) {
+	if err := s.configured(); err != nil {
+		return nil, err
+	}
+	rows, err := s.store.DB().QueryContext(ctx,
+		`SELECT mission_id, statement, active, created_at, deactivated_at FROM missions ORDER BY active DESC, created_at DESC, mission_id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list Missions: %w", err)
+	}
+	defer rows.Close()
+	var out []Mission
+	for rows.Next() {
+		var m Mission
+		var activeInt int
+		var createdS string
+		var deactS sql.NullString
+		if err := rows.Scan(&m.ID, &m.Statement, &activeInt, &createdS, &deactS); err != nil {
+			return nil, err
+		}
+		m.Active = activeInt == 1
+		m.CreatedAt, err = time.Parse(time.RFC3339Nano, createdS)
+		if err != nil {
+			return nil, fmt.Errorf("parse Mission created_at: %w", err)
+		}
+		if deactS.Valid && deactS.String != "" {
+			t, err := time.Parse(time.RFC3339Nano, deactS.String)
+			if err != nil {
+				return nil, fmt.Errorf("parse Mission deactivated_at: %w", err)
+			}
+			m.DeactivatedAt = &t
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// SwitchMission atomically deactivates any currently active Mission and
+// activates targetID inside one SQLite transaction. Callers must enforce Owner
+// authorization before invoking it.
+func (s *Service) SwitchMission(ctx context.Context, targetID domain.ID) error {
+	if err := s.configured(); err != nil {
+		return err
+	}
+	targetID = domain.ID(strings.TrimSpace(string(targetID)))
+	if targetID == "" {
+		return fmt.Errorf("%w: Mission id is required", domain.ErrInvalidPurpose)
+	}
+	now := domain.FormatTime(s.clock.Now())
+	return s.store.WithTx(ctx, func(tx *sql.Tx) error {
+		var activeInt int
+		err := tx.QueryRowContext(ctx, `SELECT active FROM missions WHERE mission_id = ?`, targetID).Scan(&activeInt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: Mission %q not found", domain.ErrInvalidPurpose, targetID)
+		}
+		if err != nil {
+			return err
+		}
+		if activeInt == 1 {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE missions SET active = 0, deactivated_at = ? WHERE active = 1`, now,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE missions SET active = 1, deactivated_at = NULL WHERE mission_id = ?`, targetID,
+		); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func (s *Service) ActiveMission(ctx context.Context) (domain.ID, string, error) {

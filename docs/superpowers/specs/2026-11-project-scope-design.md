@@ -57,12 +57,12 @@ ALTER TABLE resource_envelopes
 CREATE INDEX resource_envelopes_project ON resource_envelopes(project_id);
 
 ALTER TABLE workflow_cases
-    ADD COLUMN project_id TEXT NOT NULL DEFAULT 'project_default' REFERENCES projects(project_id);
+    ADD COLUMN project_id TEXT NOT NULL DEFAULT 'project_default';
 
 CREATE INDEX workflow_cases_project ON workflow_cases(project_id, state);
 
 ALTER TABLE board_cards
-    ADD COLUMN project_id TEXT NOT NULL DEFAULT 'project_default' REFERENCES projects(project_id);
+    ADD COLUMN project_id TEXT NOT NULL DEFAULT 'project_default';
 
 CREATE INDEX board_cards_project_column ON board_cards(project_id, column_name);
 
@@ -98,7 +98,7 @@ All durable tables fall into one of four explicit ownership classes:
 
 | Ownership class | Tables | Schema mechanism & rationale |
 | --- | --- | --- |
-| **1. Direct `project_id` (`NOT NULL`)** | `projects`, `project_events`, `workflow_cases`, `board_cards` | Because a single active Mission spans multiple Projects, work-queue and case boundaries live directly on Projects (`project_id TEXT NOT NULL DEFAULT 'project_default' REFERENCES projects(project_id)`). |
+| **1. Direct `project_id` (`NOT NULL`)** | `projects`, `project_events`, `workflow_cases`, `board_cards` | Because a single active Mission spans multiple Projects, work-queue and case boundaries live directly on Projects (`project_id TEXT NOT NULL DEFAULT 'project_default'`; SQLite `ALTER TABLE` disallows `REFERENCES` on non-NULL `DEFAULT` columns, so existence is checked by the kernel services). |
 | **2. Direct nullable `project_id`** | `resource_envelopes` (`00040_projects.sql` in `M2-T2`), `tasks` (`00040_projects.sql` in `M2-T2`: populated from workflow cases / Project intake, `NULL` for Collective-global maintenance/governance), `obligations` (added when per-Project obligations wire in `M7-T3`; Collective-global `NULL` until then), `owner_decision_packets` (added when per-Project packets filter in `M4-T2`), plus planned `owner_action_records` (*not yet in migrations; added in `M4-T1`*) | Entities that exist at **either** Collective scope (`project_id IS NULL`: `envelope_collective_root`, `envelope_default`, Collective obligations/maintenance, pre-M2 test envelopes) **or** Project scope (`project_id = <id>`). Leaving `project_id` nullable preserves backwards compatibility for existing unit tests while enforcing Project containment where `project_id` is set. |
 | **3. Reached through `workflow_case`, `board_card`, or `task` — no duplicate column** | **Via `case_id`:** `workflow_assessments`, `workflow_verifications`.<br>**Via `card_id`:** `board_card_moves`.<br>**Via `task_id`:** `task_dependencies`, `attempts`, `task_challenges`, `attempt_failures`, `execution_events`, `attempt_run_manifests`, `attempt_containments`, `attempt_containment_events`, `external_operations`, `effect_slots`, `approval_requests`, `approval_decisions`, `capability_sessions`, `capability_assessments`, `evidence_objects` / `evidence_subjects`, `model_calls` (when `case_id` / `task_id` present), `github_issue_triage_reviews`, `foreign_evidence_lineage`, `external_task_reconciliations`. | Avoids denormalized `project_id` drift. Attempts, operations, and capability sessions resolve their Project atomically through `tasks.project_id` inside kernel SQLite transactions. |
 | **4. Collective-global (no `project_id`)** | `missions`, `goals`, `principals`, `constitutions`, `collective_metadata`, `policy_sets`, `emergency_controls`, `dead_man_switch`, `emergency_audit_events`, `cube_quarantines`, `owner_attention_budgets`, `audit_events`, `notification_outbox`, `capability_definitions`, `experience_*`, `field_*`, `sanitized_feedback`, `company_*`, `business_invariants` | Collective purpose (`missions_one_active`: one active Collective Mission across all Projects), constitutional roots, host identity, global emergency/quarantine/audit controls, and Company OS cross-project state (`Plan Section 2.1`). |

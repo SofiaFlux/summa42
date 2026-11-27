@@ -110,8 +110,25 @@ func TestProjectAndMissionSwitchEndToEndThroughRuntimeBox(t *testing.T) {
 	if !strings.Contains(listOut, "default") || !strings.Contains(listOut, "daas") {
 		t.Fatalf("project list = %s", listOut)
 	}
-	showOut := executeCommand(t, newRootCommandWithClient(api), "project", "show", "default")
-	if !strings.Contains(showOut, "project_default") {
-		t.Fatalf("project show = %s", showOut)
+
+	m1, err := box.Purpose.CreateMission(ctx, "Core systems")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := box.Purpose.CreateStandbyMission(ctx, "DaaS launch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	swOut := executeCommand(t, newRootCommandWithClient(api), "--json", "mission", "switch", string(m2), "--owner-key", ownerKeyPath)
+	if !strings.Contains(swOut, string(m2)) {
+		t.Fatalf("mission switch output=%s", swOut)
+	}
+	activeOut := executeCommand(t, newRootCommandWithClient(api), "mission", "show")
+	if !strings.Contains(activeOut, "DaaS launch") {
+		t.Fatalf("mission show = %s", activeOut)
+	}
+	missionsOut := executeCommand(t, newRootCommandWithClient(api), "mission", "list")
+	if !strings.Contains(missionsOut, string(m1)) || !strings.Contains(missionsOut, string(m2)) {
+		t.Fatalf("mission list = %s", missionsOut)
 	}
 }

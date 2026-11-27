@@ -115,3 +115,36 @@ func TestValidatePurposeAcceptsApprovedSystemClassesAndRejectsUnknownKind(t *tes
 		t.Fatalf("unknown purpose kind: got %v, want ErrInvalidPurpose", err)
 	}
 }
+
+func TestSecondActiveMissionRefusedAndOwnerSwitchReplacesActiveMission(t *testing.T) {
+	svc, ctx := newPurposeService(t)
+	m1, err := svc.CreateMission(ctx, "Manage core engineering")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateMission(ctx, "Competing active mission"); err == nil {
+		t.Fatal("second active Mission must be refused while first is active")
+	}
+
+	m2, err := svc.CreateStandbyMission(ctx, "Launch product ABC end-to-end")
+	if err != nil {
+		t.Fatalf("CreateStandbyMission failed: %v", err)
+	}
+	missions, err := svc.ListMissions(ctx)
+	if err != nil || len(missions) != 2 {
+		t.Fatalf("ListMissions = (%d, %v), want 2", len(missions), err)
+	}
+
+	if err := svc.SwitchMission(ctx, m2); err != nil {
+		t.Fatalf("SwitchMission failed: %v", err)
+	}
+	activeID, stmt, err := svc.ActiveMission(ctx)
+	if err != nil || activeID != m2 || stmt != "Launch product ABC end-to-end" {
+		t.Fatalf("ActiveMission after switch = (%q, %q, %v), want %q", activeID, stmt, err, m2)
+	}
+
+	// Verify m1 is now deactivated and only m2 is active.
+	if err := svc.ValidatePurpose(ctx, domain.PurposeRef{Kind: domain.PurposeMission, ID: m1}); !errors.Is(err, domain.ErrInvalidPurpose) {
+		t.Fatalf("deactivated mission %q still valid: %v", m1, err)
+	}
+}

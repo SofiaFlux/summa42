@@ -14,6 +14,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/identity"
 	"github.com/SofiaFlux/summa42/internal/project"
+	"github.com/SofiaFlux/summa42/internal/purpose"
 )
 
 type API interface {
@@ -23,6 +24,9 @@ type API interface {
 	CreateProject(context.Context, string, string, string, identity.Signer) (project.Project, error)
 	CreateTask(context.Context, CreateTaskRequest) (TaskDTO, error)
 	CreateMission(context.Context, string, identity.Signer) (MissionDTO, error)
+	CreateStandbyMission(context.Context, string, identity.Signer) (MissionDTO, error)
+	Missions(context.Context) ([]purpose.Mission, error)
+	SwitchMission(context.Context, domain.ID, identity.Signer) (MissionDTO, error)
 	ActiveMission(context.Context) (MissionDTO, error)
 	Task(context.Context, domain.ID) (TaskDTO, error)
 	Approvals(context.Context) ([]ApprovalDTO, error)
@@ -82,6 +86,10 @@ func (c *Client) CreateTask(ctx context.Context, request CreateTaskRequest) (Tas
 }
 
 func (c *Client) CreateMission(ctx context.Context, statement string, signer identity.Signer) (MissionDTO, error) {
+	return c.createMission(ctx, statement, false, signer)
+}
+
+func (c *Client) createMission(ctx context.Context, statement string, standby bool, signer identity.Signer) (MissionDTO, error) {
 	if signer == nil {
 		return MissionDTO{}, errors.New("Owner signer is required")
 	}
@@ -97,7 +105,7 @@ func (c *Client) CreateMission(ctx context.Context, statement string, signer ide
 	if err != nil {
 		return MissionDTO{}, fmt.Errorf("sign Mission challenge: %w", err)
 	}
-	request := CreateMissionRequest{Statement: statement, Challenge: challenge.Challenge, Signature: base64.StdEncoding.EncodeToString(signature)}
+	request := CreateMissionRequest{Statement: statement, Standby: standby, Challenge: challenge.Challenge, Signature: base64.StdEncoding.EncodeToString(signature)}
 	var result MissionDTO
 	err = c.doJSON(ctx, http.MethodPost, "/missions", request, &result, http.StatusCreated)
 	return result, err

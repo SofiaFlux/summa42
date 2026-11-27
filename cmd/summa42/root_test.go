@@ -12,6 +12,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/identity"
 	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/SofiaFlux/summa42/internal/project"
+	"github.com/SofiaFlux/summa42/internal/purpose"
 	"github.com/spf13/cobra"
 )
 
@@ -23,6 +24,8 @@ type fakeControlAPI struct {
 	operation               control.OperationDTO
 	created                 control.CreateTaskRequest
 	missionStatement        string
+	missionSwitchID         domain.ID
+	missions                []purpose.Mission
 	approveCalls            int
 	approval                *control.ApprovalDTO
 	approveDigest           string
@@ -65,6 +68,16 @@ func (f *fakeControlAPI) CreateTask(_ context.Context, request control.CreateTas
 func (f *fakeControlAPI) CreateMission(_ context.Context, statement string, signer identity.Signer) (control.MissionDTO, error) {
 	f.missionStatement = statement
 	return control.MissionDTO{ID: "mission-1", Statement: statement}, nil
+}
+func (f *fakeControlAPI) CreateStandbyMission(_ context.Context, statement string, _ identity.Signer) (control.MissionDTO, error) {
+	return control.MissionDTO{ID: "mission-2", Statement: statement}, nil
+}
+func (f *fakeControlAPI) Missions(context.Context) ([]purpose.Mission, error) {
+	return f.missions, nil
+}
+func (f *fakeControlAPI) SwitchMission(_ context.Context, id domain.ID, _ identity.Signer) (control.MissionDTO, error) {
+	f.missionSwitchID = id
+	return control.MissionDTO{ID: id, Statement: "Switched"}, nil
 }
 func (f *fakeControlAPI) ActiveMission(context.Context) (control.MissionDTO, error) {
 	return control.MissionDTO{ID: "mission-1", Statement: f.missionStatement}, nil
@@ -214,6 +227,10 @@ func TestMissionCreateUsesOwnerKeyAndReturnsID(t *testing.T) {
 	output = executeCommand(t, newRootCommandWithClient(api), "--json", "project", "list")
 	if !strings.Contains(output, `"slug":"daas"`) {
 		t.Fatalf("project list output=%s", output)
+	}
+	output = executeCommand(t, newRootCommandWithClient(api), "--json", "mission", "switch", "mission-2", "--owner-key", keyPath)
+	if api.missionSwitchID != "mission-2" || !strings.Contains(output, `"id":"mission-2"`) {
+		t.Fatalf("mission switch id=%q output=%s", api.missionSwitchID, output)
 	}
 }
 

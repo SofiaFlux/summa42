@@ -15,6 +15,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/identity"
 	"github.com/SofiaFlux/summa42/internal/project"
+	"github.com/SofiaFlux/summa42/internal/purpose"
 	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 )
 
@@ -55,6 +56,7 @@ func newBootstrappedControlServer(t *testing.T) (*Server, *Client, identity.Sign
 	server.config.OwnerPrincipalID = owner.PrincipalID()
 	server.config.OwnerPublicKey = owner.PublicKey()
 	server.deps.Projects = project.New(store, clock.System{})
+	server.deps.Missions = purpose.New(store, clock.System{})
 
 	httpServer := httptest.NewServer(server.Handler())
 	t.Cleanup(httpServer.Close)
@@ -63,7 +65,7 @@ func newBootstrappedControlServer(t *testing.T) (*Server, *Client, identity.Sign
 }
 
 func TestControlProjectsRequireOwnerSignature(t *testing.T) {
-	_, client, owner, _ := newBootstrappedControlServer(t)
+	_, client, owner, collectiveID := newBootstrappedControlServer(t)
 	ctx := context.Background()
 
 	// Unsigned request (valid fields, empty signature) with bearer token alone must fail 403.
@@ -85,6 +87,7 @@ func TestControlProjectsRequireOwnerSignature(t *testing.T) {
 	if _, err := client.CreateProject(ctx, "daas", "DaaS", "stranger", stranger); err == nil {
 		t.Fatal("stranger-signed CreateProject must fail")
 	}
+	_ = collectiveID
 
 	// Owner-signed CreateProject succeeds and persists under List/Get.
 	created, err := client.CreateProject(ctx, "daas", "DaaS Platform", "add daas", owner)
@@ -103,4 +106,52 @@ func TestControlProjectsRequireOwnerSignature(t *testing.T) {
 	if err != nil || len(list) != 2 {
 		t.Fatalf("Projects() len=%d err=%v, want 2 (default + daas)", len(list), err)
 	}
+}
+
+func TestControlMissionSwitchRequiresOwnerSignature(t *testing.T) {
+	_, client, owner, _ := newBootstrappedControlServer(t)
+	ctx := context.Background()
+
+	m1, err := client.CreateMission(ctx, "Manage core infrastructure", owner)
+	if err != nil {
+		t.Fatalf("CreateMission m1 failed: %v", err)
+	}
+	m2, err := client.CreateStandbyMission(ctx, "Launch DaaS product", owner)
+	if err != nil {
+		t.Fatalf("CreateStandbyMission m2 failed: %v", err)
+	}
+
+	// Unsigned switch with bearer token alone must be refused with 403.
+	challengeBody, _ := json.Marshal(SwitchMissionRequest{MissionID: m2.ID})
+	chResp := doRequest(t, http.MethodPost, client.baseURL+"/missions/switch/challenge", "control-secret", bytes.NewReader(challengeBody))
+	if chResp.StatusCode != http.StatusOK {
+		t.Fatalf("switch challenge status = %d", chResp.StatusCode)
+	}
+	var ch MissionChallengeDTO
+	decodeJSON(t, chResp, &ch)
+
+	unsignedBody, _ := json.Marshal(SwitchMissionRequest{MissionID: m2.ID, Challenge: ch.Challenge})
+	swResp := doRequest(t, http.MethodPost, client.baseURL+"/missions/switch", "control-secret", bytes.NewReader(unsignedBody))
+	swResp.Body.Close()
+	if swResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unsigned switch status = %d, want 403", swResp.StatusCode)
+	}
+
+	// Owner-signed SwitchMission switches active Mission atomically.
+	switched, err := client.SwitchMission(ctx, m2.ID, owner)
+	if err != nil {
+		t.Fatalf("SwitchMission failed: %v", err)
+	}
+	if switched.ID != m2.ID {
+		t.Fatalf("switched ID = %q, want %q", switched.ID, m2.ID)
+	}
+	active, err := client.ActiveMission(ctx)
+	if err != nil || active.ID != m2.ID {
+		t.Fatalf("ActiveMission = (%+v, %v), want %q", active, err, m2.ID)
+	}
+	all, err := client.Missions(ctx)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("Missions = (%d, %v), want 2", len(all), err)
+	}
+	_ = m1
 }
