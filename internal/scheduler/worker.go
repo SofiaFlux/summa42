@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SofiaFlux/summa42/internal/clock"
@@ -34,20 +35,32 @@ type StepResult struct {
 }
 
 type Worker struct {
-	scheduler     *Service
-	execution     *execution.Service
-	evidence      *evidence.Store
-	verification  *verification.Service
-	executors     map[string]executors.Executor
-	clock         clock.Clock
-	workspaceRoot string
-	recover       func(context.Context) error
+	scheduler         *Service
+	execution         *execution.Service
+	evidence          *evidence.Store
+	verification      *verification.Service
+	executors         map[string]executors.Executor
+	clock             clock.Clock
+	workspaceRoot     string
+	recover           func(context.Context) error
+	heartbeatInterval time.Duration
+	maxWallTime       time.Duration
 }
 
 // WithRecovery makes Run call fn before every tick so expired leases and
 // unsettled operations are recovered continuously; its error is logged and the tick continues.
 func (w *Worker) WithRecovery(fn func(context.Context) error) *Worker {
 	w.recover = fn
+	return w
+}
+
+// WithLeaseHeartbeat enables periodic RenewLease heartbeats during long Attempt
+// execution, cancelling execCtx if renewal fails terminally and bounding total
+// execution wall time by maxWallTime. Until M1A-T3 wires OCI container killing,
+// cancellation relies on the running executor honoring execCtx.Done().
+func (w *Worker) WithLeaseHeartbeat(interval, maxWallTime time.Duration) *Worker {
+	w.heartbeatInterval = interval
+	w.maxWallTime = maxWallTime
 	return w
 }
 
@@ -100,6 +113,14 @@ func (w *Worker) StepOnce(ctx context.Context, capacity CapacitySnapshot) (StepR
 }
 
 func (w *Worker) executeAttempt(ctx context.Context, executor executors.Executor, kind string, task domain.Task, attempt domain.Attempt, result *StepResult) (err error) {
+	if w.heartbeatInterval > 0 {
+		if w.maxWallTime <= 0 {
+			return errors.New("worker lease heartbeat requires a positive maxWallTime")
+		}
+		if w.heartbeatInterval >= w.scheduler.leaseDuration {
+			return fmt.Errorf("worker heartbeat interval %s must be less than lease duration %s", w.heartbeatInterval, w.scheduler.leaseDuration)
+		}
+	}
 	workspace := filepath.Join(w.workspaceRoot, string(attempt.ID))
 	if err := os.MkdirAll(workspace, 0o700); err != nil {
 		return err
@@ -111,9 +132,80 @@ func (w *Worker) executeAttempt(ctx context.Context, executor executors.Executor
 		Workspace:          workspace, VisibleCapabilities: append([]string(nil), task.RequiredCapabilities...),
 		ResourceEnvelopeID: task.ResourceEnvelopeID,
 	}
-	execCtx, cancel := context.WithTimeout(ctx, attemptBudget(ctx, w.scheduler.leaseDuration))
+	var execCtx context.Context
+	var cancel context.CancelFunc
+	if w.heartbeatInterval > 0 {
+		execCtx, cancel = context.WithTimeout(ctx, attemptBudget(ctx, w.maxWallTime))
+	} else {
+		execCtx, cancel = context.WithTimeout(ctx, attemptBudget(ctx, w.scheduler.leaseDuration))
+	}
 	defer cancel()
+
+	var hbMu sync.Mutex
+	var hbErr error
+	var hbDone chan struct{}
+	var stopHB context.CancelFunc
+	if w.heartbeatInterval > 0 {
+		var hbCtx context.Context
+		hbCtx, stopHB = context.WithCancel(ctx)
+		hbDone = make(chan struct{})
+		leaseExpiry := attempt.LeaseExpiresAt
+		retryDelay := min(w.heartbeatInterval/4, 250*time.Millisecond)
+		if retryDelay <= 0 {
+			retryDelay = time.Millisecond
+		}
+		go func() {
+			defer close(hbDone)
+			wait := w.heartbeatInterval
+			for {
+				timer := time.NewTimer(wait)
+				select {
+				case <-hbCtx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+				rerr := w.execution.RenewLease(hbCtx, attempt.ID, w.scheduler.leaseDuration)
+				if rerr == nil {
+					leaseExpiry = w.clock.Now().UTC().Add(w.scheduler.leaseDuration)
+					wait = w.heartbeatInterval
+					continue
+				}
+				if hbCtx.Err() != nil {
+					return
+				}
+				if state.IsBusy(rerr) && w.clock.Now().UTC().Before(leaseExpiry) {
+					fmt.Fprintf(os.Stderr, "attempt %s lease renewal busy (retrying): %v\n", attempt.ID, rerr)
+					wait = retryDelay
+					continue
+				}
+				hbMu.Lock()
+				hbErr = rerr
+				hbMu.Unlock()
+				cancel()
+				return
+			}
+		}()
+	}
+
 	outcome, execErr := w.runExecutor(execCtx, executor, envelope)
+	if stopHB != nil {
+		stopHB()
+	}
+	cancel()
+	if hbDone != nil {
+		<-hbDone
+	}
+	hbMu.Lock()
+	renewErr := hbErr
+	hbMu.Unlock()
+	if renewErr != nil {
+		if execErr == nil {
+			execErr = fmt.Errorf("lease heartbeat stopped: %w", renewErr)
+		} else {
+			execErr = fmt.Errorf("%w (lease heartbeat: %w)", execErr, renewErr)
+		}
+	}
 	if execErr != nil || outcome.ExitCode != 0 {
 		return w.failExecution(ctx, executor, kind, task, attempt, result, outcome, execErr)
 	}
@@ -203,11 +295,18 @@ func (w *Worker) failExecution(ctx context.Context, _ executors.Executor, kind s
 	if usageID != "" {
 		ids = append(ids, usageID)
 	}
+	failureClass := domain.FailureExecution
 	signature := "worker:" + kind + ":" + string(task.ID)
-	if execErr != nil && strings.HasPrefix(execErr.Error(), "executor panic:") {
-		signature = "worker:panic:" + kind + ":" + string(task.ID)
+	if execErr != nil {
+		switch {
+		case errors.Is(execErr, execution.ErrEnvelopeExhausted):
+			failureClass = domain.FailureResource
+			signature = "worker:budget:" + kind + ":" + string(task.ID)
+		case strings.HasPrefix(execErr.Error(), "executor panic:"):
+			signature = "worker:panic:" + kind + ":" + string(task.ID)
+		}
 	}
-	if err := w.execution.FailAttempt(ctx, attempt.ID, domain.FailureExecution, signature, ids); err != nil {
+	if err := w.execution.FailAttempt(ctx, attempt.ID, failureClass, signature, ids); err != nil {
 		if errors.Is(err, domain.ErrStaleAttempt) || errors.Is(err, domain.ErrLeaseInactive) {
 			result.Outcome = StepFailed
 			result.EvidenceIDs = ids

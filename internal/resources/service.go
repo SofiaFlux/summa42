@@ -180,13 +180,48 @@ func (s *Service) Available(ctx context.Context, envelopeID domain.ID) (int64, e
 	return availableIn(ctx, s.store.DB(), envelopeID)
 }
 
+// AvailableInTx returns remaining capacity on envelopeID inside the caller's
+// transaction so lease-renewal and commit boundaries share the same snapshot.
+func (s *Service) AvailableInTx(ctx context.Context, tx *sql.Tx, envelopeID domain.ID) (int64, error) {
+	if err := s.configured(); err != nil {
+		return 0, err
+	}
+	if tx == nil {
+		return 0, errors.New("available budget check requires transaction")
+	}
+	if envelopeID == "" {
+		return 0, errors.New("envelope id is required")
+	}
+	return availableIn(ctx, tx, envelopeID)
+}
+
+// AllowRenewalInTx reports whether envelopeID still permits a lease renewal
+// inside tx: settled + unresolved exposure must remain strictly below
+// hard_limit, and total settled + unresolved + held must not exceed hard_limit.
+// Active HELD reservations inside hard_limit still allow renewal.
+func (s *Service) AllowRenewalInTx(ctx context.Context, tx *sql.Tx, envelopeID domain.ID) (bool, error) {
+	if err := s.configured(); err != nil {
+		return false, err
+	}
+	if tx == nil {
+		return false, errors.New("renewal budget check requires transaction")
+	}
+	if envelopeID == "" {
+		return false, errors.New("envelope id is required")
+	}
+	hardLimit, settled, held, unresolved, err := budgetIn(ctx, tx, envelopeID)
+	if err != nil {
+		return false, err
+	}
+	return settled+unresolved < hardLimit && settled+unresolved+held <= hardLimit, nil
+}
+
 type queryRower interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func availableIn(ctx context.Context, q queryRower, envelopeID domain.ID) (int64, error) {
-	var hardLimit, settled, held, unresolved int64
-	err := q.QueryRowContext(ctx, `
+func budgetIn(ctx context.Context, q queryRower, envelopeID domain.ID) (hardLimit, settled, held, unresolved int64, err error) {
+	err = q.QueryRowContext(ctx, `
 		SELECT e.hard_limit,
 		       COALESCE(SUM(CASE WHEN r.state = 'SETTLED' THEN r.settled_amount ELSE 0 END), 0),
 		       COALESCE(SUM(CASE WHEN r.state = 'HELD' THEN r.reserved_amount ELSE 0 END), 0),
@@ -197,8 +232,16 @@ func availableIn(ctx context.Context, q queryRower, envelopeID domain.ID) (int64
 		GROUP BY e.envelope_id, e.hard_limit`, envelopeID,
 	).Scan(&hardLimit, &settled, &held, &unresolved)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("resource envelope %q not found", envelopeID)
+		return 0, 0, 0, 0, fmt.Errorf("resource envelope %q not found", envelopeID)
 	}
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return hardLimit, settled, held, unresolved, nil
+}
+
+func availableIn(ctx context.Context, q queryRower, envelopeID domain.ID) (int64, error) {
+	hardLimit, settled, held, unresolved, err := budgetIn(ctx, q, envelopeID)
 	if err != nil {
 		return 0, err
 	}

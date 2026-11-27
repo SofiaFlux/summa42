@@ -40,7 +40,11 @@ import (
 	"github.com/SofiaFlux/summa42/internal/wake"
 )
 
-const defaultLeaseDuration = 5 * time.Minute
+// DefaultLeaseDuration is the default Attempt lease duration when callers do
+// not specify one.
+const DefaultLeaseDuration = 5 * time.Minute
+
+const defaultLeaseDuration = DefaultLeaseDuration
 
 type Config struct {
 	StatePath           string
@@ -223,6 +227,7 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	}
 	// Break glass and Owner absence close Attempt leasing, not only effects.
 	executionSvc.SetLeaseGate(emergencySvc)
+	executionSvc.SetEnvelopeChecker(resourceSvc)
 	operationsSvc.SetEmergency(emergencySvc)
 	capabilityRegistry.SetEmergency(emergencySvc)
 	containmentSvc := containment.NewService(store, cfg.Clock, cfg.OwnerPrincipalID)
