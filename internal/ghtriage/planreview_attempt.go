@@ -84,6 +84,17 @@ func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, pl
 	case domain.TaskExecuting:
 		return fail(errPlanReviewBusy)
 	case domain.TaskEligible:
+		findings := scanPlanHygiene(plan)
+		// Planner creates evidence without its own task/attempt row, so attribute
+		// the FK-constrained containment record to the case's upstream triage attempt
+		// (never to the reviewer's own attempt) and before starting the review lease.
+		if err := emitHygieneSignal(ctx, r.containment, triageTask.CurrentAttemptID, triageTask.ID, "plan-review", findings, map[string]any{
+			"case_id":          c.ID,
+			"work_id":          c.CurrentWorkID,
+			"plan_evidence_id": planID,
+		}); err != nil {
+			return fail(err)
+		}
 		attempt, err := r.exec.StartAttempt(ctx, task.ID, planReviewExecutor, PlanReviewLease(r.modelTimeout))
 		if err != nil {
 			current, getErr := r.exec.Task(ctx, task.ID)
@@ -96,7 +107,7 @@ func (r *PlanReviewer) obtainReview(ctx context.Context, c workflowcase.Case, pl
 		// Keep a minute for durable cleanup before the lease expires.
 		callCtx, cancel := context.WithTimeout(ctx, PlanReviewLease(r.modelTimeout)-time.Minute)
 		defer cancel()
-		output, modelErr := r.model.ReviewPlan(callCtx, PlanReviewInput{Schema: PlanReviewVersion, Question: PlanReviewQuestion, Plan: plan, Snapshot: snap, Context: source})
+		output, modelErr := r.model.ReviewPlan(callCtx, PlanReviewInput{Schema: PlanReviewVersion, Question: PlanReviewQuestion, Plan: plan, Snapshot: snap, Context: source, HygieneFindings: findings})
 		if modelErr == nil {
 			if err := output.Validate(); err != nil {
 				modelErr = &planFailure{class: "validation", err: err}

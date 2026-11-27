@@ -76,7 +76,7 @@ func runGHPlanReview(ctx context.Context, args []string) error {
 	}
 	defer box.Close()
 	adapter = adapter.WithLedger(box.Store, "plan-review", "")
-	reviewer := ghtriage.NewPlanReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout()).WithBaseSHA(strings.TrimSpace(baseSHA)).WithReviewer(reviewerIdentity(modelConfig))
+	reviewer := ghtriage.NewPlanReviewer(workflowcase.New(box.Store, box.Clock, box.Purpose), box.Execution, box.Verification, box.Evidence, adapter).WithModelTimeout(adapter.Timeout()).WithBaseSHA(strings.TrimSpace(baseSHA)).WithReviewer(reviewerIdentity(modelConfig)).WithContainment(box.Containment)
 	reviewer.WithMaxRepairs(maxRepairs)
 	result, err := reviewer.Tick(ctx, domain.ID(strings.TrimSpace(mission)))
 	if err != nil {
