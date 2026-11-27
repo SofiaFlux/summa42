@@ -181,16 +181,57 @@ func (s *Service) ApplyOwnerGrant(ctx context.Context, grant OwnerGrant) (Envelo
 				return fmt.Errorf("create envelope: %w", err)
 			}
 		case GrantSetLimit:
-			available, err := availableIn(ctx, tx, grant.EnvelopeID)
+			if _, err := ancestorsTx(ctx, tx, grant.EnvelopeID); err != nil {
+				return err
+			}
+			_, settled, held, unresolved, err := budgetIn(ctx, tx, grant.EnvelopeID)
 			if err != nil {
 				return err
 			}
-			var current int64
-			if err := tx.QueryRowContext(ctx, `SELECT hard_limit FROM resource_envelopes WHERE envelope_id = ?`, grant.EnvelopeID).Scan(&current); err != nil {
+			var parentID, projectID sql.NullString
+			if err := tx.QueryRowContext(ctx,
+				`SELECT parent_envelope_id, project_id FROM resource_envelopes WHERE envelope_id = ?`, grant.EnvelopeID,
+			).Scan(&parentID, &projectID); err != nil {
 				return err
 			}
-			if committed := current - available; grant.HardLimit < committed {
+			if projectID.Valid && strings.TrimSpace(projectID.String) != "" {
+				var projState string
+				err := tx.QueryRowContext(ctx, `SELECT state FROM projects WHERE project_id = ?`, projectID.String).Scan(&projState)
+				if errors.Is(err, sql.ErrNoRows) {
+					return fmt.Errorf("project %q referenced by envelope %s not found", projectID.String, grant.EnvelopeID)
+				}
+				if err != nil {
+					return err
+				}
+				if projState == "ARCHIVED" {
+					return fmt.Errorf("%w: cannot fund archived project %s", domain.ErrProjectArchived, projectID.String)
+				}
+			}
+			committed := settled + held + unresolved
+			if grant.HardLimit < committed {
 				return fmt.Errorf("envelope %s has already committed %d units; the limit cannot be set to %d", grant.EnvelopeID, committed, grant.HardLimit)
+			}
+			childrenSum, err := childrenLimitSumTx(ctx, tx, grant.EnvelopeID, "")
+			if err != nil {
+				return err
+			}
+			if grant.HardLimit < committed+childrenSum {
+				return fmt.Errorf("envelope %s cannot reduce limit to %d below committed %d plus child limits %d", grant.EnvelopeID, grant.HardLimit, committed, childrenSum)
+			}
+			if parentID.Valid && strings.TrimSpace(parentID.String) != "" {
+				pID := domain.ID(strings.TrimSpace(parentID.String))
+				parentLimit, ps, ph, pu, err := budgetIn(ctx, tx, pID)
+				if err != nil {
+					return err
+				}
+				siblingSum, err := childrenLimitSumTx(ctx, tx, pID, grant.EnvelopeID)
+				if err != nil {
+					return err
+				}
+				if ps+ph+pu+siblingSum+grant.HardLimit > parentLimit {
+					return fmt.Errorf("envelope %s limit %d exceeds parent %s limit %d (parent committed=%d sibling limits=%d)",
+						grant.EnvelopeID, grant.HardLimit, pID, parentLimit, ps+ph+pu, siblingSum)
+				}
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE resource_envelopes SET hard_limit = ? WHERE envelope_id = ?`, grant.HardLimit, grant.EnvelopeID); err != nil {
 				return fmt.Errorf("set envelope limit: %w", err)

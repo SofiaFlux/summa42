@@ -16,6 +16,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/identity"
 	"github.com/SofiaFlux/summa42/internal/project"
 	"github.com/SofiaFlux/summa42/internal/purpose"
+	"github.com/SofiaFlux/summa42/internal/resources"
 	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 )
 
@@ -56,6 +57,7 @@ func newBootstrappedControlServer(t *testing.T) (*Server, *Client, identity.Sign
 	server.config.OwnerPrincipalID = owner.PrincipalID()
 	server.config.OwnerPublicKey = owner.PublicKey()
 	server.deps.Projects = project.New(store, clock.System{})
+	server.deps.Envelopes = resources.New(store, clock.System{})
 	server.deps.Missions = purpose.New(store, clock.System{})
 
 	httpServer := httptest.NewServer(server.Handler())
@@ -65,7 +67,7 @@ func newBootstrappedControlServer(t *testing.T) (*Server, *Client, identity.Sign
 }
 
 func TestControlProjectsRequireOwnerSignature(t *testing.T) {
-	_, client, owner, collectiveID := newBootstrappedControlServer(t)
+	server, client, owner, collectiveID := newBootstrappedControlServer(t)
 	ctx := context.Background()
 
 	// Unsigned request (valid fields, empty signature) with bearer token alone must fail 403.
@@ -129,6 +131,37 @@ func TestControlProjectsRequireOwnerSignature(t *testing.T) {
 	after, err := client.Project(ctx, "daas")
 	if err != nil || after.ManifestSHA256 != digest {
 		t.Fatalf("after apply = (%+v, %v), want manifest_sha256=%s", after, err, digest)
+	}
+
+	// Fund root envelope directly then fund/pause/resume/archive daas over HTTP.
+	rootGrant, err := resources.NewOwnerGrant(owner, collectiveID, resources.GrantSetLimit, project.CollectiveRootEnvelopeID, 25, "fund root", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.deps.Envelopes.ApplyOwnerGrant(ctx, rootGrant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.FundProject(ctx, "daas", 10, "seed", owner); err != nil {
+		t.Fatalf("FundProject failed: %v", err)
+	}
+	// Unsigned pause must fail 403.
+	unsignedPause, _ := json.Marshal(project.TransitionCommand{
+		EventID: domain.NewID("projevent"), ProjectID: created.ID, Slug: "daas", Action: project.ActionPause,
+		Reason: "unsigned", PrincipalID: owner.PrincipalID(), IssuedAt: time.Now().UTC(),
+	})
+	resp = doRequest(t, http.MethodPost, client.baseURL+"/projects/daas/pause", "control-secret", bytes.NewReader(unsignedPause))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unsigned POST /projects/daas/pause status = %d, want 403", resp.StatusCode)
+	}
+	if p, err := client.TransitionProject(ctx, "daas", project.ActionPause, "pause test", owner); err != nil || p.State != project.StatePaused {
+		t.Fatalf("pause = (%+v, %v)", p, err)
+	}
+	if p, err := client.TransitionProject(ctx, "daas", project.ActionResume, "resume test", owner); err != nil || p.State != project.StateActive {
+		t.Fatalf("resume = (%+v, %v)", p, err)
+	}
+	if p, err := client.TransitionProject(ctx, "daas", project.ActionArchive, "archive test", owner); err != nil || p.State != project.StateArchived {
+		t.Fatalf("archive = (%+v, %v)", p, err)
 	}
 }
 

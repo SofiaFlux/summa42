@@ -54,6 +54,12 @@ type EmergencyChecker interface {
 	CheckExecutionAllowed(ctx context.Context, actionCategory string) error
 }
 
+// ProjectEmergencyTxChecker validates Collective emergency controls and the
+// owning Project's lifecycle inside an active SQLite transaction.
+type ProjectEmergencyTxChecker interface {
+	CheckProjectExecutionAllowedTx(ctx context.Context, tx *sql.Tx, projectID domain.ID, actionCategory string) error
+}
+
 type AttemptContainmentChecker interface {
 	CheckAttemptAllowed(ctx context.Context, attemptID domain.ID, actionCategory string) error
 }
@@ -207,6 +213,9 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 		if guarded.TaskID != control.TaskID {
 			return domain.ErrStaleAttempt
 		}
+		if err := s.checkEmergencyInTx(ctx, tx, guarded.TaskID); err != nil {
+			return err
+		}
 		current, err := loadTaskControlTx(ctx, tx, guarded.TaskID)
 		if err != nil {
 			return err
@@ -320,6 +329,18 @@ func (s *Service) PrepareWithGuard(ctx context.Context, request PrepareRequest, 
 		_ = s.detector.ReportUngrantedCapability(ctx, ungrantedAttemptID, ungrantedTaskID, ungrantedName)
 	}
 	return result, mapPolicyProfileError(err)
+}
+
+func (s *Service) checkEmergencyInTx(ctx context.Context, tx *sql.Tx, taskID domain.ID) error {
+	checker, ok := s.emergency.(ProjectEmergencyTxChecker)
+	if !ok || checker == nil {
+		return nil
+	}
+	projectID, err := execution.ResolveTaskProjectTx(ctx, tx, taskID)
+	if err != nil {
+		return err
+	}
+	return checker.CheckProjectExecutionAllowedTx(ctx, tx, projectID, "external_operation")
 }
 
 // ResolveEffectSlot resolves the durable identity for one trusted semantic effect.
@@ -501,6 +522,9 @@ func (s *Service) DispatchWithGuard(ctx context.Context, operationID, attemptID 
 		}
 		if guarded.TaskID != op.TaskID {
 			return domain.ErrStaleAttempt
+		}
+		if err := s.checkEmergencyInTx(ctx, tx, guarded.TaskID); err != nil {
+			return err
 		}
 		currentControl, err := loadTaskControlTx(ctx, tx, guarded.TaskID)
 		if err != nil {

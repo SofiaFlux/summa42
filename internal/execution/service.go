@@ -33,6 +33,7 @@ type TaskRequest struct {
 	Priority             int
 	EarliestStart        time.Time
 	Deadline             time.Time
+	ProjectID            domain.ID
 }
 
 type GuardedAttempt struct {
@@ -56,6 +57,12 @@ var ErrEnvelopeExhausted = errors.New("resource envelope has no remaining budget
 // lease cannot interleave.
 type LeaseGate interface {
 	CheckLeaseAllowedTx(ctx context.Context, tx *sql.Tx) error
+}
+
+// ProjectLeaseGate extends LeaseGate with a per-Project lifecycle check inside
+// the same leasing transaction.
+type ProjectLeaseGate interface {
+	CheckProjectLeaseAllowedTx(ctx context.Context, tx *sql.Tx, projectID domain.ID) error
 }
 
 // EnvelopeChecker verifies inside a renewal transaction that the Task's
@@ -187,6 +194,11 @@ func (s *Service) CreateChildTask(ctx context.Context, parentTaskID domain.ID, r
 	if request.Priority == 0 {
 		request.Priority = parent.Priority
 	}
+	if request.ProjectID == "" {
+		request.ProjectID = parent.ProjectID
+	} else if parent.ProjectID != "" && request.ProjectID != parent.ProjectID {
+		return domain.Task{}, errors.New("child task cannot belong to a different project")
+	}
 	if err := validateTimeWindow(request.EarliestStart, request.Deadline); err != nil {
 		return domain.Task{}, err
 	}
@@ -237,6 +249,17 @@ func (s *Service) StartAttempt(ctx context.Context, taskID domain.ID, executorKi
 		if err != nil {
 			return err
 		}
+		if pg, ok := s.leaseGate.(ProjectLeaseGate); ok {
+			projectID, err := ResolveTaskProjectTx(ctx, tx, taskID)
+			if err != nil {
+				return err
+			}
+			if projectID != "" {
+				if err := pg.CheckProjectLeaseAllowedTx(ctx, tx, projectID); err != nil {
+					return err
+				}
+			}
+		}
 		attempt.FenceGeneration = fence + 1
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO attempts(attempt_id, task_id, state, fence_generation, lease_state, lease_expires_at, started_at, executor_kind)
@@ -284,7 +307,15 @@ func (s *Service) RenewLease(ctx context.Context, attemptID domain.ID, leaseDura
 	}
 	return s.WithGuardedAttempt(ctx, attemptID, []domain.TaskState{domain.TaskExecuting}, func(tx *sql.Tx, guarded GuardedAttempt) error {
 		if s.leaseGate != nil {
-			if err := s.leaseGate.CheckLeaseAllowedTx(ctx, tx); err != nil {
+			if pg, ok := s.leaseGate.(ProjectLeaseGate); ok {
+				projectID, err := ResolveTaskProjectTx(ctx, tx, guarded.TaskID)
+				if err != nil {
+					return err
+				}
+				if err := pg.CheckProjectLeaseAllowedTx(ctx, tx, projectID); err != nil {
+					return err
+				}
+			} else if err := s.leaseGate.CheckLeaseAllowedTx(ctx, tx); err != nil {
 				return err
 			}
 		}
@@ -375,10 +406,55 @@ func RevokeLeaseTx(ctx context.Context, tx *sql.Tx, attemptID domain.ID, now tim
 // transaction and reports how many it revoked. Emergency controls use it so a
 // freeze leaves the same execution trail as any other revocation.
 func RevokeActiveLeasesTx(ctx context.Context, tx *sql.Tx, now time.Time, reason string) (int, error) {
+	return revokeQueryLeasesTx(ctx, tx, now, reason,
+		`SELECT attempt_id FROM attempts WHERE lease_state = ? ORDER BY attempt_id`, domain.LeaseActive)
+}
+
+// RevokeProjectLeasesTx revokes every ACTIVE Attempt lease belonging to
+// projectID inside the caller's transaction and appends LEASE_REVOKED events.
+func RevokeProjectLeasesTx(ctx context.Context, tx *sql.Tx, projectID domain.ID, now time.Time, reason string) (int, error) {
+	if strings.TrimSpace(string(projectID)) == "" {
+		return 0, errors.New("project id is required to revoke project leases")
+	}
+	return revokeQueryLeasesTx(ctx, tx, now, reason, `
+		SELECT a.attempt_id
+		FROM attempts a
+		JOIN tasks t ON t.task_id = a.task_id
+		LEFT JOIN resource_envelopes e ON e.envelope_id = t.resource_envelope_id
+		WHERE a.lease_state = ?
+		  AND COALESCE(NULLIF(t.project_id, ''), NULLIF(e.project_id, ''), '') = ?
+		ORDER BY a.attempt_id`,
+		domain.LeaseActive, projectID)
+}
+
+// ResolveTaskProjectTx returns the owning project ID for taskID (preferring
+// tasks.project_id over resource_envelopes.project_id) inside tx, failing
+// closed if taskID does not exist.
+func ResolveTaskProjectTx(ctx context.Context, tx *sql.Tx, taskID domain.ID) (domain.ID, error) {
+	if tx == nil {
+		return "", errors.New("SQL transaction is required")
+	}
+	var projectID string
+	err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(NULLIF(t.project_id, ''), NULLIF(e.project_id, ''), '')
+		FROM tasks t
+		LEFT JOIN resource_envelopes e ON e.envelope_id = t.resource_envelope_id
+		WHERE t.task_id = ?`, taskID,
+	).Scan(&projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("task %q not found", taskID)
+	}
+	if err != nil {
+		return "", err
+	}
+	return domain.ID(projectID), nil
+}
+
+func revokeQueryLeasesTx(ctx context.Context, tx *sql.Tx, now time.Time, reason, query string, args ...any) (int, error) {
 	if tx == nil {
 		return 0, errors.New("SQL transaction is required")
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT attempt_id FROM attempts WHERE lease_state = ? ORDER BY attempt_id`, domain.LeaseActive)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -700,9 +776,38 @@ func (s *Service) insertTaskTx(ctx context.Context, tx *sql.Tx, parentID domain.
 		requestHash = hex.EncodeToString(digest[:])
 	}
 	now := s.clock.Now().UTC()
+	var envProjectID sql.NullString
+	if err := tx.QueryRowContext(ctx,
+		`SELECT project_id FROM resource_envelopes WHERE envelope_id = ?`, request.ResourceEnvelopeID,
+	).Scan(&envProjectID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return domain.Task{}, err
+	}
+	projectID := domain.ID(strings.TrimSpace(string(request.ProjectID)))
+	if envProjectID.Valid && strings.TrimSpace(envProjectID.String) != "" {
+		envProj := domain.ID(strings.TrimSpace(envProjectID.String))
+		if projectID != "" && projectID != envProj {
+			return domain.Task{}, fmt.Errorf("task project %s conflicts with resource envelope project %s", projectID, envProj)
+		}
+		if projectID == "" {
+			projectID = envProj
+		}
+	}
+	if projectID != "" {
+		var projState string
+		if err := tx.QueryRowContext(ctx, `SELECT state FROM projects WHERE project_id = ?`, projectID).Scan(&projState); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return domain.Task{}, fmt.Errorf("project %q not found", projectID)
+			}
+			return domain.Task{}, err
+		}
+		if projState == "ARCHIVED" {
+			return domain.Task{}, fmt.Errorf("%w: %s", domain.ErrProjectArchived, projectID)
+		}
+	}
 	task := domain.Task{
 		ID:                   domain.NewID("task"),
 		ParentTaskID:         parentID,
+		ProjectID:            projectID,
 		Purpose:              request.Purpose,
 		TaskClass:            request.TaskClass,
 		Objective:            request.Objective,
@@ -740,14 +845,14 @@ func (s *Service) insertTaskTx(ctx context.Context, tx *sql.Tx, parentID domain.
 	}
 	result, err := tx.ExecContext(ctx, `
 	INSERT INTO tasks(
-		task_id, parent_task_id, purpose_kind, purpose_id, task_class, objective, payload_json,
+		task_id, parent_task_id, project_id, purpose_kind, purpose_id, task_class, objective, payload_json,
 		idempotency_key, request_hash, state, current_fence,
 		acceptance_criteria_json, required_capabilities_json, required_enforcement,
 		authority_ceiling_json, resource_envelope_id, priority, earliest_start, deadline,
 		created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
-		task.ID, nullableID(parentID), task.Purpose.Kind, task.Purpose.ID, task.TaskClass,
+		task.ID, nullableID(parentID), nullableID(task.ProjectID), task.Purpose.Kind, task.Purpose.ID, task.TaskClass,
 		task.Objective, string(task.PayloadJSON), nullableString(task.IdempotencyKey), nullableString(requestHash), task.State,
 		string(criteriaJSON), string(capabilitiesJSON), task.RequiredEnforcement,
 		string(authorityJSON), task.ResourceEnvelopeID, task.Priority,
@@ -787,7 +892,7 @@ func loadTask(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, taskID domain.ID) (domain.Task, error) {
 	var task domain.Task
-	var parentID, currentAttempt, earliest, deadline sql.NullString
+	var parentID, projectID, currentAttempt, earliest, deadline sql.NullString
 	var purposeKind string
 	var stateValue string
 	var enforcement string
@@ -795,14 +900,14 @@ func loadTask(ctx context.Context, q interface {
 	var idempotencyKey sql.NullString
 	var createdAt, updatedAt string
 	if err := q.QueryRowContext(ctx, `
-		SELECT task_id, parent_task_id, purpose_kind, purpose_id, task_class, objective, payload_json,
+		SELECT task_id, parent_task_id, project_id, purpose_kind, purpose_id, task_class, objective, payload_json,
 		       idempotency_key, state, current_attempt_id, current_fence,
 		       acceptance_criteria_json, required_capabilities_json, required_enforcement,
 		       authority_ceiling_json, resource_envelope_id, priority, earliest_start, deadline,
 		       created_at, updated_at
 		FROM tasks WHERE task_id = ?`, taskID,
 	).Scan(
-		&task.ID, &parentID, &purposeKind, &task.Purpose.ID, &task.TaskClass, &task.Objective, &payloadJSON,
+		&task.ID, &parentID, &projectID, &purposeKind, &task.Purpose.ID, &task.TaskClass, &task.Objective, &payloadJSON,
 		&idempotencyKey, &stateValue, &currentAttempt, &task.CurrentFence,
 		&criteriaJSON, &capabilitiesJSON, &enforcement, &authorityJSON, &task.ResourceEnvelopeID,
 		&task.Priority, &earliest, &deadline, &createdAt, &updatedAt,
@@ -813,6 +918,7 @@ func loadTask(ctx context.Context, q interface {
 		return domain.Task{}, err
 	}
 	task.ParentTaskID = domain.ID(parentID.String)
+	task.ProjectID = domain.ID(projectID.String)
 	task.PayloadJSON = json.RawMessage(payloadJSON)
 	task.IdempotencyKey = idempotencyKey.String
 	task.CurrentAttemptID = domain.ID(currentAttempt.String)

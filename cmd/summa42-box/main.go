@@ -185,6 +185,7 @@ func run(ctx context.Context) error {
 	}, control.Dependencies{
 		Status:        boxStatusProvider{box: box},
 		Projects:      box.Projects,
+		Envelopes:     box.Resources,
 		Tasks:         box.Execution,
 		Missions:      box.Purpose,
 		Approvals:     box.Approvals,

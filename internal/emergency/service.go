@@ -469,21 +469,40 @@ func (s *Service) CheckExecutionAllowed(ctx context.Context, actionCategory stri
 	return nil
 }
 
-// CheckLeaseAllowedTx is the execution kernel's lease gate. It reads the
-// emergency state inside the leasing transaction and refuses a new Attempt
-// while Break Glass is FROZEN or the Owner's horizon has passed. It never
-// writes: the SAFE_MODE transition is recorded by EvaluateDeadMan.
-func (s *Service) CheckLeaseAllowedTx(ctx context.Context, tx *sql.Tx) error {
+func isProhibitedInSafeMode(actionCategory string) bool {
+	catLower := strings.ToLower(strings.TrimSpace(actionCategory))
+	// In safe mode: stops new Attempt leases, strategic expansion, spend, and
+	// policy evolution. Diagnostics, evidence, lease recovery and read-only
+	// reconciliation of in-flight operations continue.
+	prohibitedInSafeMode := []string{
+		"attempt_lease",
+		"strategic_expansion",
+		"expansion",
+		"spend",
+		"policy_evolution",
+		"policy_upgrade",
+		"provisioning",
+		"external_operation",
+	}
+	for _, prohibited := range prohibitedInSafeMode {
+		if catLower == prohibited || strings.HasPrefix(catLower, prohibited+":") {
+			return true
+		}
+	}
+	return false
+}
+
+func checkEmergencyTx(ctx context.Context, tx *sql.Tx, now time.Time) (frozen, deadManBlocked bool, err error) {
 	if tx == nil {
-		return errors.New("SQL transaction is required")
+		return false, false, errors.New("SQL transaction is required")
 	}
 	var bgState string
-	err := tx.QueryRowContext(ctx, `SELECT break_glass_state FROM emergency_controls WHERE singleton = 1`).Scan(&bgState)
+	err = tx.QueryRowContext(ctx, `SELECT break_glass_state FROM emergency_controls WHERE singleton = 1`).Scan(&bgState)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("fail-closed break glass check: %w", err)
+		return false, false, fmt.Errorf("fail-closed break glass check: %w", err)
 	}
 	if err == nil && BreakGlassState(bgState) == BreakGlassFrozen {
-		return ErrBreakGlassFrozen
+		return true, false, ErrBreakGlassFrozen
 	}
 	var dmState, lastHeartbeatStr string
 	var timeoutSec int
@@ -491,18 +510,81 @@ func (s *Service) CheckLeaseAllowedTx(ctx context.Context, tx *sql.Tx) error {
 		SELECT state, last_heartbeat_at, heartbeat_timeout_seconds FROM dead_man_switch WHERE singleton = 1`,
 	).Scan(&dmState, &lastHeartbeatStr, &timeoutSec)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return false, false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("fail-closed dead man check: %w", err)
+		return false, false, fmt.Errorf("fail-closed dead man check: %w", err)
 	}
 	// An unparseable heartbeat is the zero time, which reads as expired.
 	lastHeartbeat, _ := parseTime(lastHeartbeatStr)
-	expired := s.clock.Now().UTC().Sub(lastHeartbeat) > time.Duration(timeoutSec)*time.Second
+	expired := now.UTC().Sub(lastHeartbeat) > time.Duration(timeoutSec)*time.Second
 	if DeadManState(dmState) == DeadManSafeMode || expired {
+		return false, true, nil
+	}
+	return false, false, nil
+}
+
+func checkProjectStateTx(ctx context.Context, tx *sql.Tx, projectID domain.ID) error {
+	id := strings.TrimSpace(string(projectID))
+	if id == "" {
+		return nil
+	}
+	var projState string
+	err := tx.QueryRowContext(ctx, `SELECT state FROM projects WHERE project_id = ?`, id).Scan(&projState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("project %q not found", id)
+	}
+	if err != nil {
+		return fmt.Errorf("fail-closed project state check: %w", err)
+	}
+	switch projState {
+	case "ACTIVE":
+		return nil
+	case "PAUSED":
+		return fmt.Errorf("%w: %s", domain.ErrProjectPaused, id)
+	case "ARCHIVED":
+		return fmt.Errorf("%w: %s", domain.ErrProjectArchived, id)
+	default:
+		return fmt.Errorf("unexpected state %q for project %s", projState, id)
+	}
+}
+
+// CheckLeaseAllowedTx is the execution kernel's lease gate. It reads the
+// emergency state inside the leasing transaction and refuses a new Attempt
+// while Break Glass is FROZEN or the Owner's horizon has passed. It never
+// writes: the SAFE_MODE transition is recorded by EvaluateDeadMan.
+func (s *Service) CheckLeaseAllowedTx(ctx context.Context, tx *sql.Tx) error {
+	_, blocked, err := checkEmergencyTx(ctx, tx, s.clock.Now())
+	if err != nil {
+		return err
+	}
+	if blocked {
 		return fmt.Errorf("%w: new Attempt leases wait for the Owner's heartbeat", ErrSafeModeRestricted)
 	}
 	return nil
+}
+
+// CheckProjectLeaseAllowedTx checks Collective emergency controls plus the
+// target Project's lifecycle state inside the leasing transaction.
+func (s *Service) CheckProjectLeaseAllowedTx(ctx context.Context, tx *sql.Tx, projectID domain.ID) error {
+	if err := s.CheckLeaseAllowedTx(ctx, tx); err != nil {
+		return err
+	}
+	return checkProjectStateTx(ctx, tx, projectID)
+}
+
+// CheckProjectExecutionAllowedTx verifies Collective break glass / dead man
+// safe-mode and the target Project's lifecycle state inside the caller's
+// SQLite transaction without opening a nested write transaction.
+func (s *Service) CheckProjectExecutionAllowedTx(ctx context.Context, tx *sql.Tx, projectID domain.ID, actionCategory string) error {
+	_, safeMode, err := checkEmergencyTx(ctx, tx, s.clock.Now())
+	if err != nil {
+		return err
+	}
+	if safeMode && isProhibitedInSafeMode(actionCategory) {
+		return fmt.Errorf("%w: action category %q is prohibited under dead man safe-mode", ErrSafeModeRestricted, actionCategory)
+	}
+	return checkProjectStateTx(ctx, tx, projectID)
 }
 
 // GetStatus returns the combined status of Break Glass and Dead Man Switch.

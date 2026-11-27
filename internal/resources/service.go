@@ -59,12 +59,30 @@ func (s *Service) ReserveInTx(ctx context.Context, tx *sql.Tx, envelopeID domain
 		ID: domain.NewID("reservation"), EnvelopeID: envelopeID, State: domain.ReservationHeld,
 		Amount: amount, CreatedAt: now, UpdatedAt: now,
 	}
+	ancestors, err := ancestorsTx(ctx, tx, envelopeID)
+	if err != nil {
+		return domain.Reservation{}, err
+	}
 	available, err := availableIn(ctx, tx, envelopeID)
 	if err != nil {
 		return domain.Reservation{}, err
 	}
 	if amount > available {
 		return domain.Reservation{}, fmt.Errorf("%w: requested=%d available=%d", domain.ErrBudgetExceeded, amount, available)
+	}
+	for _, anc := range ancestors {
+		ancLimit, _, _, _, err := budgetIn(ctx, tx, anc)
+		if err != nil {
+			return domain.Reservation{}, err
+		}
+		sAmt, hAmt, uAmt, err := subtreeTotalsTx(ctx, tx, anc)
+		if err != nil {
+			return domain.Reservation{}, err
+		}
+		ancAvail := ancLimit - sAmt - hAmt - uAmt
+		if amount > ancAvail {
+			return domain.Reservation{}, fmt.Errorf("%w: ancestor %s requested=%d available=%d", domain.ErrBudgetExceeded, anc, amount, ancAvail)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO resource_reservations(
@@ -195,10 +213,10 @@ func (s *Service) AvailableInTx(ctx context.Context, tx *sql.Tx, envelopeID doma
 	return availableIn(ctx, tx, envelopeID)
 }
 
-// AllowRenewalInTx reports whether envelopeID still permits a lease renewal
-// inside tx: settled + unresolved exposure must remain strictly below
-// hard_limit, and total settled + unresolved + held must not exceed hard_limit.
-// Active HELD reservations inside hard_limit still allow renewal.
+// AllowRenewalInTx reports whether envelopeID and every ancestor still permit
+// a lease renewal inside tx: settled + unresolved exposure must remain strictly
+// below hard_limit, and total settled + unresolved + held must not exceed
+// hard_limit. Active HELD reservations inside hard_limit still allow renewal.
 func (s *Service) AllowRenewalInTx(ctx context.Context, tx *sql.Tx, envelopeID domain.ID) (bool, error) {
 	if err := s.configured(); err != nil {
 		return false, err
@@ -209,11 +227,118 @@ func (s *Service) AllowRenewalInTx(ctx context.Context, tx *sql.Tx, envelopeID d
 	if envelopeID == "" {
 		return false, errors.New("envelope id is required")
 	}
+	ancestors, err := ancestorsTx(ctx, tx, envelopeID)
+	if err != nil {
+		return false, err
+	}
 	hardLimit, settled, held, unresolved, err := budgetIn(ctx, tx, envelopeID)
 	if err != nil {
 		return false, err
 	}
-	return settled+unresolved < hardLimit && settled+unresolved+held <= hardLimit, nil
+	if settled+unresolved >= hardLimit || settled+unresolved+held > hardLimit {
+		return false, nil
+	}
+	for _, anc := range ancestors {
+		ancLimit, _, _, _, err := budgetIn(ctx, tx, anc)
+		if err != nil {
+			return false, err
+		}
+		sAmt, hAmt, uAmt, err := subtreeTotalsTx(ctx, tx, anc)
+		if err != nil {
+			return false, err
+		}
+		if sAmt+uAmt >= ancLimit || sAmt+uAmt+hAmt > ancLimit {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+const maxEnvelopeDepth = 8
+
+func ancestorsTx(ctx context.Context, q queryRower, envelopeID domain.ID) ([]domain.ID, error) {
+	curr := envelopeID
+	seen := map[domain.ID]bool{envelopeID: true}
+	var ancestors []domain.ID
+	for {
+		var parent sql.NullString
+		err := q.QueryRowContext(ctx, `SELECT parent_envelope_id FROM resource_envelopes WHERE envelope_id = ?`, curr).Scan(&parent)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("resource envelope %q not found", curr)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !parent.Valid || strings.TrimSpace(parent.String) == "" {
+			return ancestors, nil
+		}
+		parentID := domain.ID(strings.TrimSpace(parent.String))
+		if seen[parentID] {
+			return nil, fmt.Errorf("resource envelope hierarchy cycle detected at %s", parentID)
+		}
+		if len(ancestors) >= maxEnvelopeDepth {
+			return nil, fmt.Errorf("resource envelope hierarchy exceeds maximum depth %d", maxEnvelopeDepth)
+		}
+		seen[parentID] = true
+		ancestors = append(ancestors, parentID)
+		curr = parentID
+	}
+}
+
+func subtreeTotalsTx(ctx context.Context, tx *sql.Tx, rootID domain.ID) (settled, held, unresolved int64, err error) {
+	type node struct {
+		id    domain.ID
+		depth int
+	}
+	queue := []node{{id: rootID, depth: 0}}
+	seen := map[domain.ID]bool{rootID: true}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur.depth > maxEnvelopeDepth {
+			return 0, 0, 0, fmt.Errorf("resource envelope subtree exceeds maximum depth %d", maxEnvelopeDepth)
+		}
+		_, sAmt, hAmt, uAmt, err := budgetIn(ctx, tx, cur.id)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		settled += sAmt
+		held += hAmt
+		unresolved += uAmt
+
+		rows, err := tx.QueryContext(ctx, `SELECT envelope_id FROM resource_envelopes WHERE parent_envelope_id = ?`, cur.id)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		for rows.Next() {
+			var childID domain.ID
+			if scanErr := rows.Scan(&childID); scanErr != nil {
+				rows.Close()
+				return 0, 0, 0, scanErr
+			}
+			if seen[childID] {
+				rows.Close()
+				return 0, 0, 0, fmt.Errorf("resource envelope hierarchy cycle detected at %s", childID)
+			}
+			seen[childID] = true
+			queue = append(queue, node{id: childID, depth: cur.depth + 1})
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			rows.Close()
+			return 0, 0, 0, rowsErr
+		}
+		rows.Close()
+	}
+	return settled, held, unresolved, nil
+}
+
+func childrenLimitSumTx(ctx context.Context, tx *sql.Tx, parentID, excludeChildID domain.ID) (int64, error) {
+	var total int64
+	err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(hard_limit), 0) FROM resource_envelopes WHERE parent_envelope_id = ? AND envelope_id <> ?`,
+		parentID, excludeChildID,
+	).Scan(&total)
+	return total, err
 }
 
 type queryRower interface {
