@@ -6,7 +6,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -58,7 +58,7 @@ jobs:
       - run: python3 docs/superpowers/research/spikes/2026-09-14-sqlite-persistence-spike.py
 
   oci-acceptance:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -73,7 +73,7 @@ jobs:
   # check. Nothing from the pull request's tree is executed; Git only reads it.
   protected-paths:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
