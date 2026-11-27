@@ -13,10 +13,14 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/identity"
+	"github.com/SofiaFlux/summa42/internal/project"
 )
 
 type API interface {
 	Status(context.Context) (StatusDTO, error)
+	Projects(context.Context) ([]project.Project, error)
+	Project(context.Context, string) (project.Project, error)
+	CreateProject(context.Context, string, string, string, identity.Signer) (project.Project, error)
 	CreateTask(context.Context, CreateTaskRequest) (TaskDTO, error)
 	CreateMission(context.Context, string, identity.Signer) (MissionDTO, error)
 	ActiveMission(context.Context) (MissionDTO, error)

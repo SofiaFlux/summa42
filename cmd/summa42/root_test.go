@@ -11,11 +11,13 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/identity"
 	"github.com/SofiaFlux/summa42/internal/operations"
+	"github.com/SofiaFlux/summa42/internal/project"
 	"github.com/spf13/cobra"
 )
 
 type fakeControlAPI struct {
 	status                  control.StatusDTO
+	projects                []project.Project
 	task                    control.TaskDTO
 	attempt                 control.AttemptDTO
 	operation               control.OperationDTO
@@ -37,6 +39,25 @@ type fakeControlAPI struct {
 }
 
 func (f *fakeControlAPI) Status(context.Context) (control.StatusDTO, error) { return f.status, nil }
+func (f *fakeControlAPI) Projects(context.Context) ([]project.Project, error) {
+	return f.projects, nil
+}
+func (f *fakeControlAPI) Project(_ context.Context, ref string) (project.Project, error) {
+	for _, p := range f.projects {
+		if string(p.ID) == ref || p.Slug == ref || (ref == "" && p.Slug == project.DefaultProjectSlug) {
+			return p, nil
+		}
+	}
+	return project.Project{}, project.ErrProjectNotFound
+}
+func (f *fakeControlAPI) CreateProject(_ context.Context, slug, name, _ string, _ identity.Signer) (project.Project, error) {
+	if name == "" {
+		name = slug
+	}
+	p := project.Project{ID: domain.ID("project_" + slug), Slug: slug, Name: name, State: project.StateActive, EnvelopeID: domain.ID("envelope_project_" + slug), AutonomyStep: "A1"}
+	f.projects = append(f.projects, p)
+	return p, nil
+}
 func (f *fakeControlAPI) CreateTask(_ context.Context, request control.CreateTaskRequest) (control.TaskDTO, error) {
 	f.created = request
 	return f.task, nil
@@ -181,6 +202,18 @@ func TestMissionCreateUsesOwnerKeyAndReturnsID(t *testing.T) {
 	output = executeCommand(t, newRootCommandWithClient(api), "--json", "mission", "show")
 	if !strings.Contains(output, `"id":"mission-1"`) || !strings.Contains(output, `"statement":"Maintain this repository safely"`) {
 		t.Fatalf("mission show output=%s", output)
+	}
+	output = executeCommand(t, newRootCommandWithClient(api), "--json", "project", "create", "daas", "--name", "DaaS Platform", "--owner-key", keyPath)
+	if !strings.Contains(output, `"slug":"daas"`) || !strings.Contains(output, `"autonomy_step":"A1"`) {
+		t.Fatalf("project create output=%s", output)
+	}
+	output = executeCommand(t, newRootCommandWithClient(api), "--json", "project", "show", "daas")
+	if !strings.Contains(output, `"slug":"daas"`) {
+		t.Fatalf("project show output=%s", output)
+	}
+	output = executeCommand(t, newRootCommandWithClient(api), "--json", "project", "list")
+	if !strings.Contains(output, `"slug":"daas"`) {
+		t.Fatalf("project list output=%s", output)
 	}
 }
 

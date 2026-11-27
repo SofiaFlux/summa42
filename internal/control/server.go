@@ -179,6 +179,7 @@ type ShutdownService interface {
 
 type Dependencies struct {
 	Status        StatusProvider
+	Projects      ProjectService
 	Tasks         TaskService
 	Missions      MissionService
 	Approvals     ApprovalService
@@ -238,6 +239,9 @@ func NewServer(config ServerConfig, deps Dependencies) (*Server, error) {
 	s := &Server{config: config, deps: deps, challenges: make(map[domain.ID]challengeState)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status", s.handleStatus)
+	mux.HandleFunc("GET /projects", s.handleListProjects)
+	mux.HandleFunc("POST /projects", s.handleCreateProject)
+	mux.HandleFunc("GET /projects/{ref}", s.handleGetProject)
 	mux.HandleFunc("POST /missions/challenge", s.handleMissionChallenge)
 	mux.HandleFunc("POST /missions", s.handleCreateMission)
 	mux.HandleFunc("GET /missions/active", s.handleActiveMission)
