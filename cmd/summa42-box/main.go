@@ -184,6 +184,7 @@ func run(ctx context.Context) error {
 		ChallengeTTL:     2 * time.Minute,
 	}, control.Dependencies{
 		Status:        boxStatusProvider{box: box},
+		Projects:      box.Projects,
 		Tasks:         box.Execution,
 		Missions:      box.Purpose,
 		Approvals:     box.Approvals,

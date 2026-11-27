@@ -1,7 +1,7 @@
 # Project Scope Design Specification (`M2-T1`)
 
 **Card:** `M2-T1` (`DESIGN`) — [development plan](../plans/2026-11-11-development-plan.md#m2-projects)
-**Date:** 2026-11-27
+**Date:** 2026-11-27 (amended 2026-11-27 per Owner decision: one active Collective Mission spanning multiple Projects, Owner-gated Mission switching)
 **Status:** Approved (Owner, 2026-11-27; reviewed `ACCEPT` by Claude Opus, 2026-11-27)
 **Vision & Plan Alignment:** [Vision](../../VISION.md) (Articles 3, 4, 5, 6, 15, 20, 22, 27), [Plan Section 2.1](../plans/2026-11-11-development-plan.md#21-three-scopes-one-kernel)
 
@@ -11,16 +11,18 @@
 
 Today Summa42 holds **one** active Mission for the entire Collective (`missions_one_active` in `internal/state/sqlite/migrations/00002_purpose.sql`), a flat set of `resource_envelopes` (`00005_resources.sql`) with no parent enforcement in `internal/resources`, Collective-wide emergency controls (`00028_emergency_controls.sql`), and ~20 CLI flags across `run-gh-intake`, `run-gh-pipeline`, and `run-worker`.
 
-This specification defines **Project** as a first-class kernel scope under the Collective (never above it):
+Per the Owner's architectural decision (2026-11-27), **Missions remain Collective-scoped**: a Collective may hold many stored Missions (historical or standby), with **at most one active Mission at a time** (`missions_one_active`), and switching which Mission is active requires explicit **Owner approval / signature**. One active Mission may span **multiple Projects** (for example: managing a product line or the technical organization end-to-end).
+
+This specification defines **Project** as a first-class narrowing kernel scope under the Collective and its Mission hierarchy (never above it):
 
 ```text
 Collective (one Owner, one Box, one SQLite database, Collective root envelope, global Break Glass & Dead Man Switch)
+  ├── Missions (many stored Missions; at most one active Collective Mission at a time, switched only by Owner signature)
   └── Project (slug, ACTIVE|PAUSED|ARCHIVED, child resource envelope, signed manifest hash)
-        ├── Mission (at most one active Mission per Project)
         ├── Sources (GitHub & Azure DevOps repositories declared in the Project manifest)
         ├── Grants & standing delegations (scoped to the Project; never widening Collective policy)
-        ├── Board (board_cards scoped via Mission)
-        └── Cases, Tasks, Attempts, Evidence, External Operations
+        ├── Board (board_cards scoped directly by project_id)
+        └── Cases, Tasks, Attempts, Evidence, External Operations (scoped to project_id)
 ```
 
 A Project is a **narrowing scope, never an independent authority source**. Every rule settled here preserves a single-Project Collective (`default`) whose observable behavior is identical to `main` today.
@@ -54,6 +56,21 @@ ALTER TABLE resource_envelopes
 
 CREATE INDEX resource_envelopes_project ON resource_envelopes(project_id);
 
+ALTER TABLE workflow_cases
+    ADD COLUMN project_id TEXT NOT NULL DEFAULT 'project_default' REFERENCES projects(project_id);
+
+CREATE INDEX workflow_cases_project ON workflow_cases(project_id, state);
+
+ALTER TABLE board_cards
+    ADD COLUMN project_id TEXT NOT NULL DEFAULT 'project_default' REFERENCES projects(project_id);
+
+CREATE INDEX board_cards_project_column ON board_cards(project_id, column_name);
+
+ALTER TABLE tasks
+    ADD COLUMN project_id TEXT REFERENCES projects(project_id);
+
+CREATE INDEX tasks_project_state ON tasks(project_id, state);
+
 CREATE TABLE project_events (
     event_id            TEXT PRIMARY KEY,
     project_id          TEXT NOT NULL REFERENCES projects(project_id),
@@ -75,42 +92,27 @@ CREATE INDEX project_events_project_created ON project_events(project_id, create
 - `project_events` is append-only (protected by immutable `BEFORE UPDATE` / `BEFORE DELETE` SQLite triggers matching `00028_emergency_controls.sql`), stores every Owner Ed25519 signature + nonce (`event_id`) with 5-minute replay/freshness checks (`GrantMaxAge` / `OwnerCommand`), and records state changes (`M2-T2`, `M2-T4`) plus manifest hashes (`M2-T3`).
 - `autonomy_step` records the per-Project autonomy ladder (`Plan Section 2.3`, initialized to `'A1'`). It is displayed by `summa42 project show|list` (`M2-T2`) and updated only by Owner-approved autonomy promotion; it never bypasses policy, approvals, or resource checks.
 
-### 2.2 Direct `project_id` vs. Mission-reached lineage
+### 2.2 Direct `project_id` vs. inherited lineage
 
 All durable tables fall into one of four explicit ownership classes:
 
 | Ownership class | Tables | Schema mechanism & rationale |
 | --- | --- | --- |
-| **1. Direct `project_id` (`NOT NULL`)** | `projects`, `project_events`, `missions` | Anchor entities of a Project. `missions` gains `project_id TEXT NOT NULL DEFAULT 'project_default' REFERENCES projects(project_id)`. |
-| **2. Direct nullable `project_id`** | `resource_envelopes` (`00040_projects.sql` in `M2-T2`), `obligations` (added when per-Project obligations wire in `M7-T3`; Collective-global `NULL` until then), `owner_decision_packets` (added when per-Project packets filter in `M4-T2`), plus planned `owner_action_records` (*not yet in migrations; added in `M4-T1`*) | Entities that exist at **either** Collective scope (`project_id IS NULL`: `envelope_collective_root`, `envelope_default`, Collective obligations/maintenance, pre-M2 test envelopes) **or** Project scope (`project_id = <id>`). Leaving `project_id` nullable on `resource_envelopes` keeps all existing unit tests inserting `(envelope_id, hard_limit, created_at)` intact while letting Project child envelopes enforce Project binding. |
-| **3. Reached through `Mission` (or `Task -> Purpose`) — no duplicate column** | **Via `mission_id`:** `workflow_cases`, `workflow_assessments`, `workflow_verifications`, `board_cards`, `board_card_moves`, `goals` (when `purpose_kind = 'MISSION'`).<br>**Via `task_id -> purpose`:** `tasks`, `task_dependencies`, `attempts`, `task_challenges`, `attempt_failures`, `execution_events`, `attempt_run_manifests`, `attempt_containments`, `attempt_containment_events`, `external_operations`, `effect_slots`, `approval_requests`, `approval_decisions`, `capability_sessions`, `capability_assessments`, `evidence_objects` / `evidence_subjects`, `model_calls` (when `case_id` / `task_id` present), `github_issue_triage_reviews`, `foreign_evidence_lineage`, `external_task_reconciliations`. | Avoids denormalized `project_id` drift. A Task's owning Project is resolved deterministically inside any kernel SQLite transaction via: `MISSION` -> `missions.project_id`, `OBLIGATION` -> `obligations.project_id`, and `NULL` for Collective-level `COLLECTIVE_MAINTENANCE` / `GOVERNANCE` / `RECOVERY`. (Non-Mission Project tasks such as Project maintenance/directives may resolve via an optional `tasks.project_id` added if needed later, or stay under an active Mission/Obligation.) |
-| **4. Collective-global (no `project_id`)** | `principals`, `constitutions`, `collective_metadata`, `policy_sets`, `emergency_controls`, `dead_man_switch`, `emergency_audit_events`, `cube_quarantines`, `owner_attention_budgets`, `audit_events`, `notification_outbox`, `capability_definitions`, `experience_*`, `field_*`, `sanitized_feedback`, `company_*`, `business_invariants` | Collective constitutional roots, host identity, global break-glass/dead-man switch, global policy/quarantine/audit chain, and Company OS cross-project state (`Plan Section 2.1`). |
+| **1. Direct `project_id` (`NOT NULL`)** | `projects`, `project_events`, `workflow_cases`, `board_cards` | Because a single active Mission spans multiple Projects, work-queue and case boundaries live directly on Projects (`project_id TEXT NOT NULL DEFAULT 'project_default' REFERENCES projects(project_id)`). |
+| **2. Direct nullable `project_id`** | `resource_envelopes` (`00040_projects.sql` in `M2-T2`), `tasks` (`00040_projects.sql` in `M2-T2`: populated from workflow cases / Project intake, `NULL` for Collective-global maintenance/governance), `obligations` (added when per-Project obligations wire in `M7-T3`; Collective-global `NULL` until then), `owner_decision_packets` (added when per-Project packets filter in `M4-T2`), plus planned `owner_action_records` (*not yet in migrations; added in `M4-T1`*) | Entities that exist at **either** Collective scope (`project_id IS NULL`: `envelope_collective_root`, `envelope_default`, Collective obligations/maintenance, pre-M2 test envelopes) **or** Project scope (`project_id = <id>`). Leaving `project_id` nullable preserves backwards compatibility for existing unit tests while enforcing Project containment where `project_id` is set. |
+| **3. Reached through `workflow_case`, `board_card`, or `task` — no duplicate column** | **Via `case_id`:** `workflow_assessments`, `workflow_verifications`.<br>**Via `card_id`:** `board_card_moves`.<br>**Via `task_id`:** `task_dependencies`, `attempts`, `task_challenges`, `attempt_failures`, `execution_events`, `attempt_run_manifests`, `attempt_containments`, `attempt_containment_events`, `external_operations`, `effect_slots`, `approval_requests`, `approval_decisions`, `capability_sessions`, `capability_assessments`, `evidence_objects` / `evidence_subjects`, `model_calls` (when `case_id` / `task_id` present), `github_issue_triage_reviews`, `foreign_evidence_lineage`, `external_task_reconciliations`. | Avoids denormalized `project_id` drift. Attempts, operations, and capability sessions resolve their Project atomically through `tasks.project_id` inside kernel SQLite transactions. |
+| **4. Collective-global (no `project_id`)** | `missions`, `goals`, `principals`, `constitutions`, `collective_metadata`, `policy_sets`, `emergency_controls`, `dead_man_switch`, `emergency_audit_events`, `cube_quarantines`, `owner_attention_budgets`, `audit_events`, `notification_outbox`, `capability_definitions`, `experience_*`, `field_*`, `sanitized_feedback`, `company_*`, `business_invariants` | Collective purpose (`missions_one_active`: one active Collective Mission across all Projects), constitutional roots, host identity, global emergency/quarantine/audit controls, and Company OS cross-project state (`Plan Section 2.1`). |
 
 ---
 
-## 3. Default Project Adoption & One Active Mission per Project
+## 3. Default Project Adoption & Collective Mission Switching
 
-### 3.1 One active Mission per Project (`M2-T2`)
+### 3.1 One active Mission per Collective (`missions_one_active`) & Owner-gated switching (`M2-T2`)
 
-Migration `00040_projects.sql` replaces the Collective-wide unique index in `00002_purpose.sql`:
-
-```sql
-DROP INDEX IF EXISTS missions_one_active;
-
-ALTER TABLE missions
-    ADD COLUMN project_id TEXT NOT NULL DEFAULT 'project_default' REFERENCES projects(project_id);
-
-CREATE UNIQUE INDEX missions_one_active_per_project
-    ON missions(project_id)
-    WHERE active = 1;
-
-CREATE INDEX missions_project_created ON missions(project_id, created_at);
-```
-
-- `internal/purpose/service.go`:
-  - `CreateMissionForProject(ctx, projectID, statement)` (and updated `CreateMission(ctx, projectID, statement)` / `ActiveMission(ctx, projectID)`): checks inside the transaction that `projectID` exists and its `state` is `ACTIVE` (rejecting `PAUSED` and `ARCHIVED` Projects for new active Mission creation), defaulting empty `projectID` only in compatibility helpers mapped to `domain.DefaultProjectID ("project_default")`.
-  - `cmd/summa42/mission_cmd.go` accepts `--project <slug|id>`, defaulting to `default` (`project_default`) when omitted, preserving `summa42 mission create <statement>` and `summa42 mission show` unchanged for single-Project users.
-  - `validatePurpose` in `internal/purpose/service.go` keeps validating `active = 1` on `missions`; leasing (`execution`) additionally gates on Project `state == 'ACTIVE'`.
+- **Index unchanged:** `missions_one_active` on `missions(active) WHERE active = 1` (`00002_purpose.sql`) stays **intact**. The Collective can hold many stored Mission rows (retired or standby), while SQLite enforces at most **one** `active = 1` Mission at any moment.
+- **No autonomous Mission switching:** Attempting `CreateMission` while another Mission already has `active = 1` stays refused (`UNIQUE constraint failed` / active Mission already exists).
+- **Owner-signed switching (`M2-T2`):** Switching which Mission is active requires an explicit **Owner Ed25519 signature** (`summa42 mission switch <mission-id>`, plus optional `summa42 mission list`, wired over Owner-signed control endpoints `POST /missions/switch/challenge` + `POST /missions/switch`). Inside one SQLite transaction (`purpose.Service.SwitchMission`), the currently active Mission (if any) is set to `active = 0, deactivated_at = now` and the target Mission is set to `active = 1, deactivated_at = NULL`. Automated/model-driven mission switching is not enabled; future delegation remains an explicit future card.
+- `internal/purpose/service.go` preserves `CreateMission(ctx, statement)` and `ActiveMission(ctx)` at Collective scope, and adds `CreateInactiveMission` / `ListMissions` / `SwitchMission(ctx, targetMissionID)`.
 
 ### 3.2 Backfill and Adoption Rules in Migration `00040_projects.sql`
 
@@ -121,14 +123,14 @@ When upgrading any existing database (whether created by `summa42 init` or a `te
    - To avoid silently inventing new budget (`00037` / R6) or under-funding already Owner-granted envelopes on upgrade, its initial `hard_limit` is set to:
      `COALESCE((SELECT SUM(hard_limit) FROM resource_envelopes WHERE envelope_id <> 'envelope_collective_root' AND parent_envelope_id IS NULL), 0)`.
      On a freshly initialized Collective (or after `00037` zeroed `envelope_default`), this sum is `0`.
-   - `bootstrap.Service.Init` (`summa42 init`) deterministically seeds both `envelope_collective_root` (`hard_limit = 0`, `parent_envelope_id = NULL`) and `project_default` (`slug = 'default'`, `state = 'ACTIVE'`, `envelope_id = 'envelope_project_default'` with `hard_limit = 0`, `parent_envelope_id = 'envelope_collective_root'`).
+   - `bootstrap.Service.Init` (`summa42 init`) inherits both `envelope_collective_root` (`hard_limit = 0`) and `project_default` (`slug = 'default'`, `state = 'ACTIVE'`, `envelope_id = 'envelope_project_default'`) seeded cleanly by migrations (`00040_projects.sql`).
 2. **Default Project (`project_default`)**:
    - Pre-existing rootless non-root envelopes (other than `envelope_collective_root`) are re-parented under `envelope_collective_root`:
      `UPDATE resource_envelopes SET parent_envelope_id = 'envelope_collective_root' WHERE envelope_id <> 'envelope_collective_root' AND parent_envelope_id IS NULL`.
    - `envelope_project_default` is created via `INSERT OR IGNORE` at `hard_limit = 0` under `envelope_collective_root` (`project_id = 'project_default'`) and linked as `projects.envelope_id` for `project_default`. Note: `envelope_default` (seeded by `00032` and zeroed in `00037` for synthesized Collective obligations) remains a separate Collective-scoped child of `envelope_collective_root` (`project_id IS NULL`), distinct from `envelope_project_default`. Existing pre-M2 envelopes also remain usable children of `envelope_collective_root` (so in-flight cases referencing `--envelope <id>` keep working without manual re-wiring and no pre-M2 limits change).
-3. **Existing Mission, cases, and board**:
-   - Every existing row in `missions` receives `project_id = 'project_default'` via the column `DEFAULT` (covering both active and deactivated Missions).
-   - Every existing row in `workflow_cases`, `workflow_assessments`, `workflow_verifications`, `board_cards`, `board_card_moves`, `goals`, and `tasks` linked through those `mission_id`s is automatically adopted by `project_default` with zero row copies or ID rewrites.
+3. **Existing cases and board**:
+   - Every existing row in `workflow_cases` and `board_cards` receives `project_id = 'project_default'` via `ALTER TABLE ... ADD COLUMN project_id TEXT NOT NULL DEFAULT 'project_default'` with zero row copies or ID rewrites.
+   - Existing `missions` stay untouched at Collective scope under `missions_one_active`, shared across Projects.
 
 ---
 
@@ -175,7 +177,7 @@ To uphold **Vision Article 15** (budgets are hard boundaries) and **Vision Artic
 | `CREATE` | `summa42 project create <slug>` | *(new)* | Inserts `projects` row (`state = 'ACTIVE'`), child envelope (`hard_limit = 0`), and `project_events` signature record. |
 | `PAUSE` | `summa42 project pause <slug> --reason ...` | `ACTIVE` | Sets `state = 'PAUSED'`, appends `project_events`, and immediately **revokes every `ACTIVE` Attempt lease** belonging to that Project via `execution.RevokeProjectLeasesTx` (appending `LEASE_REVOKED` execution events with reason `project_paused`). |
 | `RESUME` | `summa42 project resume <slug> --reason ...` | `PAUSED` | Sets `state = 'ACTIVE'`, appends `project_events`. **Never** restores previously revoked Attempt leases (`TestResumeDoesNotRestoreRevokedLeases`); eligible interrupted work must be scheduled on a fresh Attempt. Fails if Project is `ARCHIVED`. |
-| `ARCHIVE` | `summa42 project archive <slug> --reason ...` | `ACTIVE`, `PAUSED` | **Refuses** if the Project has any `ACTIVE` Attempt lease or any external operation in `DISPATCHED` or `OUTCOME_UNKNOWN` state (Vision Article 22: ambiguous outcomes must be reconciled first). Otherwise sets `state = 'ARCHIVED'`, `archived_at = now`, deactivates active Mission (`active = 0`), and appends `project_events`. Terminal: cannot transition back to `ACTIVE` or `PAUSED`. |
+| `ARCHIVE` | `summa42 project archive <slug> --reason ...` | `ACTIVE`, `PAUSED` | **Refuses** if the Project has any `ACTIVE` Attempt lease or any external operation in `DISPATCHED` or `OUTCOME_UNKNOWN` state (Vision Article 22: ambiguous outcomes must be reconciled first). Otherwise sets `state = 'ARCHIVED'`, `archived_at = now`, and appends `project_events` (Collective's active Mission remains active for other Projects). Terminal: cannot transition back to `ACTIVE` or `PAUSED`. |
 
 ### 5.2 Per-state kernel enforcement matrix
 
@@ -314,8 +316,8 @@ One Project (`daas`, for instance) may declare **multiple repositories** across 
 
 | Vision Article | Requirement | How this design complies |
 | --- | --- | --- |
-| **Art. 3 (Mission is durable; agents are ephemeral)** | Purpose, tasks, budgets, approvals, and state live in durable kernel records; workers/models remain stateless. | `projects`, `project_events`, `missions.project_id`, and `projects.envelope_id` persist in SQLite. Pause/crash revokes only ephemeral leases; Mission, cases, and board state endure. |
-| **Art. 4 (Mission, purpose, legitimate work)** | Collective holds bounded Mission/obligations; every task traces to a purpose; dormancy when empty. Literal Vision text says *"one active mission at a time"*. | Per `Plan §1` / `§2.1` and `M2-T2`, replacing Collective-global `missions_one_active` with **one active Mission per Project** lets multiple Projects coexist without merging or losing purpose traceability. Each Task still requires a valid Mission/Obligation/Collective purpose, and idle/paused Projects stay dormant. Flagged in §10 for Owner confirmation on whether `VISION.md` Art. 4 needs a clarifying phrase later. |
+| **Art. 3 (Mission is durable; agents are ephemeral)** | Purpose, tasks, budgets, approvals, and state live in durable kernel records; workers/models remain stateless. | `missions`, `projects`, `project_events`, `workflow_cases.project_id`, `board_cards.project_id`, and `projects.envelope_id` persist in SQLite. Pause/crash revokes only ephemeral leases; Mission, cases, and board state endure. |
+| **Art. 4 (Mission, purpose, legitimate work)** | Collective holds one active Mission at a time, plus obligations; every task traces to a purpose; dormancy when empty. | Matches `VISION.md` Art. 4 **literally**: `missions_one_active` keeps at most one active Collective Mission, switched only by explicit Owner signature, while spanning multiple Projects (`1 Mission -> N Projects`). Idle/paused Projects stay dormant. |
 | **Art. 5 (Authority is scoped, not a global score)** | Explicit domain-scoped permissions per resource, deadline, budget, and enforcement profile. | `project.json` explicitly scopes repositories, branches, paths, capabilities, actions, data classes, and model restrictions per repository. `case_grants` must remain a subset of the Collective policy ceiling. |
 | **Art. 6 (Authority only narrows, never expands)** | Collective/Project may contract autonomously, never enlarge authority without an Owner signature. | New Projects start at `hard_limit = 0` (`envelope_project_<slug>`) and `manifest_sha256 = ''` (cannot run until Owner-signed `apply` and `fund`). `PAUSE` and `ARCHIVE` contract immediately; only Owner-signed `RESUME` or `fund` restores/raises limits inside `envelope_collective_root`. No manifest can exceed Collective policy. |
 | **Art. 15 (Economics are governance)** | Resource ledger as authority boundary tracking settled and unresolved exposure. | Child Project envelopes hang under `envelope_collective_root` with strict partition + ancestor checks. Projects cannot spend each other's allocation or collectively exceed Collective root limit. |
@@ -328,23 +330,26 @@ One Project (`daas`, for instance) may declare **multiple repositories** across 
 A Collective initialized cleanly or upgraded from `main` with **only** `project_default` (`slug = "default"`) behaves identically to today:
 
 1. **Migration on existing DB:**
-   - Pre-M2 DB has at most 1 active `missions` row (`M0`), existing `workflow_cases` / `board_cards` pointing to `M0`, and existing `resource_envelopes` (`E0...` + `envelope_default`).
-   - `00040_projects.sql` inserts `project_default` (`state = 'ACTIVE'`) and sets `M0.project_id = 'project_default'`.
+   - Pre-M2 DB has at most 1 active `missions` row (`M0`), existing `workflow_cases` / `board_cards`, and existing `resource_envelopes` (`E0...` + `envelope_default`).
+   - `00040_projects.sql` inserts `project_default` (`state = 'ACTIVE'`) and sets `workflow_cases.project_id = 'project_default'` and `board_cards.project_id = 'project_default'`. `M0` remains the Collective's active Mission.
    - `envelope_collective_root` adopts pre-existing rootless limits verbatim (never changing an existing envelope's `hard_limit` or `Available()`).
 2. **Existing CLI (`cmd/summa42` and `cmd/summa42-box`):**
-   - `summa42 mission create` / `show` without `--project` target `project_default`, hitting the same unique active constraint (`missions_one_active_per_project` for `project_default`) and identical error paths.
+   - `summa42 mission create` / `show` operate on the Collective's single active Mission unchanged; `summa42 mission switch` / `list` add explicit Owner-signed switching across stored Missions.
    - `emergency freeze`, `dead_man_switch`, `envelope`, `approvals`, `cases`, `case report`, and `board` behave unchanged because only `project_default` exists and is `ACTIVE`.
    - Until a manifest is opted into with `--project <slug>` in `M2-T3`, existing `run-gh-intake`, `run-gh-pipeline`, `run-worker`, and flag-driven `serve` continue using the exact flag contract (`TestPipelineFlagsAndManifestAreEquivalent`).
    - Round-robin scheduling across `[project_default]` reduces to length 1 — identical scheduling order to single-Project today.
 
 ---
 
-## 9. Handoff Notes for Downstream Cards
+## 9. Handoff Notes for Downstream Cards (including 2026-11-27 Owner Amendment)
 
-- **`M2-T2` (`BUILD`):** Migration `00040_projects.sql` (note updated number from `00038`; also adds nullable `resource_envelopes.project_id` and `missions.project_id`), `internal/project/service.go`, update `internal/purpose/service.go` (`projectID` scoping), `internal/runtime/box.go`, `cmd/summa42/mission_cmd.go` (`--project`), `cmd/summa42/project_cmd.go` (`create|list|show`, showing `autonomy_step`). Named tests: `TestUpgradeAdoptsExistingMissionIntoDefaultProject`, `TestTwoProjectsEachHaveOneActiveMission`, `TestSecondActiveMissionInSameProjectRefused`, `TestProjectCreateRequiresOwnerSignature`.
+- **`M2-T2` (`BUILD` — amended per Owner 2026-11-27 decision, keeping protected `development-plan.md` untouched per R5):**
+  - Migration `00040_projects.sql` (updated number from `00038`; adds `projects`, `project_events`, `workflow_cases.project_id`, `board_cards.project_id`, nullable `resource_envelopes.project_id` & `tasks.project_id`, `envelope_collective_root`, and `project_default` backfill while **preserving `missions_one_active`**).
+  - `internal/project/service.go` (Owner-signed creation + zero-limit child envelope under `envelope_collective_root`, list/show/resolve), `internal/purpose/service.go` (`ListMissions`, `CreateStandbyMission`, and Owner-gated `SwitchMission` while keeping single active Collective Mission), `internal/runtime/box.go`, `internal/control/` (Project endpoints + Mission `list`/`switch`), `cmd/summa42/mission_cmd.go` (`create|show|list|switch`), `cmd/summa42/project_cmd.go` (`create|list|show`, showing `autonomy_step`).
+  - Named tests replacing the old per-project-mission assumption: `TestUpgradeAdoptsExistingCasesAndBoardIntoDefaultProject`, `TestTwoProjectsShareCollectiveActiveMissionWithIsolatedCasesAndBoard`, `TestSecondActiveMissionRefusedAndOwnerSwitchReplacesActiveMission`, `TestProjectCreateRequiresOwnerSignature`.
 - **`M2-T3` (`BUILD`):** `$SUMMA42_HOME/projects/<slug>/project.json` schema + validator (`schema_version == 1`, `DisallowUnknownFields`, GitHub + ADO repos, per-repo `data_class` ZDR/local check, policy subset check, no inline secrets), `summa42 project apply <slug>` (confirmation + Ed25519 signature), `--project <slug>` hash check in `serve` & `run-*`. Named tests per plan + ZDR/private check (`TestPrivateDataClassRefusesNonZDRRemoteModel`).
 - **`M2-T4` (`BUILD`):** Child envelope `parent_envelope_id = envelope_collective_root` + strict partition check & bounded ancestor walk (`TestEnvelopeHierarchyRejectsCycleAndDepthLimit`) in `internal/resources`, `summa42 project fund|pause|resume|archive`, **in-transaction** gates in `internal/execution` (`StartAttempt`, `RenewLease`, `RevokeProjectLeasesTx`) and `internal/operations` (`PrepareWithGuard`, `DispatchWithGuard`), scoped `internal/emergency/` helper (marked for Owner review per R5). (Nullable `obligations.project_id` is added in `M7-T3` or `M2-T4` when Project-scoped obligations are wired.)
-- **`M2-T5` / `M2-T6`:** `serve` multi-project loop (skip `PAUSED`/`ARCHIVED`, round-robin `ACTIVE` projects with applied manifest) and `internal/board` wiring to intake (`mission_id` -> `project_id`).
+- **`M2-T5` / `M2-T6`:** `serve` multi-project loop (skip `PAUSED`/`ARCHIVED`, round-robin `ACTIVE` projects with applied manifest) and `internal/board` wiring to intake (`project_id`).
 
 ---
 
@@ -353,4 +358,4 @@ A Collective initialized cleanly or upgraded from `main` with **only** `project_
 1. **Child vs. root envelope budgeting (Section 4.2):** Strict tree partitioning (`sum(children.hard_limit) + direct_committed(root) <= root.hard_limit`) plus ancestor checks in `ReserveInTx`, rather than over-committing child limits above `root.hard_limit`. *Default: strict partitioning (prevents noisy-neighbor starvation).*
 2. **Legacy non-`envelope_default` funded envelopes during upgrade (Section 3.2):** Pre-existing rootless envelopes stay intact and are re-parented under `envelope_collective_root` whose initial `hard_limit` equals their sum, while `envelope_project_default` starts at `0` (preserving `--envelope <id>` workflows until `project.json` replaces flags; `envelope_default` remains the separate Collective obligations envelope). *Default: re-parent intact without altering existing limits.*
 3. **`archive` behavior with in-flight state (Section 5.1):** Refuse `project archive` while active leases or non-final `DISPATCHED`/`OUTCOME_UNKNOWN` operations exist (require `pause` + reconciliation first). *Default: refuse while active leases or ambiguous operations remain.*
-4. **Vision Article 4 wording (Section 7):** Vision Art. 4 literally states *"A Collective may hold one active mission at a time"*, whereas Plan §1 / §2.1 and card `M2-T2` move to one active Mission **per Project**. Every Task still traces to one Mission and one Project, preserving the constitutional invariant. Confirm whether to keep Vision Art. 4 untouched for now or have the Owner update `VISION.md` later (per R10, agents never edit `docs/VISION.md`). *Default: keep `VISION.md` untouched during M2 build cards unless Owner updates it.*
+4. **Collective Mission model (Confirmed by Owner, 2026-11-27):** Multiple stored Missions in `missions`, strictly one `active = 1` per Collective (`VISION.md` Art. 4 kept verbatim), Owner-signed switching (`mission switch`), and `1 Active Mission -> N Projects` via `project_id` on Projects' cases, board cards, envelopes, and tasks.

@@ -557,3 +557,85 @@ func TestMigrationsApplyOverLegacyRows(t *testing.T) {
 		t.Fatalf("issue_hierarchy must be left alone: %d err=%v", n, err)
 	}
 }
+
+func TestUpgradeAdoptsExistingCasesAndBoardIntoDefaultProject(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "upgrade-projects.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.DB().Close()
+	db := store.DB()
+	migrations, err := fs.Sub(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, migrations, goose.WithTableName("schema_migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, 39); err != nil {
+		t.Fatalf("down to v39: %v", err)
+	}
+
+	const ts = "2026-11-20T10:00:00Z"
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO missions(mission_id, statement, active, created_at, deactivated_at)
+		VALUES ('m_old', 'Retired mission', 0, ?, ?),
+		       ('m_legacy', 'Existing Collective mission', 1, ?, NULL)`, ts, ts, ts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO workflow_cases(case_id, mission_id, source, object_id, revision_id, observation_evidence_id,
+			initial_request_json, grant_json, state, current_work_id, next_work_json, completed_steps, max_steps,
+			remaining_budget, progress_signature, created_at, updated_at)
+		VALUES ('case_legacy', 'm_legacy', 'github', 'SofiaFlux/summa42#1', 'rev1', 'ev1',
+			'{}', '{"Capabilities":["github.issue.read"],"Actions":null}', 'ACTIVE', 'w1', '{}', 0, 3, 10, 'sig', ?, ?)`, ts, ts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO board_cards(card_id, mission_id, source, source_id, revision_id, column_name, title, created_at, updated_at)
+		VALUES ('card_legacy', 'm_legacy', 'github', 'SofiaFlux/summa42#1', 'rev1', 'INTAKE', 'Legacy card', ?, ?)`, ts, ts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO resource_envelopes(envelope_id, hard_limit, created_at)
+		VALUES ('env_legacy', 500, ?)`, ts); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := provider.UpTo(ctx, 40); err != nil {
+		t.Fatalf("up to v40: %v", err)
+	}
+
+	var slug, pState, pEnv string
+	if err := db.QueryRowContext(ctx, `SELECT slug, state, envelope_id FROM projects WHERE project_id = 'project_default'`).Scan(&slug, &pState, &pEnv); err != nil {
+		t.Fatalf("default project missing: %v", err)
+	}
+	if slug != "default" || pState != "ACTIVE" || pEnv != "envelope_project_default" {
+		t.Fatalf("default project = (%q, %q, %q), want (default, ACTIVE, envelope_project_default)", slug, pState, pEnv)
+	}
+
+	var caseProj, cardProj string
+	if err := db.QueryRowContext(ctx, `SELECT project_id FROM workflow_cases WHERE case_id = 'case_legacy'`).Scan(&caseProj); err != nil || caseProj != "project_default" {
+		t.Fatalf("case project_id = %q err=%v, want project_default", caseProj, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT project_id FROM board_cards WHERE card_id = 'card_legacy'`).Scan(&cardProj); err != nil || cardProj != "project_default" {
+		t.Fatalf("board card project_id = %q err=%v, want project_default", cardProj, err)
+	}
+
+	var rootLimit int64
+	if err := db.QueryRowContext(ctx, `SELECT hard_limit FROM resource_envelopes WHERE envelope_id = 'envelope_collective_root'`).Scan(&rootLimit); err != nil || rootLimit != 500 {
+		t.Fatalf("collective root hard_limit = %d err=%v, want 500", rootLimit, err)
+	}
+	for _, childID := range []string{"env_legacy", "envelope_default", "envelope_project_default"} {
+		var parent string
+		if err := db.QueryRowContext(ctx, `SELECT COALESCE(parent_envelope_id, '') FROM resource_envelopes WHERE envelope_id = ?`, childID).Scan(&parent); err != nil || parent != "envelope_collective_root" {
+			t.Fatalf("envelope %s parent = %q err=%v, want envelope_collective_root", childID, parent, err)
+		}
+	}
+
+	if _, err := provider.DownTo(ctx, 39); err != nil {
+		t.Fatalf("down to v39 after upgrade: %v", err)
+	}
+}

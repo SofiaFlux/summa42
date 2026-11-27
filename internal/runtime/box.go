@@ -29,6 +29,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/obligation"
 	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/SofiaFlux/summa42/internal/policy"
+	"github.com/SofiaFlux/summa42/internal/project"
 	"github.com/SofiaFlux/summa42/internal/purpose"
 	"github.com/SofiaFlux/summa42/internal/quarantine"
 	"github.com/SofiaFlux/summa42/internal/resources"
@@ -71,6 +72,7 @@ type Config struct {
 type Box struct {
 	Store         *state.Store
 	Clock         clock.Clock
+	Projects      *project.Service
 	Purpose       *purpose.Service
 	Execution     *execution.Service
 	Evidence      *evidence.Store
@@ -159,6 +161,7 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 		}
 	}()
 
+	projectSvc := project.New(store, cfg.Clock)
 	purposes := purpose.New(store, cfg.Clock)
 	runManifestSvc := runmanifest.New(store, runmanifest.StaticContext{
 		Build:      buildMetadata,
@@ -299,6 +302,7 @@ func Open(ctx context.Context, cfg Config) (*Box, error) {
 	box := &Box{
 		Store:         store,
 		Clock:         cfg.Clock,
+		Projects:      projectSvc,
 		Purpose:       purposes,
 		Execution:     executionSvc,
 		Evidence:      evidenceStore,
