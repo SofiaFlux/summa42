@@ -61,6 +61,15 @@ func (f *fakeControlAPI) CreateProject(_ context.Context, slug, name, _ string, 
 	f.projects = append(f.projects, p)
 	return p, nil
 }
+func (f *fakeControlAPI) ApplyProjectManifest(_ context.Context, ref string, cmd project.ApplyCommand) (project.Project, error) {
+	for i := range f.projects {
+		if string(f.projects[i].ID) == ref || f.projects[i].Slug == ref {
+			f.projects[i].ManifestSHA256 = cmd.ManifestSHA256
+			return f.projects[i], nil
+		}
+	}
+	return project.Project{}, project.ErrProjectNotFound
+}
 func (f *fakeControlAPI) CreateTask(_ context.Context, request control.CreateTaskRequest) (control.TaskDTO, error) {
 	f.created = request
 	return f.task, nil

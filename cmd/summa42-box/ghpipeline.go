@@ -115,6 +115,14 @@ type pipeline struct {
 // Each stage keeps its own validation, so only what the pipeline itself
 // decides is checked here.
 func parsePipelineFlags(args []string) (*pipeline, time.Duration, error) {
+	if slug, rest, err := extractProjectFlag(args); err != nil {
+		return nil, 0, err
+	} else if slug != "" {
+		args, err = resolveManifestFlagArgs(context.Background(), slug, rest, "pipeline")
+		if err != nil {
+			return nil, 0, err
+		}
+	}
 	var mission, root, repo, base, credential, fallbackPath string
 	var once bool
 	var interval time.Duration

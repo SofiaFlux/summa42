@@ -106,6 +106,30 @@ func TestControlProjectsRequireOwnerSignature(t *testing.T) {
 	if err != nil || len(list) != 2 {
 		t.Fatalf("Projects() len=%d err=%v, want 2 (default + daas)", len(list), err)
 	}
+
+	// Applying a manifest over HTTP requires an Owner signature and persists manifest_sha256.
+	const digest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	unsignedApply, _ := json.Marshal(project.ApplyCommand{
+		EventID: domain.NewID("projevent"), ProjectID: created.ID, Slug: "daas",
+		ManifestSHA256: digest, Reason: "unsigned", PrincipalID: owner.PrincipalID(), IssuedAt: time.Now().UTC(),
+	})
+	resp = doRequest(t, http.MethodPost, client.baseURL+"/projects/daas/apply", "control-secret", bytes.NewReader(unsignedApply))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unsigned POST /projects/daas/apply status = %d, want 403", resp.StatusCode)
+	}
+
+	applyCmd, err := project.NewApplyCommand(owner, collectiveID, created.ID, "daas", digest, "apply test", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.ApplyProjectManifest(ctx, "daas", applyCmd); err != nil {
+		t.Fatalf("ApplyProjectManifest failed: %v", err)
+	}
+	after, err := client.Project(ctx, "daas")
+	if err != nil || after.ManifestSHA256 != digest {
+		t.Fatalf("after apply = (%+v, %v), want manifest_sha256=%s", after, err, digest)
+	}
 }
 
 func TestControlMissionSwitchRequiresOwnerSignature(t *testing.T) {

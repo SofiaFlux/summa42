@@ -146,6 +146,19 @@ func New(store *state.Store, clk clock.Clock) *Service {
 	return &Service{store: store, clock: clk}
 }
 
+func (s *Service) loadOwnerKey(ctx context.Context) (collectiveID, ownerID string, publicKey []byte, err error) {
+	err = s.store.DB().QueryRowContext(ctx, `
+		SELECT m.collective_id, m.owner_principal_id, p.public_key
+		FROM collective_metadata m
+		JOIN principals p ON p.principal_id = m.owner_principal_id
+		WHERE m.singleton = 1`,
+	).Scan(&collectiveID, &ownerID, &publicKey)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("load the Collective's Owner: %w", err)
+	}
+	return collectiveID, ownerID, publicKey, nil
+}
+
 // CreateSigned verifies the Collective Owner's Ed25519 signature, freshness,
 // and replay status, then atomically creates the Project, its zero-limit child
 // envelope under envelope_collective_root, and its immutable audit event.
@@ -160,16 +173,9 @@ func (s *Service) CreateSigned(ctx context.Context, cmd CreateCommand) (Project,
 		return Project{}, err
 	}
 
-	var collectiveID, ownerID string
-	var publicKey []byte
-	err := s.store.DB().QueryRowContext(ctx, `
-		SELECT m.collective_id, m.owner_principal_id, p.public_key
-		FROM collective_metadata m
-		JOIN principals p ON p.principal_id = m.owner_principal_id
-		WHERE m.singleton = 1`,
-	).Scan(&collectiveID, &ownerID, &publicKey)
+	collectiveID, ownerID, publicKey, err := s.loadOwnerKey(ctx)
 	if err != nil {
-		return Project{}, fmt.Errorf("load the Collective's Owner: %w", err)
+		return Project{}, err
 	}
 	if cmd.PrincipalID != domain.ID(ownerID) {
 		return Project{}, fmt.Errorf("%w: principal %q is not the Owner", ErrUnauthorized, cmd.PrincipalID)

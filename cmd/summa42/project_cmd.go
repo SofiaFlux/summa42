@@ -1,17 +1,23 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/SofiaFlux/summa42/internal/control"
+	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/identity"
 	"github.com/SofiaFlux/summa42/internal/localconfig"
+	"github.com/SofiaFlux/summa42/internal/policy"
 	"github.com/SofiaFlux/summa42/internal/project"
+	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 	"github.com/spf13/cobra"
 )
 
@@ -105,6 +111,100 @@ func newProjectCommand(api control.API, jsonOutput *bool) *cobra.Command {
 		},
 	}
 
-	command.AddCommand(create, list, show)
+	command.AddCommand(create, list, show, newProjectApplyCommand(api, jsonOutput))
 	return command
+}
+
+func newProjectApplyCommand(api control.API, jsonOutput *bool) *cobra.Command {
+	var home, ownerKey, reason string
+	var assumeYes bool
+	cmd := &cobra.Command{
+		Use:   "apply <slug>",
+		Short: "Validate, confirm, and Owner-sign $SUMMA42_HOME/projects/<slug>/project.json",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			slug := strings.TrimSpace(args[0])
+			resolvedHome, err := localconfig.ResolveHome(home)
+			if err != nil {
+				return err
+			}
+			m, digest, err := project.LoadManifestFile(resolvedHome, slug)
+			if err != nil {
+				return err
+			}
+			var eng policy.PolicyEngine
+			var ownerID domain.ID
+			cfg, cfgErr := localconfig.Load(resolvedHome)
+			switch {
+			case cfgErr == nil:
+				store, err := state.Open(cmd.Context(), cfg.DatabasePath)
+				if err != nil {
+					return fmt.Errorf("open Collective state database: %w", err)
+				}
+				eng, ownerID, err = project.LoadActivePolicyEngine(cmd.Context(), store)
+				_ = store.DB().Close()
+				if err != nil {
+					return err
+				}
+			case errors.Is(cfgErr, os.ErrNotExist):
+				prof, err := policy.DefaultProfile()
+				if err != nil {
+					return err
+				}
+				eng = policy.NewOPAEngine(policy.OPAConfig{
+					ModuleName: prof.ModuleName, Module: prof.Module, PolicySetID: prof.PolicySetID, PolicySetHash: prof.PolicyHash,
+				})
+			default:
+				return cfgErr
+			}
+			if err := project.ValidateManifestWithPolicy(cmd.Context(), m, eng, ownerID, time.Now().UTC()); err != nil {
+				return err
+			}
+			tty := stdinIsTTY()
+			if assumeYes && (tty || os.Getenv("SUMMA42_APPROVE_NONINTERACTIVE") != "1") {
+				return errors.New("--yes is accepted only when stdin is not a TTY and SUMMA42_APPROVE_NONINTERACTIVE=1")
+			}
+			if !assumeYes && !tty {
+				return errors.New("project apply needs confirmation on a TTY (non-interactive: --yes with SUMMA42_APPROVE_NONINTERACTIVE=1)")
+			}
+			fmt.Fprint(cmd.ErrOrStderr(), project.FormatManifestSummary(m, digest))
+			if !assumeYes {
+				fmt.Fprint(cmd.ErrOrStderr(), "Type 'yes' to apply: ")
+				line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+				if strings.TrimSpace(line) != "yes" {
+					return errors.New("project manifest apply not confirmed")
+				}
+			}
+			signer, err := loadOwnerSigner(ownerKey)
+			if err != nil {
+				return err
+			}
+			status, err := api.Status(cmd.Context())
+			if err != nil {
+				return err
+			}
+			proj, err := api.Project(cmd.Context(), slug)
+			if err != nil {
+				return err
+			}
+			applyCmd, err := project.NewApplyCommand(signer, status.CollectiveID, proj.ID, proj.Slug, digest, reason, time.Now().UTC())
+			if err != nil {
+				return err
+			}
+			updated, err := api.ApplyProjectManifest(cmd.Context(), proj.Slug, applyCmd)
+			if err != nil {
+				return err
+			}
+			if *jsonOutput {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(updated)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Applied manifest %s to Project %s\n", updated.ManifestSHA256, updated.Slug)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&home, "home", "", "Collective home directory (default ~/.summa42)")
+	cmd.Flags().StringVar(&ownerKey, "owner-key", "", "path to an existing Owner Ed25519 private key (default: SUMMA42_HOME/keys/owner.key)")
+	cmd.Flags().StringVar(&reason, "reason", "", "audit reason for applying the manifest")
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "skip confirmation (only when stdin is not a TTY and SUMMA42_APPROVE_NONINTERACTIVE=1)")
+	return cmd
 }

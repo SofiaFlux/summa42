@@ -22,6 +22,7 @@ type API interface {
 	Projects(context.Context) ([]project.Project, error)
 	Project(context.Context, string) (project.Project, error)
 	CreateProject(context.Context, string, string, string, identity.Signer) (project.Project, error)
+	ApplyProjectManifest(context.Context, string, project.ApplyCommand) (project.Project, error)
 	CreateTask(context.Context, CreateTaskRequest) (TaskDTO, error)
 	CreateMission(context.Context, string, identity.Signer) (MissionDTO, error)
 	CreateStandbyMission(context.Context, string, identity.Signer) (MissionDTO, error)

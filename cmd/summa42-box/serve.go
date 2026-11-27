@@ -203,9 +203,24 @@ func runServe(ctx context.Context, args []string) error {
 	if ctx == nil {
 		return errors.New("Box context is required")
 	}
-	own, sections, err := splitServeArgs(args)
+	slug, rest, err := extractProjectFlag(args)
 	if err != nil {
 		return err
+	}
+	var own []string
+	var sections map[string][]string
+	if slug != "" {
+		own = rest
+		for _, a := range rest {
+			if a == "--intake" || a == "--pipeline" || a == "--worker" || a == "--notify" {
+				return fmt.Errorf("serve: --project cannot be combined with %s", a)
+			}
+		}
+	} else {
+		own, sections, err = splitServeArgs(args)
+		if err != nil {
+			return err
+		}
 	}
 	var restartMin, restartMax time.Duration
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -220,19 +235,48 @@ func runServe(ctx context.Context, args []string) error {
 	if restartMin <= 0 || restartMax < restartMin {
 		return errors.New("serve requires 0 < --restart-min <= --restart-max")
 	}
+	loadHomeCfg := func() (string, localconfig.Config, error) {
+		home, err := localconfig.ResolveHome("")
+		if err != nil {
+			return "", localconfig.Config{}, err
+		}
+		cfg, err := localconfig.Load(home)
+		if err != nil {
+			return "", localconfig.Config{}, fmt.Errorf("load initialized Collective: %w", err)
+		}
+		return home, cfg, nil
+	}
+	var home string
+	var cfg localconfig.Config
+	var cfgLoaded bool
+	if slug != "" {
+		home, cfg, err = loadHomeCfg()
+		if err != nil {
+			return err
+		}
+		cfgLoaded = true
+		intake, pipeline, worker, err := manifestArgsForProject(ctx, home, cfg, slug, false)
+		if err != nil {
+			return err
+		}
+		sections = map[string][]string{
+			"--control":  nil,
+			"--intake":   intake,
+			"--pipeline": pipeline,
+			"--worker":   worker,
+		}
+	}
 	loops := serveLoops(sections)
 	for _, loop := range loops {
 		if err := loop.validate(loop.args); err != nil {
 			return fmt.Errorf("serve: %s flags: %w", loop.name, err)
 		}
 	}
-	home, err := localconfig.ResolveHome("")
-	if err != nil {
-		return err
-	}
-	cfg, err := localconfig.Load(home)
-	if err != nil {
-		return fmt.Errorf("load initialized Collective: %w", err)
+	if !cfgLoaded {
+		_, cfg, err = loadHomeCfg()
+		if err != nil {
+			return err
+		}
 	}
 	release, err := lockServe(filepath.Join(filepath.Dir(cfg.DatabasePath), "serve.lock"))
 	if err != nil {
