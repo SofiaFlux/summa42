@@ -111,8 +111,75 @@ func newProjectCommand(api control.API, jsonOutput *bool) *cobra.Command {
 		},
 	}
 
-	command.AddCommand(create, list, show, newProjectApplyCommand(api, jsonOutput))
+	command.AddCommand(
+		create, list, show,
+		newProjectApplyCommand(api, jsonOutput),
+		newProjectFundCommand(api, jsonOutput),
+		newProjectTransitionCommand(api, jsonOutput, "pause", "Pause a Project (revokes active leases; requires Owner signature)", project.ActionPause),
+		newProjectTransitionCommand(api, jsonOutput, "resume", "Resume a paused Project (requires Owner signature)", project.ActionResume),
+		newProjectTransitionCommand(api, jsonOutput, "archive", "Archive a Project permanently (requires Owner signature)", project.ActionArchive),
+	)
 	return command
+}
+
+func newProjectFundCommand(api control.API, jsonOutput *bool) *cobra.Command {
+	var ownerKey, reason string
+	var limit int64
+	cmd := &cobra.Command{
+		Use:   "fund <slug>",
+		Short: "Set a Project child envelope's budget limit (Owner-signed)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !cmd.Flags().Changed("limit") {
+				return errors.New("project fund requires --limit")
+			}
+			signer, err := loadOwnerSigner(ownerKey)
+			if err != nil {
+				return err
+			}
+			env, err := api.FundProject(cmd.Context(), args[0], limit, reason, signer)
+			if err != nil {
+				return err
+			}
+			if *jsonOutput {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(env)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Project envelope %s: limit=%d available=%d\n", env.ID, env.HardLimit, env.Available)
+			return err
+		},
+	}
+	cmd.Flags().Int64Var(&limit, "limit", 0, "new hard limit in units under envelope_collective_root")
+	cmd.Flags().StringVar(&ownerKey, "owner-key", "", "path to an existing Owner Ed25519 private key (default: SUMMA42_HOME/keys/owner.key)")
+	cmd.Flags().StringVar(&reason, "reason", "", "audit reason for funding the Project envelope")
+	return cmd
+}
+
+func newProjectTransitionCommand(api control.API, jsonOutput *bool, use, short string, action project.TransitionAction) *cobra.Command {
+	var ownerKey, reason string
+	cmd := &cobra.Command{
+		Use:   use + " <slug>",
+		Short: short,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			signer, err := loadOwnerSigner(ownerKey)
+			if err != nil {
+				return err
+			}
+			proj, err := api.TransitionProject(cmd.Context(), args[0], action, reason, signer)
+			if err != nil {
+				return err
+			}
+			if *jsonOutput {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(proj)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Project %s (%s): state=%s step=%s envelope=%s\n",
+				proj.Slug, proj.ID, proj.State, proj.AutonomyStep, proj.EnvelopeID)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&ownerKey, "owner-key", "", "path to an existing Owner Ed25519 private key (default: SUMMA42_HOME/keys/owner.key)")
+	cmd.Flags().StringVar(&reason, "reason", "", "audit reason for the Project state change")
+	return cmd
 }
 
 func newProjectApplyCommand(api control.API, jsonOutput *bool) *cobra.Command {

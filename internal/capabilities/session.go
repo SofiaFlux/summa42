@@ -67,6 +67,9 @@ func (r *Registry) OpenSession(ctx context.Context, collectiveID, attemptID doma
 	sessionID := domain.NewID("capsession")
 
 	err = r.execution.WithGuardedAttempt(ctx, attemptID, []domain.TaskState{domain.TaskExecuting}, func(tx *sql.Tx, guarded execution.GuardedAttempt) error {
+		if err := r.checkProjectEmergencyTx(ctx, tx, guarded.TaskID, "capability_session"); err != nil {
+			return err
+		}
 		control, err := loadTaskCapabilityControl(ctx, tx, guarded.TaskID)
 		if err != nil {
 			return err
@@ -183,6 +186,9 @@ func (s *Session) Call(ctx context.Context, name string, request any) (any, erro
 	var ungrantedName string
 
 	err = s.registry.execution.WithGuardedAttempt(ctx, initial.AttemptID, []domain.TaskState{domain.TaskExecuting}, func(tx *sql.Tx, guarded execution.GuardedAttempt) error {
+		if err := s.registry.checkProjectEmergencyTx(ctx, tx, guarded.TaskID, "capability_call"); err != nil {
+			return err
+		}
 		current, err := loadSession(ctx, tx, tokenHash)
 		if err != nil {
 			return err
@@ -378,4 +384,16 @@ func newSessionToken() (string, error) {
 func hashToken(token string) string {
 	digest := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(digest[:])
+}
+
+func (r *Registry) checkProjectEmergencyTx(ctx context.Context, tx *sql.Tx, taskID domain.ID, actionCategory string) error {
+	checker, ok := r.emergency.(ProjectEmergencyTxChecker)
+	if !ok || checker == nil {
+		return nil
+	}
+	projectID, err := execution.ResolveTaskProjectTx(ctx, tx, taskID)
+	if err != nil {
+		return err
+	}
+	return checker.CheckProjectExecutionAllowedTx(ctx, tx, projectID, actionCategory)
 }

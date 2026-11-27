@@ -40,6 +40,7 @@ type PurposeRef struct {
 type Task struct {
 	ID                   ID
 	ParentTaskID         ID
+	ProjectID            ID
 	Purpose              PurposeRef
 	TaskClass            string
 	Objective            string

@@ -18,21 +18,30 @@ import (
 	"github.com/SofiaFlux/summa42/internal/identity"
 	"github.com/SofiaFlux/summa42/internal/project"
 	"github.com/SofiaFlux/summa42/internal/purpose"
+	"github.com/SofiaFlux/summa42/internal/resources"
 )
+
+// EnvelopeService applies Owner-signed resource envelope grants.
+type EnvelopeService interface {
+	ApplyOwnerGrant(context.Context, resources.OwnerGrant) (resources.Envelope, error)
+}
 
 // ProjectService exposes kernel Project scope operations over control.
 type ProjectService interface {
 	CreateSigned(context.Context, project.CreateCommand) (project.Project, error)
 	ApplyManifestSigned(context.Context, project.ApplyCommand) (project.Project, error)
+	TransitionSigned(context.Context, project.TransitionCommand) (project.Project, error)
+	FundSigned(context.Context, project.EnvelopeApplier, string, resources.OwnerGrant) (resources.Envelope, error)
 	Get(context.Context, string) (project.Project, error)
 	List(context.Context) ([]project.Project, error)
 }
 
 func writeProjectError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, project.ErrUnauthorized), errors.Is(err, project.ErrExpired), errors.Is(err, project.ErrReplayed):
+	case errors.Is(err, project.ErrUnauthorized), errors.Is(err, project.ErrExpired), errors.Is(err, project.ErrReplayed),
+		errors.Is(err, resources.ErrGrantUnauthorized), errors.Is(err, resources.ErrGrantExpired), errors.Is(err, resources.ErrGrantReplayed):
 		writeError(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, project.ErrProjectExists):
+	case errors.Is(err, project.ErrProjectExists), errors.Is(err, domain.ErrProjectPaused), errors.Is(err, domain.ErrProjectArchived):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, project.ErrProjectNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
@@ -170,6 +179,50 @@ func (s *Server) handleApplyProjectManifest(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, proj)
 }
 
+func (s *Server) handleTransitionProject(action project.TransitionAction) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.deps.Projects == nil {
+			writeError(w, http.StatusServiceUnavailable, "project service unavailable")
+			return
+		}
+		ref := strings.TrimSpace(r.PathValue("ref"))
+		var cmd project.TransitionCommand
+		if err := decodeBody(r, &cmd); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if cmd.Action != action || (ref != "" && cmd.Slug != ref && string(cmd.ProjectID) != ref) {
+			writeError(w, http.StatusBadRequest, "project transition command does not match route")
+			return
+		}
+		proj, err := s.deps.Projects.TransitionSigned(r.Context(), cmd)
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, proj)
+	}
+}
+
+func (s *Server) handleFundProject(w http.ResponseWriter, r *http.Request) {
+	if s.deps.Projects == nil || s.deps.Envelopes == nil {
+		writeError(w, http.StatusServiceUnavailable, "project or resource service unavailable")
+		return
+	}
+	ref := strings.TrimSpace(r.PathValue("ref"))
+	var grant resources.OwnerGrant
+	if err := decodeBody(r, &grant); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	env, err := s.deps.Projects.FundSigned(r.Context(), s.deps.Envelopes, ref, grant)
+	if err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, env)
+}
+
 func (s *Server) handleListMissions(w http.ResponseWriter, r *http.Request) {
 	mgr, ok := s.deps.Missions.(MissionManager)
 	if !ok {
@@ -273,6 +326,51 @@ func (c *Client) CreateProject(ctx context.Context, slug, name, reason string, s
 func (c *Client) ApplyProjectManifest(ctx context.Context, ref string, cmd project.ApplyCommand) (project.Project, error) {
 	var result project.Project
 	err := c.doJSON(ctx, http.MethodPost, "/projects/"+url.PathEscape(strings.TrimSpace(ref))+"/apply", cmd, &result, http.StatusOK)
+	return result, err
+}
+
+func (c *Client) TransitionProject(ctx context.Context, ref string, action project.TransitionAction, reason string, signer identity.Signer) (project.Project, error) {
+	if signer == nil {
+		return project.Project{}, errors.New("Owner signer is required")
+	}
+	proj, err := c.Project(ctx, ref)
+	if err != nil {
+		return project.Project{}, err
+	}
+	status, err := c.Status(ctx)
+	if err != nil {
+		return project.Project{}, fmt.Errorf("read Collective identity: %w", err)
+	}
+	cmd, err := project.NewTransitionCommand(signer, status.CollectiveID, proj.ID, proj.Slug, action, reason, time.Now().UTC())
+	if err != nil {
+		return project.Project{}, err
+	}
+	var result project.Project
+	err = c.doJSON(ctx, http.MethodPost, "/projects/"+url.PathEscape(proj.Slug)+"/"+strings.ToLower(string(action)), cmd, &result, http.StatusOK)
+	return result, err
+}
+
+func (c *Client) FundProject(ctx context.Context, ref string, limit int64, reason string, signer identity.Signer) (resources.Envelope, error) {
+	if signer == nil {
+		return resources.Envelope{}, errors.New("Owner signer is required")
+	}
+	proj, err := c.Project(ctx, ref)
+	if err != nil {
+		return resources.Envelope{}, err
+	}
+	status, err := c.Status(ctx)
+	if err != nil {
+		return resources.Envelope{}, fmt.Errorf("read Collective identity: %w", err)
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = fmt.Sprintf("fund project %s limit %d", proj.Slug, limit)
+	}
+	grant, err := resources.NewOwnerGrant(signer, status.CollectiveID, resources.GrantSetLimit, proj.EnvelopeID, limit, reason, time.Now().UTC())
+	if err != nil {
+		return resources.Envelope{}, err
+	}
+	var result resources.Envelope
+	err = c.doJSON(ctx, http.MethodPost, "/projects/"+url.PathEscape(proj.Slug)+"/fund", grant, &result, http.StatusOK)
 	return result, err
 }
 

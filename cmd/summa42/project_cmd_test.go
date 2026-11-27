@@ -17,6 +17,8 @@ import (
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/identity"
 	"github.com/SofiaFlux/summa42/internal/policy"
+	"github.com/SofiaFlux/summa42/internal/project"
+	"github.com/SofiaFlux/summa42/internal/resources"
 	summa42runtime "github.com/SofiaFlux/summa42/internal/runtime"
 	state "github.com/SofiaFlux/summa42/internal/state/sqlite"
 )
@@ -88,6 +90,7 @@ func TestProjectAndMissionSwitchEndToEndThroughRuntimeBox(t *testing.T) {
 	}, control.Dependencies{
 		Status:     runtimeStatusProvider{collectiveID: initRes.CollectiveID},
 		Projects:   box.Projects,
+		Envelopes:  box.Resources,
 		Tasks:      box.Execution,
 		Missions:   box.Purpose,
 		Approvals:  box.Approvals,
@@ -136,6 +139,30 @@ func TestProjectAndMissionSwitchEndToEndThroughRuntimeBox(t *testing.T) {
 	applyOut := executeCommand(t, newRootCommandWithClient(api), "--json", "project", "apply", "daas", "--home", dir, "--owner-key", ownerKeyPath, "--yes", "--reason", "apply daas")
 	if !strings.Contains(applyOut, `"manifest_sha256":"`) {
 		t.Fatalf("project apply output=%s", applyOut)
+	}
+	// Fund root envelope and then fund, pause, resume, archive daas over CLI + control API.
+	rootGrant, err := resources.NewOwnerGrant(owner, initRes.CollectiveID, resources.GrantSetLimit, project.CollectiveRootEnvelopeID, 50, "fund root", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := box.Resources.ApplyOwnerGrant(ctx, rootGrant); err != nil {
+		t.Fatal(err)
+	}
+	fundOut := executeCommand(t, newRootCommandWithClient(api), "--json", "project", "fund", "daas", "--limit", "15", "--owner-key", ownerKeyPath, "--reason", "seed daas")
+	if !strings.Contains(fundOut, `"hard_limit":15`) {
+		t.Fatalf("project fund output=%s", fundOut)
+	}
+	pauseOut := executeCommand(t, newRootCommandWithClient(api), "--json", "project", "pause", "daas", "--owner-key", ownerKeyPath, "--reason", "hold")
+	if !strings.Contains(pauseOut, `"state":"PAUSED"`) {
+		t.Fatalf("project pause output=%s", pauseOut)
+	}
+	resumeOut := executeCommand(t, newRootCommandWithClient(api), "--json", "project", "resume", "daas", "--owner-key", ownerKeyPath, "--reason", "go")
+	if !strings.Contains(resumeOut, `"state":"ACTIVE"`) {
+		t.Fatalf("project resume output=%s", resumeOut)
+	}
+	archOut := executeCommand(t, newRootCommandWithClient(api), "--json", "project", "archive", "daas", "--owner-key", ownerKeyPath, "--reason", "done")
+	if !strings.Contains(archOut, `"state":"ARCHIVED"`) {
+		t.Fatalf("project archive output=%s", archOut)
 	}
 	listOut := executeCommand(t, newRootCommandWithClient(api), "project", "list")
 	if !strings.Contains(listOut, "default") || !strings.Contains(listOut, "daas") {

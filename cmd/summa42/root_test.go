@@ -13,6 +13,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/operations"
 	"github.com/SofiaFlux/summa42/internal/project"
 	"github.com/SofiaFlux/summa42/internal/purpose"
+	"github.com/SofiaFlux/summa42/internal/resources"
 	"github.com/spf13/cobra"
 )
 
@@ -69,6 +70,30 @@ func (f *fakeControlAPI) ApplyProjectManifest(_ context.Context, ref string, cmd
 		}
 	}
 	return project.Project{}, project.ErrProjectNotFound
+}
+func (f *fakeControlAPI) TransitionProject(_ context.Context, ref string, action project.TransitionAction, _ string, _ identity.Signer) (project.Project, error) {
+	for i := range f.projects {
+		if string(f.projects[i].ID) == ref || f.projects[i].Slug == ref {
+			switch action {
+			case project.ActionPause:
+				f.projects[i].State = project.StatePaused
+			case project.ActionResume:
+				f.projects[i].State = project.StateActive
+			case project.ActionArchive:
+				f.projects[i].State = project.StateArchived
+			}
+			return f.projects[i], nil
+		}
+	}
+	return project.Project{}, project.ErrProjectNotFound
+}
+func (f *fakeControlAPI) FundProject(_ context.Context, ref string, limit int64, _ string, _ identity.Signer) (resources.Envelope, error) {
+	for _, p := range f.projects {
+		if string(p.ID) == ref || p.Slug == ref {
+			return resources.Envelope{ID: p.EnvelopeID, HardLimit: limit, Available: limit}, nil
+		}
+	}
+	return resources.Envelope{}, project.ErrProjectNotFound
 }
 func (f *fakeControlAPI) CreateTask(_ context.Context, request control.CreateTaskRequest) (control.TaskDTO, error) {
 	f.created = request

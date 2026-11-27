@@ -21,6 +21,7 @@ import (
 
 	"github.com/SofiaFlux/summa42/internal/domain"
 	"github.com/SofiaFlux/summa42/internal/execution"
+	"github.com/SofiaFlux/summa42/internal/project"
 )
 
 type StatusDTO struct {
@@ -181,6 +182,7 @@ type ShutdownService interface {
 type Dependencies struct {
 	Status        StatusProvider
 	Projects      ProjectService
+	Envelopes     EnvelopeService
 	Tasks         TaskService
 	Missions      MissionService
 	Approvals     ApprovalService
@@ -244,6 +246,10 @@ func NewServer(config ServerConfig, deps Dependencies) (*Server, error) {
 	mux.HandleFunc("POST /projects", s.handleCreateProject)
 	mux.HandleFunc("GET /projects/{ref}", s.handleGetProject)
 	mux.HandleFunc("POST /projects/{ref}/apply", s.handleApplyProjectManifest)
+	mux.HandleFunc("POST /projects/{ref}/fund", s.handleFundProject)
+	mux.HandleFunc("POST /projects/{ref}/pause", s.handleTransitionProject(project.ActionPause))
+	mux.HandleFunc("POST /projects/{ref}/resume", s.handleTransitionProject(project.ActionResume))
+	mux.HandleFunc("POST /projects/{ref}/archive", s.handleTransitionProject(project.ActionArchive))
 	mux.HandleFunc("GET /missions", s.handleListMissions)
 	mux.HandleFunc("POST /missions/challenge", s.handleMissionChallenge)
 	mux.HandleFunc("POST /missions", s.handleCreateMission)

@@ -15,6 +15,7 @@ import (
 	"github.com/SofiaFlux/summa42/internal/identity"
 	"github.com/SofiaFlux/summa42/internal/project"
 	"github.com/SofiaFlux/summa42/internal/purpose"
+	"github.com/SofiaFlux/summa42/internal/resources"
 )
 
 type API interface {
@@ -23,6 +24,8 @@ type API interface {
 	Project(context.Context, string) (project.Project, error)
 	CreateProject(context.Context, string, string, string, identity.Signer) (project.Project, error)
 	ApplyProjectManifest(context.Context, string, project.ApplyCommand) (project.Project, error)
+	TransitionProject(context.Context, string, project.TransitionAction, string, identity.Signer) (project.Project, error)
+	FundProject(context.Context, string, int64, string, identity.Signer) (resources.Envelope, error)
 	CreateTask(context.Context, CreateTaskRequest) (TaskDTO, error)
 	CreateMission(context.Context, string, identity.Signer) (MissionDTO, error)
 	CreateStandbyMission(context.Context, string, identity.Signer) (MissionDTO, error)

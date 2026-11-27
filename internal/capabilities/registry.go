@@ -90,6 +90,12 @@ type EmergencyChecker interface {
 	CheckExecutionAllowed(ctx context.Context, actionCategory string) error
 }
 
+// ProjectEmergencyTxChecker validates Collective emergency controls and the
+// owning Project's lifecycle inside an active SQLite transaction.
+type ProjectEmergencyTxChecker interface {
+	CheckProjectExecutionAllowedTx(ctx context.Context, tx *sql.Tx, projectID domain.ID, actionCategory string) error
+}
+
 type ContainmentChecker interface {
 	CheckAttemptAllowed(ctx context.Context, attemptID domain.ID, actionCategory string) error
 }
